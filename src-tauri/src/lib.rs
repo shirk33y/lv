@@ -56,6 +56,8 @@ enum Commands {
     Status,
     /// Reset all thumbnails and re-enqueue generation jobs
     ResetThumbs,
+    /// Diagnose and fix stalled/failed jobs, then run worker to completion
+    Doctor,
 }
 
 #[cfg(all(not(debug_assertions), windows))]
@@ -135,6 +137,10 @@ pub fn run() {
                 }
                 Some(Commands::ResetThumbs) => {
                     cli::reset_thumbs(&db);
+                    app.handle().exit(0);
+                }
+                Some(Commands::Doctor) => {
+                    cli::doctor(&db);
                     app.handle().exit(0);
                 }
                 Some(Commands::Worker { once }) => {
