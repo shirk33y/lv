@@ -65,8 +65,8 @@ async function toggleLike() {
 export function setupKeyboard() {
   let heldKey: string | null = null;
   let rafId = 0;
-  const INITIAL_DELAY = 120; // ms before repeat starts
-  const INTERVAL = 40;       // ~25 fps once repeating
+  const INITIAL_DELAY = 300; // ms before repeat starts
+  const INTERVAL = 50;       // ~20 fps once repeating
   let keyDownAt = 0;
   let lastMove = 0;
 
