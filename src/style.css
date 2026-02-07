@@ -26,7 +26,7 @@ html, body, #app {
   overflow-y: auto;
   overflow-x: hidden;
   background: #0a0a0a;
-  padding-bottom: 28px;
+  padding-top: 28px;
   border-right: 1px solid #1a1a1a;
   scrollbar-width: none;
 }
@@ -194,18 +194,22 @@ html, body, #app {
 
 .status-bar {
   position: fixed;
-  bottom: 0;
+  top: 0;
   right: 0;
   left: 5%;
   padding: 4px 12px;
   background: rgba(0, 0, 0, 0.6);
-  color: #ccc;
+  color: #888;
   font-size: 13px;
   font-family: monospace;
-  pointer-events: none;
   z-index: 10;
   display: flex;
   justify-content: space-between;
+  user-select: text;
+}
+
+.status-basename {
+  color: #fff;
 }
 
 .status-left {

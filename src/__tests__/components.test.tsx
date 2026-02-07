@@ -199,6 +199,41 @@ describe("StatusBar", () => {
     expect(container.textContent).toContain("pics\\cat.jpg");
     expect(container.textContent).not.toContain("\\\\?\\");
   });
+
+  it("renders basename in .status-basename span", () => {
+    const file: FileEntry = { id: 1, path: "/pics/cat.jpg", dir: "/pics", filename: "cat.jpg", meta_id: 1, thumb_ready: true, shadow: null, liked: false };
+    resetStore([file], 0);
+    const { container } = render(<StatusBar />);
+    const basename = container.querySelector(".status-basename");
+    expect(basename).toBeTruthy();
+    expect(basename!.textContent).toBe("cat.jpg");
+  });
+
+  it("basename span contains only filename, not dir", () => {
+    const file: FileEntry = { id: 1, path: "/a/b/c/photo.png", dir: "/a/b/c", filename: "photo.png", meta_id: 1, thumb_ready: true, shadow: null, liked: false };
+    resetStore([file], 0);
+    const { container } = render(<StatusBar />);
+    const basename = container.querySelector(".status-basename");
+    expect(basename!.textContent).toBe("photo.png");
+    // Dir part should be in the status-left but outside basename
+    const left = container.querySelector(".status-left")!;
+    expect(left.textContent).toContain("/a/b/c/");
+  });
+
+  it("Windows path splits basename correctly", () => {
+    const file: FileEntry = { id: 1, path: "C:\\pics\\cat.jpg", dir: "C:\\pics", filename: "cat.jpg", meta_id: 1, thumb_ready: true, shadow: null, liked: false };
+    resetStore([file], 0);
+    cwd.value = "";
+    const { container } = render(<StatusBar />);
+    const basename = container.querySelector(".status-basename");
+    expect(basename!.textContent).toBe("cat.jpg");
+  });
+
+  it("no .status-basename when no files", () => {
+    resetStore([], 0);
+    const { container } = render(<StatusBar />);
+    expect(container.querySelector(".status-basename")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

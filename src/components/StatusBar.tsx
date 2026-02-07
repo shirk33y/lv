@@ -35,10 +35,21 @@ export function StatusBar() {
   const displayPath = rawPath ? relativePath(rawPath, cwdStr) : "";
   const heart = file?.liked ? "♥ " : "";
 
+  // Split displayPath into directory + basename for styling
+  const sep = displayPath.includes("\\") ? "\\" : "/";
+  const lastSep = displayPath.lastIndexOf(sep);
+  const dirPart = lastSep >= 0 ? displayPath.slice(0, lastSep + 1) : "";
+  const basePart = lastSep >= 0 ? displayPath.slice(lastSep + 1) : displayPath;
+
   return (
     <div class="status-bar">
       <span class="status-left">
-        {file ? `${heart}${pos}/${total}  ${displayPath}` : "no files"}
+        {file ? (
+          <>
+            {`${heart}${pos}/${total}  ${dirPart}`}
+            <span class="status-basename">{basePart}</span>
+          </>
+        ) : "no files"}
       </span>
       {statusText ? <span class="status-right">{statusText}</span> : null}
     </div>

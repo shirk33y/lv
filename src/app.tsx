@@ -41,11 +41,11 @@ export function App() {
     invoke<string | null>("get_first_dir").then((dir) => {
       loadFiles(dir ?? undefined);
     }).catch(() => loadFiles());
-    setupKeyboard();
+    const cleanupKeys = setupKeyboard();
     setupPreloader();
     pollStatus();
     const id = setInterval(pollStatus, 2000);
-    return () => clearInterval(id);
+    return () => { cleanupKeys(); clearInterval(id); };
   }, []);
 
   return (

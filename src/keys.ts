@@ -62,7 +62,7 @@ async function toggleLike() {
   }
 }
 
-export function setupKeyboard() {
+export function setupKeyboard(): () => void {
   let heldKey: string | null = null;
   let rafId = 0;
   const INITIAL_DELAY = 300; // ms before repeat starts
@@ -84,15 +84,21 @@ export function setupKeyboard() {
     rafId = requestAnimationFrame(tick);
   }
 
-  document.addEventListener("keyup", (e: KeyboardEvent) => {
+  function onKeyUp(e: KeyboardEvent) {
     if (e.key === heldKey) {
       heldKey = null;
       cancelAnimationFrame(rafId);
     }
-  });
+  }
 
-  document.addEventListener("keydown", (e: KeyboardEvent) => {
+  function onKeyDown(e: KeyboardEvent) {
     if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+
+    if (e.ctrlKey && e.key === "r") {
+      e.preventDefault();
+      window.location.reload();
+      return;
+    }
 
     switch (e.key) {
       case "j":
@@ -125,6 +131,11 @@ export function setupKeyboard() {
         break;
       case "b":
         jumpToFile("latest_fav", true);
+        break;
+      case "c":
+        if (currentFile.value) {
+          navigator.clipboard.writeText(currentFile.value.path).catch(() => {});
+        }
         break;
       case "f":
         invoke("toggle_fullscreen");
@@ -162,5 +173,14 @@ export function setupKeyboard() {
         window.close();
         break;
     }
-  });
+  }
+
+  document.addEventListener("keyup", onKeyUp);
+  document.addEventListener("keydown", onKeyDown);
+
+  return () => {
+    document.removeEventListener("keyup", onKeyUp);
+    document.removeEventListener("keydown", onKeyDown);
+    cancelAnimationFrame(rafId);
+  };
 }
