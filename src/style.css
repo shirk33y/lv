@@ -33,6 +33,7 @@ html, body, #app {
 }
 
 .sidebar-track {
+  width: 100%;
   will-change: transform;
 }
 

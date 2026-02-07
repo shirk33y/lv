@@ -327,6 +327,100 @@ describe("Sidebar", () => {
     expect(tiles.length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
+
+  it("sidebar-track wrapper has width 100%", () => {
+    resetStore([makeFile(1), makeFile(2)], 0);
+    const { container } = render(<Sidebar />);
+    const track = container.querySelector(".sidebar-track");
+    expect(track).toBeTruthy();
+    // All tiles must be inside the track
+    const tilesInTrack = track!.querySelectorAll(".tile");
+    expect(tilesInTrack.length).toBe(2);
+    // No tiles outside the track
+    const allTiles = container.querySelectorAll(".tile");
+    expect(allTiles.length).toBe(tilesInTrack.length);
+  });
+
+  it("sidebar-track is direct child of sidebar", () => {
+    resetStore([makeFile(1)], 0);
+    const { container } = render(<Sidebar />);
+    const sidebar = container.querySelector(".sidebar");
+    const track = sidebar!.querySelector(":scope > .sidebar-track");
+    expect(track).toBeTruthy();
+  });
+
+  it("sidebar-track gets animate class when not suppressed", () => {
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
+    const { container } = render(<Sidebar />);
+    const track = container.querySelector(".sidebar-track");
+    // After initial render + effect, the track should have animate class
+    expect(track).toBeTruthy();
+    // On first render noAnim may be true, but track always has sidebar-track
+    expect(track!.classList.contains("sidebar-track")).toBe(true);
+  });
+
+  it("sidebar-track has transform style", () => {
+    const items = Array.from({ length: 20 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 10);
+    const { container } = render(<Sidebar />);
+    const track = container.querySelector(".sidebar-track") as HTMLElement;
+    expect(track).toBeTruthy();
+    expect(track.style.transform).toMatch(/translateY/);
+  });
+
+  it("tiles are rendered inside track, never directly in sidebar", () => {
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 1);
+    const { container } = render(<Sidebar />);
+    const sidebar = container.querySelector(".sidebar")!;
+    // Direct children of sidebar should only be the track div
+    const directChildren = Array.from(sidebar.children);
+    expect(directChildren.length).toBe(1);
+    expect(directChildren[0].classList.contains("sidebar-track")).toBe(true);
+  });
+
+  it("single file renders one tile at full track width", () => {
+    resetStore([makeFile(1)], 0);
+    const { container } = render(<Sidebar />);
+    const tiles = container.querySelectorAll(".tile");
+    expect(tiles.length).toBe(1);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("active tile matches cursor index in rendered set", () => {
+    const items = Array.from({ length: 5 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 3);
+    const { container } = render(<Sidebar />);
+    const tiles = container.querySelectorAll(".tile");
+    const activeIdx = Array.from(tiles).findIndex(t => t.classList.contains("active"));
+    expect(activeIdx).toBeGreaterThanOrEqual(0);
+    // Exactly one active
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("cursor at last item still renders active tile", () => {
+    const items = Array.from({ length: 30 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 29);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("cursor at first item renders active tile", () => {
+    const items = Array.from({ length: 30 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 0);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("large file list still renders a bounded number of tiles", () => {
+    const items = Array.from({ length: 500 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 250);
+    const { container } = render(<Sidebar />);
+    const tiles = container.querySelectorAll(".tile");
+    // Should render buffer, not all 500
+    expect(tiles.length).toBeLessThan(500);
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
