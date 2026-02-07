@@ -4,6 +4,7 @@ import {
   jumpToFile,
   loadFiles,
   currentFile,
+  lastDir,
   files,
   cursorIndex,
   updateFileAt,
@@ -15,10 +16,14 @@ import {
   type FileEntry,
 } from "./store";
 
+let navigating = false;
+
 async function navigateDir(delta: number) {
+  if (navigating) return;
   const file = currentFile.value;
-  if (!file) return;
-  let dir = file.dir;
+  let dir = file ? file.dir : lastDir.value;
+  if (!dir) return;
+  navigating = true;
   const MAX_SKIP = 50;
   for (let attempt = 0; attempt < MAX_SKIP; attempt++) {
     try {
@@ -26,21 +31,24 @@ async function navigateDir(delta: number) {
         currentDir: dir,
         delta,
       });
-      if (raw.length === 0) return; // no more dirs in this direction
+      if (raw.length === 0) { navigating = false; return; }
       const filtered = filterSupported(raw);
       if (filtered.length > 0) {
         files.value = filtered;
         cursorIndex.value = 0;
+        navigating = false;
         return;
       }
       // Dir was empty after filtering — skip to next in same direction
       dir = raw[0].dir;
-      if (dir === file.dir) return; // didn't move — at boundary
+      if (dir === (file ? file.dir : lastDir.value)) { navigating = false; return; }
     } catch (e) {
       console.error("navigate_dir failed:", e);
+      navigating = false;
       return;
     }
   }
+  navigating = false;
 }
 
 async function toggleLike() {
@@ -88,14 +96,15 @@ export function setupKeyboard() {
 
     switch (e.key) {
       case "j":
-      case "k":
-        if (e.repeat) return;
+      case "k": {
+        if (e.repeat || e.key === heldKey) return;
         moveCursor(e.key === "j" ? 1 : -1);
         heldKey = e.key;
         keyDownAt = performance.now();
         lastMove = keyDownAt;
         rafId = requestAnimationFrame(tick);
         break;
+      }
       case "h":
         navigateDir(-1);
         break;

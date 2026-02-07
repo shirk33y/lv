@@ -45,6 +45,7 @@ export function addLog(level: LogEntry["level"], msg: string) {
   logEntries.value = [...logEntries.value, { ts: Date.now(), level, msg }];
 }
 export const cwd = signal("");
+export const lastDir = signal("");
 
 export const currentFile = computed(() => files.value[cursorIndex.value] ?? null);
 export const totalFiles = computed(() => files.value.length);
@@ -109,6 +110,9 @@ export async function loadFiles(dir?: string) {
     const raw = await invoke<FileEntry[]>("get_files", { dir: dir ?? null });
     const result = filterSupported(raw);
     files.value = result;
+    if (result.length > 0 && result[0].dir) {
+      lastDir.value = result[0].dir;
+    }
     if (cursorIndex.value >= result.length) {
       cursorIndex.value = Math.max(0, result.length - 1);
     }
@@ -121,26 +125,35 @@ export async function loadFiles(dir?: string) {
 }
 
 export async function jumpToFile(cmd: string, favMode = false) {
-  try {
-    const file = await invoke<FileEntry | null>(cmd);
-    if (file) {
+  const MAX_RETRIES = 5;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const file = await invoke<FileEntry | null>(cmd);
+      if (!file) return;
+
       if (favMode) {
         await loadFiles("♥");
         const newIdx = indexOfId(file.id);
         cursorIndex.value = newIdx >= 0 ? newIdx : 0;
-      } else {
-        const idx = indexOfId(file.id);
-        if (idx >= 0) {
-          cursorIndex.value = idx;
-        } else {
-          await loadFiles(file.dir);
-          const newIdx = indexOfId(file.id);
-          // Fall back to first file if target was filtered out
-          cursorIndex.value = newIdx >= 0 ? newIdx : 0;
-        }
+        return;
       }
+
+      const idx = indexOfId(file.id);
+      if (idx >= 0) {
+        cursorIndex.value = idx;
+        return;
+      }
+
+      await loadFiles(file.dir);
+      if (files.value.length > 0) {
+        const newIdx = indexOfId(file.id);
+        cursorIndex.value = newIdx >= 0 ? newIdx : 0;
+        return;
+      }
+      // Dir had no supported files — retry with another random result
+    } catch (e) {
+      console.error(`${cmd} failed:`, e);
+      return;
     }
-  } catch (e) {
-    console.error(`${cmd} failed:`, e);
   }
 }
