@@ -16,20 +16,29 @@ function resetStore(items: FileEntry[] = [], cursor = 0) {
   showHelp.value = false;
 }
 
-function pressKey(key: string) {
-  document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+function pressKey(key: string, opts: KeyboardEventInit = {}) {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...opts }));
 }
 
-// setupKeyboard adds addEventListener — call only once to avoid stacking
-let keyboardReady = false;
+function releaseKey(key: string) {
+  document.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+}
+
+let cleanup: (() => void) | null = null;
+
 beforeEach(async () => {
   resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
   mockInvoke.mockReset();
-  if (!keyboardReady) {
+  if (!cleanup) {
     const { setupKeyboard } = await import("../keys");
-    setupKeyboard();
-    keyboardReady = true;
+    cleanup = setupKeyboard();
   }
+});
+
+afterEach(() => {
+  // Release any held key between tests
+  releaseKey("j");
+  releaseKey("k");
 });
 
 describe("keyboard navigation", () => {
@@ -173,5 +182,114 @@ describe("keyboard navigation", () => {
     });
     // files unchanged
     expect(files.value).toEqual(original);
+  });
+
+  it("c copies current file path to clipboard", () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText: writeTextSpy } });
+    pressKey("c");
+    expect(writeTextSpy).toHaveBeenCalledWith("/a/f1.jpg");
+  });
+
+  it("c does nothing when no file is loaded", () => {
+    resetStore([], 0);
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText: writeTextSpy } });
+    pressKey("c");
+    expect(writeTextSpy).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+R calls window.location.reload", () => {
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+      configurable: true,
+    });
+    pressKey("r", { ctrlKey: true });
+    expect(reloadSpy).toHaveBeenCalled();
+  });
+
+  it("Ctrl+R does not trigger rescan", () => {
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+      configurable: true,
+    });
+    pressKey("r", { ctrlKey: true });
+    expect(mockInvoke).not.toHaveBeenCalledWith("rescan");
+  });
+});
+
+describe("keyboard cleanup (HMR regression)", () => {
+  it("cleanup removes handlers — no double-fire", async () => {
+    // Tear down current keyboard
+    cleanup!();
+    cleanup = null;
+
+    const { setupKeyboard } = await import("../keys");
+
+    // Simulate HMR: setup, cleanup, setup again
+    const cleanup1 = setupKeyboard();
+    cleanup1();
+    cleanup = setupKeyboard();
+
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
+    pressKey("j");
+    // Should move exactly 1, not 2
+    expect(cursorIndex.value).toBe(1);
+  });
+
+  it("double setupKeyboard without cleanup causes double-fire", async () => {
+    // Tear down current
+    cleanup!();
+    cleanup = null;
+
+    const { setupKeyboard } = await import("../keys");
+
+    // Two setups without cleanup in between — simulates the old HMR bug
+    const cleanup1 = setupKeyboard();
+    const cleanup2 = setupKeyboard();
+
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
+    pressKey("j");
+    // Two handlers → cursor moves twice
+    expect(cursorIndex.value).toBe(2);
+
+    // Clean up both to restore state
+    cleanup1();
+    cleanup2();
+
+    // Re-setup cleanly for remaining tests
+    cleanup = setupKeyboard();
+  });
+
+  it("m with favMode does not produce duplicate files", async () => {
+    const favFile = makeFile(99, "/favs", "best.jpg");
+    // random_fav returns a file, then get_files returns the fav list
+    mockInvoke
+      .mockResolvedValueOnce(favFile)             // random_fav
+      .mockResolvedValueOnce([favFile]);           // get_files for ♥
+    pressKey("m");
+    await vi.waitFor(() => {
+      expect(files.value.length).toBe(1);
+    });
+    // Exactly 1 file, not duplicated
+    expect(files.value[0].id).toBe(99);
+  });
+
+  it("after cleanup, keys no longer fire", async () => {
+    cleanup!();
+    cleanup = null;
+
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
+    pressKey("j");
+    // No handler active — cursor stays at 0
+    expect(cursorIndex.value).toBe(0);
+
+    // Re-setup for other tests
+    const { setupKeyboard } = await import("../keys");
+    cleanup = setupKeyboard();
   });
 });
