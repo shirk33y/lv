@@ -1,48 +1,43 @@
-import { signal, useSignal } from "@preact/signals";
-import { useRef, useEffect } from "preact/hooks";
+import { signal } from "@preact/signals";
+import { useRef, useEffect, useCallback } from "preact/hooks";
 import { files, cursorIndex, moveCursor } from "../store";
 import { Tile } from "./Tile";
 
+/** Exposed for tests — current native scrollTop */
 export const scrollTop = signal(0);
-const anchor = signal(0);
+
+const BUFFER = 5;
 
 export function Sidebar() {
   const items = files.value;
   const cursor = cursorIndex.value;
-  const sidebarRef = useRef<HTMLDivElement>(null);
-  const noAnim = useSignal(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
+  const scrollY = useRef(0);
 
-  const tileH = sidebarRef.current?.clientWidth ?? 48;
-  const availH = sidebarRef.current ? sidebarRef.current.clientHeight - 28 : 600;
-  const viewportSize = Math.max(1, Math.floor(availH / tileH));
-  const margin = Math.min(3, Math.floor(viewportSize / 4));
+  // Tile height = sidebar width (square tiles via aspect-ratio)
+  const tileH = containerRef.current?.clientWidth || 48;
+  const viewH = containerRef.current?.clientHeight || 600;
+  const visibleCount = Math.ceil(viewH / tileH) + BUFFER * 2;
 
-  const lo = Math.max(0, cursor - (viewportSize - margin - 1));
-  const hi = Math.max(0, cursor - margin);
-  let s = scrollTop.value;
-  if (s < lo) s = lo;
-  if (s > hi) s = hi;
-  scrollTop.value = s;
+  // Render window: always includes cursor
+  const scrollIdx = Math.floor(scrollY.current / tileH);
+  let start = Math.max(0, scrollIdx - BUFFER);
+  let end = Math.min(items.length, scrollIdx + visibleCount);
+  // Ensure cursor tile is rendered
+  if (cursor < start) start = cursor;
+  if (cursor >= end) end = cursor + 1;
 
-  // Anchor-based virtual scroll for smooth animation
-  const BUFFER = 8;
-  let a = anchor.value;
-  if (s < a + 1 || s + viewportSize > a + viewportSize + BUFFER * 2 - 1 || a >= items.length) {
-    a = Math.max(0, s - BUFFER);
-    anchor.value = a;
-    noAnim.value = true;
-  }
-
-  const renderStart = a;
-  const renderEnd = Math.min(items.length, a + viewportSize + BUFFER * 2);
-  const visible = items.slice(renderStart, renderEnd);
-  const offsetPx = (s - renderStart) * tileH;
-
+  // Scroll active tile into view on cursor change
   useEffect(() => {
-    if (noAnim.value) {
-      requestAnimationFrame(() => { noAnim.value = false; });
-    }
-  });
+    activeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  const onScroll = useCallback((e: Event) => {
+    const el = e.target as HTMLElement;
+    scrollY.current = el.scrollTop;
+    scrollTop.value = el.scrollTop;
+  }, []);
 
   function onWheel(e: WheelEvent) {
     e.preventDefault();
@@ -50,19 +45,24 @@ export function Sidebar() {
     if (delta) moveCursor(delta);
   }
 
+  const totalH = items.length * tileH;
+
   return (
-    <div class="sidebar" ref={sidebarRef} onWheel={onWheel}>
-      <div
-        class={`sidebar-track${noAnim.value ? "" : " sidebar-animate"}`}
-        style={{ transform: `translateY(-${offsetPx}px)` }}
-      >
-        {visible.map((file, i) => (
-          <Tile
-            key={file.id}
-            file={file}
-            active={renderStart + i === cursor}
-          />
-        ))}
+    <div class="sidebar" ref={containerRef} onScroll={onScroll} onWheel={onWheel}>
+      <div class="sidebar-track" style={{ height: totalH, position: "relative" }}>
+        {items.slice(start, end).map((file, i) => {
+          const idx = start + i;
+          return (
+            <div
+              key={file.id}
+              ref={idx === cursor ? activeRef : undefined}
+              class="sidebar-slot"
+              style={{ position: "absolute", top: idx * tileH, width: "100%", height: tileH }}
+            >
+              <Tile file={file} active={idx === cursor} />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

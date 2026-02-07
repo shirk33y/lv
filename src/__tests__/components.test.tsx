@@ -305,8 +305,7 @@ describe("Sidebar", () => {
   it("marks active tile", () => {
     resetStore([makeFile(1), makeFile(2), makeFile(3)], 1);
     const { container } = render(<Sidebar />);
-    const activeTiles = container.querySelectorAll(".tile.active");
-    expect(activeTiles.length).toBe(1);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
 
   it("scrolls viewport when cursor is deep", () => {
@@ -323,23 +322,11 @@ describe("Sidebar", () => {
     const items = Array.from({ length: 20 }, (_, i) => makeFile(i + 1));
     resetStore(items, 5);
     const { container } = render(<Sidebar />);
-    const tiles = container.querySelectorAll(".tile");
-    expect(tiles.length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".tile").length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
 
-  it("sidebar-track wrapper has width 100%", () => {
-    resetStore([makeFile(1), makeFile(2)], 0);
-    const { container } = render(<Sidebar />);
-    const track = container.querySelector(".sidebar-track");
-    expect(track).toBeTruthy();
-    // All tiles must be inside the track
-    const tilesInTrack = track!.querySelectorAll(".tile");
-    expect(tilesInTrack.length).toBe(2);
-    // No tiles outside the track
-    const allTiles = container.querySelectorAll(".tile");
-    expect(allTiles.length).toBe(tilesInTrack.length);
-  });
+  // --- DOM structure ---
 
   it("sidebar-track is direct child of sidebar", () => {
     resetStore([makeFile(1)], 0);
@@ -349,40 +336,49 @@ describe("Sidebar", () => {
     expect(track).toBeTruthy();
   });
 
-  it("sidebar-track gets animate class when not suppressed", () => {
-    resetStore([makeFile(1), makeFile(2), makeFile(3)], 0);
+  it("all tiles live inside sidebar-track", () => {
+    resetStore([makeFile(1), makeFile(2)], 0);
     const { container } = render(<Sidebar />);
-    const track = container.querySelector(".sidebar-track");
-    // After initial render + effect, the track should have animate class
-    expect(track).toBeTruthy();
-    // On first render noAnim may be true, but track always has sidebar-track
-    expect(track!.classList.contains("sidebar-track")).toBe(true);
+    const track = container.querySelector(".sidebar-track")!;
+    expect(track.querySelectorAll(".tile").length).toBe(2);
+    expect(container.querySelectorAll(".tile").length).toBe(2);
   });
 
-  it("sidebar-track has transform style", () => {
-    const items = Array.from({ length: 20 }, (_, i) => makeFile(i + 1));
-    resetStore(items, 10);
-    const { container } = render(<Sidebar />);
-    const track = container.querySelector(".sidebar-track") as HTMLElement;
-    expect(track).toBeTruthy();
-    expect(track.style.transform).toMatch(/translateY/);
-  });
-
-  it("tiles are rendered inside track, never directly in sidebar", () => {
+  it("tiles are wrapped in absolutely-positioned sidebar-slot divs", () => {
     resetStore([makeFile(1), makeFile(2), makeFile(3)], 1);
     const { container } = render(<Sidebar />);
-    const sidebar = container.querySelector(".sidebar")!;
-    // Direct children of sidebar should only be the track div
-    const directChildren = Array.from(sidebar.children);
-    expect(directChildren.length).toBe(1);
-    expect(directChildren[0].classList.contains("sidebar-track")).toBe(true);
+    const slots = container.querySelectorAll(".sidebar-slot");
+    expect(slots.length).toBe(3);
+    slots.forEach((slot) => {
+      expect((slot as HTMLElement).style.position).toBe("absolute");
+      expect(slot.querySelector(".tile")).toBeTruthy();
+    });
   });
 
-  it("single file renders one tile at full track width", () => {
+  it("sidebar-track height equals items * tileH", () => {
+    const items = Array.from({ length: 10 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 0);
+    const { container } = render(<Sidebar />);
+    const track = container.querySelector(".sidebar-track") as HTMLElement;
+    // tileH fallback = 48 in jsdom (clientWidth is 0)
+    expect(parseInt(track.style.height)).toBe(10 * 48);
+  });
+
+  it("slot top positions are sequential multiples of tileH", () => {
+    const items = Array.from({ length: 5 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 0);
+    const { container } = render(<Sidebar />);
+    const slots = container.querySelectorAll(".sidebar-slot") as NodeListOf<HTMLElement>;
+    const tops = Array.from(slots).map((s) => parseInt(s.style.top));
+    expect(tops).toEqual([0, 48, 96, 144, 192]);
+  });
+
+  // --- Active tile correctness ---
+
+  it("single file renders one active tile", () => {
     resetStore([makeFile(1)], 0);
     const { container } = render(<Sidebar />);
-    const tiles = container.querySelectorAll(".tile");
-    expect(tiles.length).toBe(1);
+    expect(container.querySelectorAll(".tile").length).toBe(1);
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
 
@@ -391,16 +387,8 @@ describe("Sidebar", () => {
     resetStore(items, 3);
     const { container } = render(<Sidebar />);
     const tiles = container.querySelectorAll(".tile");
-    const activeIdx = Array.from(tiles).findIndex(t => t.classList.contains("active"));
+    const activeIdx = Array.from(tiles).findIndex((t) => t.classList.contains("active"));
     expect(activeIdx).toBeGreaterThanOrEqual(0);
-    // Exactly one active
-    expect(container.querySelectorAll(".tile.active").length).toBe(1);
-  });
-
-  it("cursor at last item still renders active tile", () => {
-    const items = Array.from({ length: 30 }, (_, i) => makeFile(i + 1));
-    resetStore(items, 29);
-    const { container } = render(<Sidebar />);
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
 
@@ -411,15 +399,65 @@ describe("Sidebar", () => {
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
   });
 
-  it("large file list still renders a bounded number of tiles", () => {
+  it("cursor at last item renders active tile", () => {
+    const items = Array.from({ length: 30 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 29);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("cursor at middle of large list renders active tile", () => {
+    const items = Array.from({ length: 100 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 50);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  // --- Virtualization ---
+
+  it("large file list renders bounded number of tiles", () => {
     const items = Array.from({ length: 500 }, (_, i) => makeFile(i + 1));
     resetStore(items, 250);
     const { container } = render(<Sidebar />);
     const tiles = container.querySelectorAll(".tile");
-    // Should render buffer, not all 500
     expect(tiles.length).toBeLessThan(500);
     expect(tiles.length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".tile.active").length).toBe(1);
+  });
+
+  it("track height scales with total items even when virtualized", () => {
+    const items = Array.from({ length: 500 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 0);
+    const { container } = render(<Sidebar />);
+    const track = container.querySelector(".sidebar-track") as HTMLElement;
+    expect(parseInt(track.style.height)).toBe(500 * 48);
+  });
+
+  it("active slot has correct top for its cursor index", () => {
+    const items = Array.from({ length: 20 }, (_, i) => makeFile(i + 1));
+    resetStore(items, 7);
+    const { container } = render(<Sidebar />);
+    const activeSlot = container.querySelector(".sidebar-slot:has(.tile.active)") as HTMLElement;
+    expect(activeSlot).toBeTruthy();
+    expect(parseInt(activeSlot.style.top)).toBe(7 * 48);
+  });
+
+  // --- Edge cases ---
+
+  it("cursor beyond items length clamps to empty", () => {
+    resetStore([], 5);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelectorAll(".tile").length).toBe(0);
+  });
+
+  it("two files, cursor on second", () => {
+    resetStore([makeFile(1), makeFile(2)], 1);
+    const { container } = render(<Sidebar />);
+    const active = container.querySelector(".tile.active");
+    expect(active).toBeTruthy();
+    const slots = container.querySelectorAll(".sidebar-slot");
+    const activeSlot = Array.from(slots).find((s) => s.querySelector(".tile.active"));
+    expect(parseInt((activeSlot as HTMLElement).style.top)).toBe(48);
   });
 });
 
