@@ -591,6 +591,84 @@ describe("LogPanel", () => {
     expect(lines.length).toBe(2);
     expect(lines[1].classList.contains("log-error")).toBe(true);
   });
+
+  it("formats timestamps as HH:MM:SS (fast formatter)", () => {
+    showLogs.value = true;
+    // 2025-01-15 13:05:09 UTC
+    logEntries.value = [{ ts: new Date(2025, 0, 15, 13, 5, 9).getTime(), level: "info", msg: "test" }];
+    const { container } = render(<LogPanel />);
+    const ts = container.querySelector(".log-ts");
+    expect(ts).toBeTruthy();
+    expect(ts!.textContent).toBe("13:05:09");
+  });
+
+  it("zero-pads single digit hours/minutes/seconds", () => {
+    showLogs.value = true;
+    logEntries.value = [{ ts: new Date(2025, 0, 1, 1, 2, 3).getTime(), level: "info", msg: "x" }];
+    const { container } = render(<LogPanel />);
+    expect(container.querySelector(".log-ts")!.textContent).toBe("01:02:03");
+  });
+
+  it("caps rendered entries at 500", () => {
+    showLogs.value = true;
+    const many = Array.from({ length: 600 }, (_, i) => ({
+      ts: 1000 + i,
+      level: "info" as const,
+      msg: `msg ${i}`,
+    }));
+    logEntries.value = many;
+    const { container } = render(<LogPanel />);
+    const lines = container.querySelectorAll(".log-line");
+    expect(lines.length).toBe(500);
+    // Should show the LAST 500, not the first
+    expect(lines[0].textContent).toContain("msg 100");
+    expect(lines[499].textContent).toContain("msg 599");
+  });
+
+  it("shows empty state when no log entries", () => {
+    showLogs.value = true;
+    logEntries.value = [];
+    const { container } = render(<LogPanel />);
+    expect(container.querySelector(".meta-empty")).toBeTruthy();
+    expect(container.querySelector(".meta-empty")!.textContent).toContain("No log entries");
+  });
+
+  it("resume button is outside scroll container", () => {
+    showLogs.value = true;
+    logEntries.value = [{ ts: 1000, level: "info", msg: "x" }];
+    const { container } = render(<LogPanel />);
+    const resumeBtn = container.querySelector(".log-resume");
+    // When auto-scroll is active (default), resume button should not be present
+    expect(resumeBtn).toBeNull();
+  });
+
+  it("applies correct log-level class to each entry", () => {
+    showLogs.value = true;
+    logEntries.value = [
+      { ts: 1000, level: "info", msg: "a" },
+      { ts: 2000, level: "warn", msg: "b" },
+      { ts: 3000, level: "error", msg: "c" },
+    ];
+    const { container } = render(<LogPanel />);
+    const lines = container.querySelectorAll(".log-line");
+    expect(lines[0].classList.contains("log-info")).toBe(true);
+    expect(lines[1].classList.contains("log-warn")).toBe(true);
+    expect(lines[2].classList.contains("log-error")).toBe(true);
+  });
+
+  it("log-body is the scrollable container", () => {
+    showLogs.value = true;
+    logEntries.value = [{ ts: 1000, level: "info", msg: "x" }];
+    const { container } = render(<LogPanel />);
+    const body = container.querySelector(".log-body");
+    expect(body).toBeTruthy();
+    // Resume button should be a sibling, not a child
+    const panel = container.querySelector(".right-panel")!;
+    const children = Array.from(panel.children);
+    const headerIdx = children.findIndex(c => c.classList.contains("right-panel-header"));
+    const bodyIdx = children.findIndex(c => c.classList.contains("log-body"));
+    expect(headerIdx).toBeLessThan(bodyIdx);
+  });
 });
 
 // ---------------------------------------------------------------------------

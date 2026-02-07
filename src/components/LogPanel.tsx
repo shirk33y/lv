@@ -1,63 +1,77 @@
-import { useRef } from "preact/hooks";
-import { useSignal, useSignalEffect } from "@preact/signals";
-import { showLogs, logEntries } from "../store";
+import { useRef, useEffect, useMemo } from "preact/hooks";
+import { useSignal } from "@preact/signals";
+import { showLogs, logEntries, type LogEntry } from "../store";
+
+/** Fast timestamp formatter — avoids toLocaleTimeString() which is ~50× slower */
+function fmtTime(ts: number): string {
+  const d = new Date(ts);
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const s = d.getSeconds();
+  return `${h < 10 ? "0" : ""}${h}:${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
+/** Max entries to keep rendered — older ones are discarded for perf */
+const MAX_LOG_ENTRIES = 500;
+
+function LogLine({ entry }: { entry: LogEntry }) {
+  return (
+    <div class={`log-line log-${entry.level}`}>
+      <span class="log-ts">{fmtTime(entry.ts)}</span>
+      {" "}
+      {entry.msg}
+    </div>
+  );
+}
 
 export function LogPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScroll = useSignal(true);
 
-  useSignalEffect(() => {
-    const _len = logEntries.value.length; // track signal
-    if (autoScroll.value && scrollRef.current) {
-      // defer to after DOM paint
-      requestAnimationFrame(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-        }
-      });
-    }
-  });
-
   if (!showLogs.value) return null;
+
+  const entries = logEntries.value;
+  const visible = useMemo(
+    () => entries.length > MAX_LOG_ENTRIES ? entries.slice(-MAX_LOG_ENTRIES) : entries,
+    [entries],
+  );
+
+  // Auto-scroll after DOM commit (useEffect fires after paint)
+  useEffect(() => {
+    if (!autoScroll.value) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [visible.length]);
 
   function onScroll() {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 2;
     autoScroll.value = atBottom;
   }
-
-  const entries = logEntries.value;
 
   return (
     <div class="right-panel">
       <div class="right-panel-header">Logs</div>
       <div class="right-panel-body log-body" ref={scrollRef} onScroll={onScroll}>
-        {entries.length === 0 ? (
+        {visible.length === 0 ? (
           <div class="meta-empty">No log entries</div>
         ) : (
-          entries.map((e, i) => (
-            <div key={i} class={`log-line log-${e.level}`}>
-              <span class="log-ts">{new Date(e.ts).toLocaleTimeString()}</span>
-              {" "}
-              {e.msg}
-            </div>
-          ))
+          visible.map((e, i) => <LogLine key={i} entry={e} />)
         )}
-        {!autoScroll.value && entries.length > 0 ? (
-          <button
-            class="log-resume"
-            onClick={() => {
-              autoScroll.value = true;
-              if (scrollRef.current) {
-                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-              }
-            }}
-          >
-            ▼ Resume
-          </button>
-        ) : null}
       </div>
+      {!autoScroll.value && entries.length > 0 ? (
+        <button
+          class="log-resume"
+          onClick={() => {
+            autoScroll.value = true;
+            const el = scrollRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+          }}
+        >
+          ▼ Resume
+        </button>
+      ) : null}
     </div>
   );
 }

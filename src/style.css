@@ -340,17 +340,16 @@ html, body, #app {
 }
 
 .log-resume {
-  position: sticky;
-  bottom: 0.25rem;
   display: block;
-  margin: 0.25rem auto 0;
+  width: 100%;
   padding: 0.25rem 0.875rem;
   background: #333;
   color: #ccc;
-  border: 1px solid #555;
-  border-radius: 0.25rem;
+  border: none;
+  border-top: 1px solid #555;
   font-size: 0.6875rem;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .log-resume:hover {
