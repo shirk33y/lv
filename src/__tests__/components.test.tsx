@@ -126,35 +126,82 @@ describe("StatusBar", () => {
     expect(container.textContent).toContain("b.jpg");
   });
 
-  it("shows job status when active jobs exist", () => {
+  it("shows active jobs with compact format", () => {
     resetStore([makeFile(1)], 0);
     jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 5, jobs_running: 2, jobs_done: 10, jobs_failed: 0, watched_paths: [] };
     const { container } = render(<StatusBar />);
-    expect(container.textContent).toContain("2 running");
-    expect(container.textContent).toContain("5 queued");
+    expect(container.textContent).toContain("hash: 18/20");
+    expect(container.textContent).toContain("thumb: 15/20");
   });
 
-  it("shows idle status when no active jobs", () => {
+  it("shows no jobs when idle (all complete, no workers)", () => {
     resetStore([makeFile(1)], 0);
-    jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 0, jobs_running: 0, jobs_done: 10, jobs_failed: 0, watched_paths: [] };
+    jobStatus.value = { files: 20, dirs: 2, hashed: 20, thumbs: 20, watched: 1, jobs_pending: 0, jobs_running: 0, jobs_done: 10, jobs_failed: 0, watched_paths: [] };
     const { container } = render(<StatusBar />);
-    expect(container.textContent).toContain("thumbs: 15/20");
-    expect(container.textContent).toContain("hashed: 18/20");
+    expect(container.querySelector(".status-right")!.textContent).toBe("");
   });
 
-  it("shows failed count when jobs failed", () => {
+  it("shows error count with !N on active job", () => {
     resetStore([makeFile(1)], 0);
-    jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 0, jobs_running: 0, jobs_done: 10, jobs_failed: 3, watched_paths: [] };
+    jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 1, jobs_running: 1, jobs_done: 10, jobs_failed: 3, watched_paths: [] };
     const { container } = render(<StatusBar />);
-    expect(container.textContent).toContain("3 failed");
+    const errors = container.querySelector(".status-job-errors");
+    expect(errors).toBeTruthy();
+    expect(errors!.textContent).toBe("!3");
   });
 
-  it("has left and right sections", () => {
+  it("errors not shown when jobs_failed is 0", () => {
+    resetStore([makeFile(1)], 0);
+    jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 1, jobs_running: 1, jobs_done: 10, jobs_failed: 0, watched_paths: [] };
+    const { container } = render(<StatusBar />);
+    expect(container.querySelector(".status-job-errors")).toBeNull();
+  });
+
+  it("separator / has status-job-sep class", () => {
+    resetStore([makeFile(1)], 0);
+    jobStatus.value = { files: 20, dirs: 2, hashed: 18, thumbs: 15, watched: 1, jobs_pending: 1, jobs_running: 1, jobs_done: 10, jobs_failed: 0, watched_paths: [] };
+    const { container } = render(<StatusBar />);
+    const seps = container.querySelectorAll(".status-job-sep");
+    expect(seps.length).toBeGreaterThan(0);
+    expect(seps[0].textContent).toBe("/");
+  });
+
+  it("has left, center, and right sections", () => {
     resetStore([makeFile(1)], 0);
     jobStatus.value = { files: 5, dirs: 1, hashed: 0, thumbs: 0, watched: 1, jobs_pending: 1, jobs_running: 0, jobs_done: 0, jobs_failed: 0, watched_paths: [] };
     const { container } = render(<StatusBar />);
     expect(container.querySelector(".status-left")).toBeTruthy();
+    expect(container.querySelector(".status-center")).toBeTruthy();
     expect(container.querySelector(".status-right")).toBeTruthy();
+  });
+
+  it("pager is centered in status-center", () => {
+    resetStore([makeFile(1), makeFile(2), makeFile(3)], 1);
+    const { container } = render(<StatusBar />);
+    const center = container.querySelector(".status-center");
+    expect(center).toBeTruthy();
+    expect(center!.textContent).toContain("2/3");
+  });
+
+  it("heart icon shown left of pager when file is liked", () => {
+    const file: FileEntry = { id: 1, path: "/a/f1.jpg", dir: "/a", filename: "f1.jpg", meta_id: 1, thumb_ready: true, shadow: null, liked: true };
+    resetStore([file], 0);
+    const { container } = render(<StatusBar />);
+    const heart = container.querySelector(".status-heart");
+    expect(heart).toBeTruthy();
+    expect(heart!.textContent).toBe("♥");
+    // Heart comes before pager in center
+    const center = container.querySelector(".status-center")!;
+    const children = Array.from(center.children);
+    const heartIdx = children.findIndex((c) => c.classList.contains("status-heart"));
+    const pagerIdx = children.findIndex((c) => c.classList.contains("status-pager"));
+    expect(heartIdx).toBeLessThan(pagerIdx);
+  });
+
+  it("heart icon hidden when file is not liked", () => {
+    resetStore([makeFile(1)], 0);
+    const { container } = render(<StatusBar />);
+    expect(container.querySelector(".status-heart")).toBeNull();
   });
 
   it("shows relative path when cwd is set", () => {
