@@ -5,7 +5,11 @@
 !include "WinMessages.nsh"
 
 Name "lv"
-OutFile "lv-setup.exe"
+; Pass -DLV_VERSION=x.y.z-hash on command line, or defaults to "dev"
+!ifndef LV_VERSION
+  !define LV_VERSION "dev"
+!endif
+OutFile "lv-setup-${LV_VERSION}.exe"
 InstallDir "$LOCALAPPDATA\lv"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma

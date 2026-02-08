@@ -1,12 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-//! lv-imgui POC: full viewer with database, dual-path rendering, preloading.
-//!
-//! - Images: `image` crate decode → GL texture (feh-speed), LRU preload cache
-//! - Videos: mpv render API
-//! - Navigation: j/k h/l u n m b y f c q — same as Tauri version
-//! - Reads from existing lv.db
-//!
-//! Usage: cargo run --release [-- <dir_override>]
+// lv-imgui: full viewer with database, dual-path rendering, preloading.
+// Images: image crate decode → GL texture, LRU preload cache
+// Videos: mpv render API
+// Usage: cargo run --release [-- <dir_override>]
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_HASH: &str = env!("GIT_HASH");
 
 mod aimeta;
 mod cli;
@@ -1405,12 +1404,14 @@ fn update_title(window: &sdl2::video::Window, files: &[FileEntry], cursor: usize
         let clean = clean_path(dir);
         let dir_short = clean.rsplit(['/', '\\']).next().unwrap_or(&clean);
         let title = format!(
-            "[{}/{}] {}{} — {} — lv",
+            "[{}/{}] {}{} — {} — lv {}-{}",
             cursor + 1,
             files.len(),
             file.filename,
             like,
             dir_short,
+            VERSION,
+            GIT_HASH,
         );
         unsafe {
             let c_title = std::ffi::CString::new(title).unwrap();

@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
+LV_VERSION="${LV_VERSION:-$(git -C "$(dirname "$0")/.." describe --always --dirty 2>/dev/null || echo dev)}"
 APP="lv"
 APPDIR="AppDir"
 
@@ -70,7 +71,7 @@ fi
 
 # Build AppImage
 echo "==> Building AppImage"
-ARCH="$ARCH" ./"$TOOL" "$APPDIR" "lv-${ARCH}.AppImage"
+ARCH="$ARCH" ./"$TOOL" "$APPDIR" "lv-${LV_VERSION}-${ARCH}.AppImage"
 
-echo "==> Done: lv-${ARCH}.AppImage"
+echo "==> Done: lv-${LV_VERSION}-${ARCH}.AppImage"
 rm -rf "$APPDIR"
