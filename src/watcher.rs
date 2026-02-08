@@ -176,13 +176,19 @@ fn run_watcher(
 }
 
 fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
+    let is_remove = matches!(event.kind, EventKind::Remove(_));
+
     for path in &event.paths {
-        // Skip non-media files
-        if path.is_file() && !is_media(path) {
+        // Skip directories (we only care about files)
+        if path.is_dir() {
             continue;
         }
-        // Skip directories themselves (we only care about files)
-        if path.is_dir() {
+        // For removes the file no longer exists on disk, so is_file() is false.
+        // Filter by extension instead.
+        if !is_remove && path.is_file() && !is_media(path) {
+            continue;
+        }
+        if is_remove && !is_media(path) {
             continue;
         }
 
@@ -234,17 +240,24 @@ fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
                 tx.send(FsEvent::Changed(dir)).ok();
             }
             EventKind::Remove(_) => {
-                // For removed files, path may not exist anymore so we can't canonicalize.
-                // Try to match by the raw path string.
-                if db.file_lookup(&path_str).is_some() {
-                    db.remove_file_by_path(&path_str);
+                // File no longer exists so we can't canonicalize.
+                // Try both raw and clean_path forms to match the DB.
+                let clean = crate::clean_path(&path_str);
+                let found = db.file_lookup(&clean).or_else(|| db.file_lookup(&path_str));
+                if found.is_some() {
+                    let matched = if db.file_lookup(&clean).is_some() {
+                        &clean
+                    } else {
+                        &path_str
+                    };
+                    db.remove_file_by_path(matched);
                     let dir = path
                         .parent()
                         .unwrap_or(Path::new(""))
                         .to_string_lossy()
                         .to_string();
-                    eprintln!("watcher: removed {}", path_str);
-                    tx.send(FsEvent::Removed(dir)).ok();
+                    eprintln!("watcher: removed {}", matched);
+                    tx.send(FsEvent::Removed(crate::clean_path(&dir))).ok();
                 }
             }
             _ => {}
