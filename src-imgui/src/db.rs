@@ -143,6 +143,36 @@ impl Db {
             .ok();
     }
 
+    pub fn dir_is_tracked(&self, path: &str) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT 1 FROM directories WHERE path = ?1 AND tracked = 1",
+                [path],
+                |_| Ok(true),
+            )
+            .unwrap_or(false)
+    }
+
+    /// Check if a parent directory (or ancestor) is already tracked recursively.
+    pub fn dir_is_covered(&self, path: &str) -> bool {
+        let db = self.conn();
+        let mut stmt = db
+            .prepare("SELECT path FROM directories WHERE tracked = 1 AND recursive = 1")
+            .unwrap();
+        let tracked: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let p = path.to_string();
+        for dir in &tracked {
+            if p == *dir || p.starts_with(&format!("{}/", dir)) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn dir_untrack(&self, path: &str) {
         self.conn()
             .execute(
@@ -885,6 +915,7 @@ mod tests {
                  filename TEXT NOT NULL,
                  meta_id INTEGER REFERENCES meta(id),
                  modified_at TEXT DEFAULT '',
+                 size INTEGER,
                  temporary INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE history (
@@ -1021,5 +1052,375 @@ mod tests {
         let f = db.random_file();
         assert!(f.is_some());
         assert_eq!(f.unwrap().id, 1);
+    }
+
+    // ── Directory tracking tests ────────────────────────────────────────
+
+    #[test]
+    fn dir_track_and_untrack() {
+        let db = test_db();
+        assert!(!db.dir_is_tracked("/photos"));
+
+        db.dir_track("/photos", true);
+        assert!(db.dir_is_tracked("/photos"));
+
+        db.dir_untrack("/photos");
+        assert!(!db.dir_is_tracked("/photos"));
+    }
+
+    #[test]
+    fn dir_track_idempotent() {
+        let db = test_db();
+        db.dir_track("/photos", true);
+        db.dir_track("/photos", true);
+        assert!(db.dir_is_tracked("/photos"));
+
+        // Re-track with different recursive flag updates it
+        db.dir_track("/photos", false);
+        let list = db.tracked_list();
+        assert_eq!(list.len(), 1);
+        assert!(!list[0].1); // recursive = false now
+    }
+
+    #[test]
+    fn dir_track_updates_recursive_flag() {
+        let db = test_db();
+        db.dir_track("/a", true);
+        assert!(db.tracked_list()[0].1); // recursive
+
+        db.dir_track("/a", false);
+        assert!(!db.tracked_list()[0].1); // now non-recursive
+    }
+
+    #[test]
+    fn dir_watch_requires_tracked() {
+        let db = test_db();
+        // Watching a non-tracked dir does nothing
+        db.dir_watch("/photos");
+        assert!(db.watched_list().is_empty());
+
+        // Track then watch
+        db.dir_track("/photos", true);
+        db.dir_watch("/photos");
+        assert_eq!(db.watched_list(), vec!["/photos"]);
+
+        // Unwatch
+        db.dir_unwatch("/photos");
+        assert!(db.watched_list().is_empty());
+        // Still tracked
+        assert!(db.dir_is_tracked("/photos"));
+    }
+
+    #[test]
+    fn dir_untrack_also_unwatches() {
+        let db = test_db();
+        db.dir_track("/photos", true);
+        db.dir_watch("/photos");
+        assert_eq!(db.watched_list().len(), 1);
+
+        db.dir_untrack("/photos");
+        assert!(db.watched_list().is_empty());
+        assert!(!db.dir_is_tracked("/photos"));
+    }
+
+    #[test]
+    fn tracked_list_shows_flags() {
+        let db = test_db();
+        db.dir_track("/a", true);
+        db.dir_track("/b", false);
+        db.dir_watch("/a");
+
+        let list = db.tracked_list();
+        assert_eq!(list.len(), 2);
+        // /a: recursive=true, watched=true
+        assert_eq!(list[0].0, "/a");
+        assert!(list[0].1);
+        assert!(list[0].2);
+        // /b: recursive=false, watched=false
+        assert_eq!(list[1].0, "/b");
+        assert!(!list[1].1);
+        assert!(!list[1].2);
+    }
+
+    // ── dir_is_covered tests (ancestor tracking) ────────────────────────
+
+    #[test]
+    fn dir_is_covered_exact_match() {
+        let db = test_db();
+        db.dir_track("/photos", true);
+        assert!(db.dir_is_covered("/photos"));
+    }
+
+    #[test]
+    fn dir_is_covered_child_of_recursive() {
+        let db = test_db();
+        db.dir_track("/photos", true);
+        assert!(db.dir_is_covered("/photos/vacation"));
+        assert!(db.dir_is_covered("/photos/vacation/day1"));
+    }
+
+    #[test]
+    fn dir_is_covered_not_child_of_nonrecursive() {
+        let db = test_db();
+        db.dir_track("/photos", false);
+        // Non-recursive: exact match is covered, children are NOT
+        assert!(!db.dir_is_covered("/photos/vacation"));
+        // Exact match is not covered either since recursive=0
+        assert!(!db.dir_is_covered("/photos"));
+    }
+
+    #[test]
+    fn dir_is_covered_no_false_prefix_match() {
+        let db = test_db();
+        db.dir_track("/photo", true);
+        // "/photos" should NOT match "/photo" — it's not a child
+        assert!(!db.dir_is_covered("/photos"));
+        assert!(!db.dir_is_covered("/photography"));
+        // But "/photo/x" should match
+        assert!(db.dir_is_covered("/photo/x"));
+    }
+
+    #[test]
+    fn dir_is_covered_untracked_not_covered() {
+        let db = test_db();
+        db.dir_track("/photos", true);
+        db.dir_untrack("/photos");
+        assert!(!db.dir_is_covered("/photos/vacation"));
+    }
+
+    // ── Temporary flag tests ────────────────────────────────────────────
+
+    #[test]
+    fn set_temporary_flag() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        // Default: not temporary
+        let f = db.files_by_dir("/a");
+        assert!(!f[0].temporary);
+
+        // Set temporary
+        db.set_temporary(1, true);
+        let f = db.files_by_dir("/a");
+        assert!(f[0].temporary);
+
+        // Unset
+        db.set_temporary(1, false);
+        let f = db.files_by_dir("/a");
+        assert!(!f[0].temporary);
+    }
+
+    // ── Collection tests (tag-based) ────────────────────────────────────
+
+    #[test]
+    fn collection_0_excludes_temporary() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.set_temporary(2, true);
+
+        let c0 = db.files_by_collection(0);
+        assert_eq!(c0.len(), 1);
+        assert_eq!(c0[0].id, 1);
+
+        assert!(db.file_in_collection(1, 0));
+        assert!(!db.file_in_collection(2, 0));
+    }
+
+    #[test]
+    fn collection_1_only_temporary() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.set_temporary(2, true);
+
+        let c1 = db.files_by_collection(1);
+        assert_eq!(c1.len(), 1);
+        assert_eq!(c1[0].id, 2);
+
+        assert!(!db.file_in_collection(1, 1));
+        assert!(db.file_in_collection(2, 1));
+    }
+
+    #[test]
+    fn collection_9_is_liked() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.toggle_like(1);
+
+        let c9 = db.files_by_collection(9);
+        assert_eq!(c9.len(), 1);
+        assert_eq!(c9[0].id, 1);
+
+        assert!(db.file_in_collection(1, 9));
+        assert!(!db.file_in_collection(2, 9));
+    }
+
+    #[test]
+    fn toggle_collection_tag_c2_through_c8() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        // Toggle c3 on
+        let on = db.toggle_collection(1, 3);
+        assert!(on);
+        assert!(db.file_in_collection(1, 3));
+
+        let c3 = db.files_by_collection(3);
+        assert_eq!(c3.len(), 1);
+
+        // Toggle c3 off
+        let off = db.toggle_collection(1, 3);
+        assert!(!off);
+        assert!(!db.file_in_collection(1, 3));
+        assert!(db.files_by_collection(3).is_empty());
+    }
+
+    #[test]
+    fn multiple_collection_tags_independent() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        db.toggle_collection(1, 2);
+        db.toggle_collection(1, 5);
+
+        assert!(db.file_in_collection(1, 2));
+        assert!(db.file_in_collection(1, 5));
+        assert!(!db.file_in_collection(1, 3));
+
+        // Removing c2 doesn't affect c5
+        db.toggle_collection(1, 2);
+        assert!(!db.file_in_collection(1, 2));
+        assert!(db.file_in_collection(1, 5));
+    }
+
+    #[test]
+    fn collection_count_size() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        insert_file(&db, 3, "/a/3.jpg", "/a", "3.jpg");
+
+        // All non-temporary → collection 0
+        let (count, _size) = db.collection_count_size(0);
+        assert_eq!(count, 3);
+
+        // Mark one temporary
+        db.set_temporary(3, true);
+        let (c0, _) = db.collection_count_size(0);
+        let (c1, _) = db.collection_count_size(1);
+        assert_eq!(c0, 2);
+        assert_eq!(c1, 1);
+
+        // Tag collection
+        db.toggle_collection(1, 4);
+        let (c4, _) = db.collection_count_size(4);
+        assert_eq!(c4, 1);
+    }
+
+    #[test]
+    fn random_in_collection_respects_filter() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.set_temporary(1, true);
+
+        // Random in collection 0 should never return file 1
+        for _ in 0..20 {
+            let f = db.random_in_collection(0);
+            assert!(f.is_some());
+            assert_eq!(f.unwrap().id, 2);
+        }
+
+        // Random in collection 1 should only return file 1
+        for _ in 0..20 {
+            let f = db.random_in_collection(1);
+            assert!(f.is_some());
+            assert_eq!(f.unwrap().id, 1);
+        }
+    }
+
+    #[test]
+    fn random_in_empty_collection_returns_none() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        // No temporary files → collection 1 is empty
+        assert!(db.random_in_collection(1).is_none());
+        // No tagged files → collection 3 is empty
+        assert!(db.random_in_collection(3).is_none());
+        // No liked files → collection 9 is empty
+        assert!(db.random_in_collection(9).is_none());
+    }
+
+    #[test]
+    fn collection_tag_helper() {
+        assert_eq!(collection_tag(2), "c2");
+        assert_eq!(collection_tag(8), "c8");
+        assert_eq!(collection_tag(9), "like");
+        assert_eq!(collection_tag(0), "");
+        assert_eq!(collection_tag(1), "");
+        assert_eq!(collection_tag(10), "");
+    }
+
+    #[test]
+    fn toggle_collection_on_file_without_meta_returns_false() {
+        let db = test_db();
+        // Insert file without meta_id
+        db.conn()
+            .execute(
+                "INSERT INTO files (id, path, dir, filename) VALUES (99, '/x/y.jpg', '/x', 'y.jpg')",
+                [],
+            )
+            .unwrap();
+        let result = db.toggle_collection(99, 3);
+        assert!(!result);
+    }
+
+    #[test]
+    fn file_in_collection_nonexistent_file() {
+        let db = test_db();
+        assert!(!db.file_in_collection(999, 0));
+        assert!(!db.file_in_collection(999, 1));
+        assert!(!db.file_in_collection(999, 5));
+        assert!(!db.file_in_collection(999, 9));
+    }
+
+    #[test]
+    fn files_by_collection_invalid_returns_empty() {
+        let db = test_db();
+        assert!(db.files_by_collection(10).is_empty());
+        assert!(db.files_by_collection(255).is_empty());
+    }
+
+    #[test]
+    fn like_and_collection_tag_coexist() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        db.toggle_like(1);
+        db.toggle_collection(1, 4);
+
+        assert!(db.file_in_collection(1, 9)); // liked
+        assert!(db.file_in_collection(1, 4)); // c4
+        assert!(db.file_in_collection(1, 0)); // non-temporary
+
+        // Unlike doesn't remove c4
+        db.toggle_like(1);
+        assert!(!db.file_in_collection(1, 9));
+        assert!(db.file_in_collection(1, 4));
+    }
+
+    #[test]
+    fn temporary_file_in_tagged_collection() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        db.set_temporary(1, true);
+        db.toggle_collection(1, 3);
+
+        // Temporary file can still be in tag collections
+        assert!(db.file_in_collection(1, 1)); // temporary
+        assert!(db.file_in_collection(1, 3)); // c3
+        assert!(!db.file_in_collection(1, 0)); // NOT in collection 0
     }
 }

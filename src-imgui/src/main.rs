@@ -359,29 +359,42 @@ fn main() {
     let (mut files, mut current_dir, cursor_init) = if let Some(p) = args.paths.first() {
         let path = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
         if path.is_file() {
-            // External file open → track parent non-recursively, mark temporary
             let parent = path.parent().unwrap_or(&path);
             let parent_str = parent.to_string_lossy();
-            lv_db.dir_track(&parent_str, false);
-            let count = scanner::discover(&lv_db, parent);
-            eprintln!(
-                "external open: {} ({} files in {})",
-                path.display(),
-                count,
-                parent_str
-            );
-            // Mark all files in this dir as temporary
-            for f in &lv_db.files_by_dir(&parent_str) {
-                lv_db.set_temporary(f.id, true);
+            let already_tracked =
+                lv_db.dir_is_tracked(&parent_str) || lv_db.dir_is_covered(&parent_str);
+
+            if already_tracked {
+                // File is in an already-tracked dir → open in dir mode, no temporary flag
+                scanner::discover(&lv_db, parent);
+                let f = lv_db.files_by_dir(&parent_str);
+                let idx = f
+                    .iter()
+                    .position(|e| e.path == path.to_string_lossy().as_ref())
+                    .unwrap_or(0);
+                eprintln!("open (tracked): {}", path.display());
+                (f, parent_str.to_string(), idx)
+            } else {
+                // External file open → track parent non-recursively, mark temporary
+                lv_db.dir_track(&parent_str, false);
+                let count = scanner::discover(&lv_db, parent);
+                eprintln!(
+                    "external open: {} ({} files in {})",
+                    path.display(),
+                    count,
+                    parent_str
+                );
+                for f in &lv_db.files_by_dir(&parent_str) {
+                    lv_db.set_temporary(f.id, true);
+                }
+                collection_mode = Some(1);
+                let all = lv_db.files_by_collection(1);
+                let idx = all
+                    .iter()
+                    .position(|f| f.path == path.to_string_lossy().as_ref())
+                    .unwrap_or(0);
+                (all, parent_str.to_string(), idx)
             }
-            // Switch to collection 1
-            collection_mode = Some(1);
-            let all = lv_db.files_by_collection(1);
-            let idx = all
-                .iter()
-                .position(|f| f.path == path.to_string_lossy().as_ref())
-                .unwrap_or(0);
-            (all, parent_str.to_string(), idx)
         } else if path.is_dir() {
             let dir_str = path.to_string_lossy().to_string();
             let f = lv_db.files_by_dir(&dir_str);
