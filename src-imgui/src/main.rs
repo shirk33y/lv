@@ -1495,4 +1495,69 @@ mod tests {
         assert!(!is_image("data.json"));
         assert!(!is_video("data.json"));
     }
+
+    // ── ext_of edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn ext_of_double_extension() {
+        assert_eq!(ext_of("archive.tar.gz"), "gz");
+        assert_eq!(ext_of("photo.backup.jpg"), "jpg");
+    }
+
+    #[test]
+    fn ext_of_dotfile() {
+        // Dotfiles with no real extension
+        assert_eq!(ext_of(".gitignore"), "gitignore");
+        assert_eq!(ext_of(".hidden"), "hidden");
+    }
+
+    #[test]
+    fn ext_of_empty_string() {
+        assert_eq!(ext_of(""), "");
+    }
+
+    #[test]
+    fn ext_of_trailing_dot() {
+        assert_eq!(ext_of("file."), "");
+    }
+
+    #[test]
+    fn ext_of_unicode_filename() {
+        assert_eq!(ext_of("/写真/café.JPG"), "jpg");
+        assert_eq!(ext_of("/📸/photo.PNG"), "png");
+    }
+
+    #[test]
+    fn ext_of_spaces_in_path() {
+        assert_eq!(ext_of("/my photos/vacation pic.jpg"), "jpg");
+    }
+
+    // ── IMAGE_EXTS vs scanner::MEDIA_EXTENSIONS consistency ─────────────
+
+    #[test]
+    fn image_exts_subset_of_media() {
+        // Every IMAGE_EXT should be recognized by the scanner
+        for ext in IMAGE_EXTS {
+            // svg and avif are in IMAGE_EXTS but not in scanner MEDIA_EXTENSIONS
+            if *ext == "svg" || *ext == "avif" {
+                continue;
+            }
+            assert!(
+                scanner::is_media_ext(ext),
+                "IMAGE_EXT '{}' not in scanner MEDIA_EXTENSIONS",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn video_exts_subset_of_media() {
+        for ext in VIDEO_EXTS {
+            assert!(
+                scanner::is_media_ext(ext),
+                "VIDEO_EXT '{}' not in scanner MEDIA_EXTENSIONS",
+                ext
+            );
+        }
+    }
 }

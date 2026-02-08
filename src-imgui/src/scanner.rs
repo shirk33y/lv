@@ -132,3 +132,108 @@ fn iso_lite(epoch_secs: u64) -> String {
 fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
+
+#[allow(dead_code)]
+pub fn is_media_ext(ext: &str) -> bool {
+    MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_leap ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn leap_years() {
+        assert!(is_leap(2000)); // divisible by 400
+        assert!(is_leap(2024)); // divisible by 4, not 100
+        assert!(is_leap(1600));
+        assert!(is_leap(2400));
+    }
+
+    #[test]
+    fn non_leap_years() {
+        assert!(!is_leap(1900)); // divisible by 100 but not 400
+        assert!(!is_leap(2100));
+        assert!(!is_leap(2023));
+        assert!(!is_leap(2025));
+        assert!(!is_leap(1));
+    }
+
+    // ── iso_lite ────────────────────────────────────────────────────────
+
+    #[test]
+    fn iso_lite_epoch_zero() {
+        assert_eq!(iso_lite(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso_lite_known_dates() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        assert_eq!(iso_lite(1704067200), "2024-01-01T00:00:00Z");
+        // 2000-01-01 00:00:00 UTC = 946684800
+        assert_eq!(iso_lite(946684800), "2000-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso_lite_with_time() {
+        // 1970-01-01 12:30:45 = 45045
+        assert_eq!(iso_lite(45045), "1970-01-01T12:30:45Z");
+    }
+
+    #[test]
+    fn iso_lite_leap_day() {
+        // 2024-02-29 00:00:00 UTC = 1709164800
+        assert_eq!(iso_lite(1709164800), "2024-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn iso_lite_end_of_year() {
+        // 2023-12-31 23:59:59 UTC = 1704067199
+        assert_eq!(iso_lite(1704067199), "2023-12-31T23:59:59Z");
+    }
+
+    // ── media extension filtering ───────────────────────────────────────
+
+    #[test]
+    fn media_ext_images() {
+        for ext in &[
+            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "heic", "heif", "ico",
+        ] {
+            assert!(is_media_ext(ext), "{} should be media", ext);
+        }
+    }
+
+    #[test]
+    fn media_ext_videos() {
+        for ext in &[
+            "mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
+        ] {
+            assert!(is_media_ext(ext), "{} should be media", ext);
+        }
+    }
+
+    #[test]
+    fn media_ext_case_insensitive() {
+        assert!(is_media_ext("JPG"));
+        assert!(is_media_ext("Png"));
+        assert!(is_media_ext("MKV"));
+        assert!(is_media_ext("WebM"));
+    }
+
+    #[test]
+    fn non_media_ext_rejected() {
+        for ext in &[
+            "txt", "pdf", "doc", "rs", "html", "css", "json", "xml", "zip", "exe", "sh", "py",
+            "svg", "avif",
+        ] {
+            assert!(!is_media_ext(ext), "{} should NOT be media", ext);
+        }
+    }
+
+    #[test]
+    fn empty_ext_rejected() {
+        assert!(!is_media_ext(""));
+    }
+}

@@ -643,4 +643,50 @@ mod tests {
     fn bundled_font_not_empty() {
         assert!(BUNDLED_FONT.len() > 1000, "font should be at least 1KB");
     }
+
+    // ── fmt_size ────────────────────────────────────────────────────────
+
+    #[test]
+    fn fmt_size_bytes() {
+        assert_eq!(fmt_size(0), "0 B");
+        assert_eq!(fmt_size(1), "1 B");
+        assert_eq!(fmt_size(512), "512 B");
+        assert_eq!(fmt_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn fmt_size_kilobytes() {
+        assert_eq!(fmt_size(1024), "1 KB");
+        assert_eq!(fmt_size(1536), "2 KB"); // 1.5 KB rounds to 2
+        assert_eq!(fmt_size(10240), "10 KB");
+        assert_eq!(fmt_size(1048575), "1024 KB"); // just under 1 MB
+    }
+
+    #[test]
+    fn fmt_size_megabytes() {
+        assert_eq!(fmt_size(1048576), "1.0 MB");
+        assert_eq!(fmt_size(1572864), "1.5 MB");
+        assert_eq!(fmt_size(104857600), "100.0 MB");
+    }
+
+    #[test]
+    fn fmt_size_gigabytes() {
+        assert_eq!(fmt_size(1073741824), "1.0 GB");
+        assert_eq!(fmt_size(2684354560), "2.5 GB");
+    }
+
+    // ── collection_name ─────────────────────────────────────────────────
+
+    #[test]
+    fn collection_name_values() {
+        assert_eq!(collection_name(None), "Library");
+        assert_eq!(collection_name(Some(0)), "C0 Permanent");
+        assert_eq!(collection_name(Some(1)), "C1 Temporary");
+        assert_eq!(collection_name(Some(9)), "C9 Favorites");
+        for c in 2..=8 {
+            assert_eq!(collection_name(Some(c)), format!("C{c}"));
+        }
+        assert_eq!(collection_name(Some(10)), "Collection");
+        assert_eq!(collection_name(Some(255)), "Collection");
+    }
 }

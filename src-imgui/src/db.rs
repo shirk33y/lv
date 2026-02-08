@@ -907,15 +907,31 @@ mod tests {
     fn test_db() -> Db {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE meta (id INTEGER PRIMARY KEY, tags TEXT DEFAULT '[]');
+            "CREATE TABLE meta (
+                 id INTEGER PRIMARY KEY,
+                 hash_sha512 TEXT NOT NULL UNIQUE,
+                 width INTEGER,
+                 height INTEGER,
+                 format TEXT,
+                 exif_json TEXT,
+                 pnginfo TEXT,
+                 duration_ms INTEGER,
+                 bitrate INTEGER,
+                 codecs TEXT,
+                 tags TEXT DEFAULT '[]',
+                 thumb_ready INTEGER DEFAULT 0,
+                 created_at TEXT DEFAULT (datetime('now'))
+             );
              CREATE TABLE files (
                  id INTEGER PRIMARY KEY,
-                 path TEXT NOT NULL,
+                 path TEXT NOT NULL UNIQUE,
                  dir TEXT NOT NULL,
                  filename TEXT NOT NULL,
-                 meta_id INTEGER REFERENCES meta(id),
-                 modified_at TEXT DEFAULT '',
                  size INTEGER,
+                 modified_at TEXT,
+                 hash_sha512 TEXT,
+                 meta_id INTEGER REFERENCES meta(id),
+                 created_at TEXT DEFAULT (datetime('now')),
                  temporary INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE history (
@@ -937,8 +953,12 @@ mod tests {
 
     fn insert_file(db: &Db, id: i64, path: &str, dir: &str, filename: &str) {
         let conn = db.conn();
-        conn.execute("INSERT INTO meta (id, tags) VALUES (?1, '[]')", [id])
-            .ok();
+        let hash = format!("hash_{}", id);
+        conn.execute(
+            "INSERT INTO meta (id, hash_sha512, tags) VALUES (?1, ?2, '[]')",
+            rusqlite::params![id, hash],
+        )
+        .ok();
         conn.execute(
             "INSERT INTO files (id, path, dir, filename, meta_id) VALUES (?1, ?2, ?3, ?4, ?1)",
             rusqlite::params![id, path, dir, filename],
@@ -1506,6 +1526,272 @@ mod tests {
         // The stored filename contains the replacement char, not the original byte
         assert!(files[0].filename.contains('\u{FFFD}'));
         assert_ne!(files[0].filename, "café.jpg");
+    }
+
+    // ── file_insert / file_lookup / file_update_meta ──────────────────
+
+    #[test]
+    fn file_insert_and_lookup() {
+        let db = test_db();
+        let id = db.file_insert(
+            "/a/1.jpg",
+            "/a",
+            "1.jpg",
+            Some(1024),
+            Some("2024-01-01T00:00:00Z"),
+        );
+        assert!(id.is_some());
+
+        let lookup = db.file_lookup("/a/1.jpg");
+        assert!(lookup.is_some());
+        let (fid, size, mtime) = lookup.unwrap();
+        assert_eq!(fid, id.unwrap());
+        assert_eq!(size, Some(1024));
+        assert_eq!(mtime, Some("2024-01-01T00:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn file_lookup_missing() {
+        let db = test_db();
+        assert!(db.file_lookup("/nonexistent").is_none());
+    }
+
+    #[test]
+    fn file_insert_duplicate_ignored() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(200), None);
+        // Only one file
+        assert_eq!(db.file_count(), 1);
+        // Size is still original (INSERT OR IGNORE)
+        let (_, size, _) = db.file_lookup("/a/1.jpg").unwrap();
+        assert_eq!(size, Some(100));
+    }
+
+    #[test]
+    fn file_update_meta_changes_size_and_mtime() {
+        let db = test_db();
+        let id = db
+            .file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), Some("2024-01-01"))
+            .unwrap();
+
+        db.file_update_meta(id, Some(200), Some("2024-06-15"));
+
+        let (_, size, mtime) = db.file_lookup("/a/1.jpg").unwrap();
+        assert_eq!(size, Some(200));
+        assert_eq!(mtime, Some("2024-06-15".to_string()));
+    }
+
+    #[test]
+    fn file_insert_with_null_size_and_mtime() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", None, None);
+        let (_, size, mtime) = db.file_lookup("/a/1.jpg").unwrap();
+        assert_eq!(size, None);
+        assert_eq!(mtime, None);
+    }
+
+    // ── newest_file ─────────────────────────────────────────────────────
+
+    #[test]
+    fn newest_file_by_modified_at() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/old.jpg", "/a", "old.jpg");
+        insert_file(&db, 2, "/a/new.jpg", "/a", "new.jpg");
+        // Set modified_at
+        db.conn()
+            .execute(
+                "UPDATE files SET modified_at = '2020-01-01' WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE files SET modified_at = '2024-06-15' WHERE id = 2",
+                [],
+            )
+            .unwrap();
+
+        let newest = db.newest_file().unwrap();
+        assert_eq!(newest.id, 2);
+        assert_eq!(newest.filename, "new.jpg");
+    }
+
+    // ── random_fav / latest_fav ─────────────────────────────────────────
+
+    #[test]
+    fn random_fav_returns_liked_only() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.toggle_like(1);
+
+        for _ in 0..20 {
+            let f = db.random_fav();
+            assert!(f.is_some());
+            assert_eq!(f.unwrap().id, 1);
+        }
+    }
+
+    #[test]
+    fn random_fav_none_when_no_likes() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        assert!(db.random_fav().is_none());
+    }
+
+    #[test]
+    fn latest_fav_returns_most_recently_liked() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.toggle_like(1); // like 1 first
+        db.toggle_like(2); // like 2 second
+
+        let latest = db.latest_fav().unwrap();
+        assert_eq!(latest.id, 2); // most recently liked
+    }
+
+    #[test]
+    fn latest_fav_none_when_no_likes() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        assert!(db.latest_fav().is_none());
+    }
+
+    // ── file_set_hash_meta ──────────────────────────────────────────────
+
+    #[test]
+    fn file_set_hash_creates_meta_and_links() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
+        let (fid, _, _) = db.file_lookup("/a/1.jpg").unwrap();
+
+        db.file_set_hash_meta(fid, "abc123");
+
+        // Verify hash is stored on file
+        let hash: Option<String> = db
+            .conn()
+            .query_row("SELECT hash_sha512 FROM files WHERE id = ?1", [fid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(hash, Some("abc123".to_string()));
+
+        // Verify meta_id is linked
+        let meta_id: Option<i64> = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [fid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(meta_id.is_some());
+    }
+
+    #[test]
+    fn file_set_hash_deduplicates_meta() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
+        db.file_insert("/b/1_copy.jpg", "/b", "1_copy.jpg", Some(100), None);
+        let (id1, _, _) = db.file_lookup("/a/1.jpg").unwrap();
+        let (id2, _, _) = db.file_lookup("/b/1_copy.jpg").unwrap();
+
+        // Same hash → same meta row
+        db.file_set_hash_meta(id1, "samehash");
+        db.file_set_hash_meta(id2, "samehash");
+
+        let mid1: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [id1], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mid2: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [id2], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(mid1, mid2);
+    }
+
+    // ── navigate_dir edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn navigate_dir_single_dir() {
+        let db = test_db();
+        insert_file(&db, 1, "/only/1.jpg", "/only", "1.jpg");
+        assert_eq!(db.navigate_dir("/only", 1), None);
+        assert_eq!(db.navigate_dir("/only", -1), None);
+    }
+
+    #[test]
+    fn navigate_dir_unknown_dir() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/b/2.jpg", "/b", "2.jpg");
+        // Unknown dir defaults to index 0 ("/a"), so +1 goes to "/b"
+        assert_eq!(db.navigate_dir("/unknown", 1), Some("/b".to_string()));
+    }
+
+    #[test]
+    fn navigate_dir_empty_db() {
+        let db = test_db();
+        assert_eq!(db.navigate_dir("/a", 1), None);
+    }
+
+    // ── collection_stats ────────────────────────────────────────────────
+
+    #[test]
+    fn collection_stats_counts() {
+        let db = test_db();
+        db.ensure_jobs_schema();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/b/2.jpg", "/b", "2.jpg");
+
+        let stats = db.collection_stats();
+        assert_eq!(stats.total_files, 2);
+        assert_eq!(stats.total_dirs, 2);
+        assert_eq!(stats.hashed, 0);
+        assert_eq!(stats.with_exif, 0);
+        assert_eq!(stats.failed, 0);
+    }
+
+    // ── file_path_by_id ─────────────────────────────────────────────────
+
+    #[test]
+    fn file_path_by_id_found() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        assert_eq!(db.file_path_by_id(1), Some("/a/1.jpg".to_string()));
+    }
+
+    #[test]
+    fn file_path_by_id_missing() {
+        let db = test_db();
+        assert_eq!(db.file_path_by_id(999), None);
+    }
+
+    // ── get_file_metadata ───────────────────────────────────────────────
+
+    #[test]
+    fn get_file_metadata_without_meta() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        let meta = db.get_file_metadata(1);
+        assert!(meta.is_some());
+        let m = meta.unwrap();
+        assert_eq!(m.filename, "1.jpg");
+        assert_eq!(m.path, "/a/1.jpg");
+        assert_eq!(m.dir, "/a");
+        assert!(m.width.is_none());
+        assert!(m.tags.is_empty());
+    }
+
+    #[test]
+    fn get_file_metadata_missing_file() {
+        let db = test_db();
+        assert!(db.get_file_metadata(999).is_none());
     }
 
     #[test]
