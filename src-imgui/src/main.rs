@@ -1303,7 +1303,9 @@ fn main() {
     // ── Shutdown ──────────────────────────────────────────────────────
     job_engine.stop();
     // Stop mpv playback first so the render thread isn't blocked waiting for frames
-    unsafe { mpv_stop_async(mpv_handle); }
+    unsafe {
+        mpv_stop_async(mpv_handle);
+    }
     mpv_shared.quit.store(true, Ordering::Release);
     render_thread.join().ok();
 

@@ -87,11 +87,26 @@ impl QuadRenderer {
     }
 
     /// Draw a video texture (flipped Y to correct for mpv FBO orientation).
-    pub fn draw_video(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32) {
+    pub fn draw_video(
+        &self,
+        texture: u32,
+        img_w: u32,
+        img_h: u32,
+        viewport_w: u32,
+        viewport_h: u32,
+    ) {
         self.draw_inner(texture, img_w, img_h, viewport_w, viewport_h, true);
     }
 
-    fn draw_inner(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32, flip_y: bool) {
+    fn draw_inner(
+        &self,
+        texture: u32,
+        img_w: u32,
+        img_h: u32,
+        viewport_w: u32,
+        viewport_h: u32,
+        flip_y: bool,
+    ) {
         let img_aspect = img_w as f32 / img_h.max(1) as f32;
         let vp_aspect = viewport_w as f32 / viewport_h.max(1) as f32;
 
@@ -114,7 +129,8 @@ impl QuadRenderer {
             let loc = gl::GetUniformLocation(self.program, CString::new("uRect").unwrap().as_ptr());
             gl::Uniform4f(loc, x, y, quad_w, quad_h);
 
-            let flip_loc = gl::GetUniformLocation(self.program, CString::new("uFlipY").unwrap().as_ptr());
+            let flip_loc =
+                gl::GetUniformLocation(self.program, CString::new("uFlipY").unwrap().as_ptr());
             gl::Uniform1i(flip_loc, flip_y as i32);
 
             gl::ActiveTexture(gl::TEXTURE0);
