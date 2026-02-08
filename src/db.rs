@@ -972,8 +972,10 @@ mod tests {
     use super::*;
 
     /// Create an in-memory Db with the minimal schema needed for tests.
+    /// Mirrors production: foreign_keys ON, FK constraints on history/job_fails.
     fn test_db() -> Db {
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (
                  id INTEGER PRIMARY KEY,
@@ -1004,8 +1006,16 @@ mod tests {
              );
              CREATE TABLE history (
                  id INTEGER PRIMARY KEY,
-                 file_id INTEGER NOT NULL,
-                 action TEXT NOT NULL
+                 file_id INTEGER REFERENCES files(id),
+                 action TEXT NOT NULL,
+                 created_at TEXT DEFAULT (datetime('now'))
+             );
+             CREATE TABLE job_fails (
+                 file_id INTEGER NOT NULL REFERENCES files(id),
+                 layer TEXT NOT NULL,
+                 error TEXT,
+                 created_at TEXT DEFAULT (datetime('now')),
+                 PRIMARY KEY (file_id, layer)
              );
              CREATE TABLE directories (
                  id INTEGER PRIMARY KEY,
@@ -1915,6 +1925,119 @@ mod tests {
         // Removing by id again should be a no-op (0 rows)
         db.remove_file_by_id(1);
         assert_eq!(db.file_count(), 0);
+    }
+
+    // ── FK cascade on delete (regression: FOREIGN KEY constraint failed) ─
+
+    #[test]
+    fn remove_file_by_id_with_history() {
+        // Regression: deleting a file that has history rows used to fail
+        // with "FOREIGN KEY constraint failed".
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        // Add view + like history
+        db.record_view(1);
+        db.record_view(1);
+        db.toggle_like(1);
+
+        // This would panic before the cascade fix
+        db.remove_file_by_id(1);
+        assert_eq!(db.file_count(), 0);
+        assert!(db.file_lookup("/a/1.jpg").is_none());
+
+        // History should also be gone
+        let hist_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM history WHERE file_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(hist_count, 0);
+    }
+
+    #[test]
+    fn remove_file_by_path_with_history() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        db.record_view(1);
+        db.toggle_like(1);
+
+        db.remove_file_by_path("/a/1.jpg");
+        assert_eq!(db.file_count(), 0);
+
+        let hist_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM history WHERE file_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(hist_count, 0);
+    }
+
+    #[test]
+    fn remove_file_by_id_with_job_fails() {
+        let db = test_db();
+        db.ensure_jobs_schema();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        db.record_job_fail(1, "hash", "some error");
+        db.record_job_fail(1, "exif", "another error");
+
+        db.remove_file_by_id(1);
+        assert_eq!(db.file_count(), 0);
+
+        let fail_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM job_fails WHERE file_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fail_count, 0);
+    }
+
+    #[test]
+    fn remove_file_with_history_and_job_fails() {
+        // Combined: file has both history and job_fails rows
+        let db = test_db();
+        db.ensure_jobs_schema();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+
+        db.record_view(1);
+        db.toggle_like(1);
+        db.record_job_fail(1, "hash", "err");
+        db.record_view(2);
+
+        // Delete file 1 — should cascade history + job_fails
+        db.remove_file_by_id(1);
+        assert_eq!(db.file_count(), 1);
+
+        // File 2's history should be untouched
+        let hist2: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM history WHERE file_id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(hist2 > 0, "file 2 history should survive");
+    }
+
+    #[test]
+    fn fk_enforcement_is_active() {
+        // Verify that our test DB actually enforces foreign keys.
+        // Without PRAGMA foreign_keys = ON, this insert would succeed.
+        let db = test_db();
+        let result = db.conn().execute(
+            "INSERT INTO history (file_id, action) VALUES (999, 'view')",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "FK should reject history row for nonexistent file_id"
+        );
     }
 
     // ── file_paths_under ────────────────────────────────────────────────
