@@ -1849,6 +1849,81 @@ mod tests {
         assert!(db.get_file_metadata(999).is_none());
     }
 
+    // ── remove_file_by_id ────────────────────────────────────────────────
+
+    #[test]
+    fn remove_file_by_id_deletes_file() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        assert_eq!(db.file_count(), 2);
+
+        db.remove_file_by_id(1);
+        assert_eq!(db.file_count(), 1);
+        assert!(db.file_lookup("/a/1.jpg").is_none());
+        assert!(db.file_lookup("/a/2.jpg").is_some());
+    }
+
+    #[test]
+    fn remove_file_by_id_nonexistent_no_panic() {
+        let db = test_db();
+        // Should not panic or error
+        db.remove_file_by_id(999);
+        assert_eq!(db.file_count(), 0);
+    }
+
+    #[test]
+    fn remove_file_by_id_then_files_by_dir_consistent() {
+        // Regression: ensure files_by_dir reflects the deletion immediately
+        let db = test_db();
+        insert_file(&db, 1, "/d/a.jpg", "/d", "a.jpg");
+        insert_file(&db, 2, "/d/b.jpg", "/d", "b.jpg");
+        insert_file(&db, 3, "/d/c.jpg", "/d", "c.jpg");
+
+        assert_eq!(db.files_by_dir("/d").len(), 3);
+
+        db.remove_file_by_id(2);
+        let files = db.files_by_dir("/d");
+        assert_eq!(files.len(), 2);
+        let names: Vec<&str> = files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"a.jpg"));
+        assert!(names.contains(&"c.jpg"));
+        assert!(!names.contains(&"b.jpg"));
+    }
+
+    #[test]
+    fn remove_file_by_path_then_by_id_no_double_delete() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+
+        db.remove_file_by_path("/a/1.jpg");
+        assert!(db.file_lookup("/a/1.jpg").is_none());
+
+        // Removing by id again should be a no-op (0 rows)
+        db.remove_file_by_id(1);
+        assert_eq!(db.file_count(), 0);
+    }
+
+    // ── file_paths_under ────────────────────────────────────────────────
+
+    #[test]
+    fn file_paths_under_exact_dir() {
+        let db = test_db();
+        insert_file(&db, 1, "/pics/a.jpg", "/pics", "a.jpg");
+        insert_file(&db, 2, "/pics/b.jpg", "/pics", "b.jpg");
+        insert_file(&db, 3, "/vids/c.mp4", "/vids", "c.mp4");
+
+        let paths = db.file_paths_under("/pics");
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn file_paths_under_empty_result() {
+        let db = test_db();
+        insert_file(&db, 1, "/pics/a.jpg", "/pics", "a.jpg");
+        assert!(db.file_paths_under("/nonexistent").is_empty());
+    }
+
     #[test]
     fn to_string_lossy_deterministic() {
         use std::ffi::OsStr;

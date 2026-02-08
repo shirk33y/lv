@@ -3390,6 +3390,178 @@ mod tests {
         );
     }
 
+    // ── Startup rescan + file list integration ─────────────────────────
+
+    #[test]
+    fn rescan_then_handle_drop_no_stale_files() {
+        // Regression: after rescan prunes deleted files, handle_drop
+        // should not show any stale entries.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("gone.png"), b"img2").unwrap();
+
+        // Initial scan
+        scanner::rescan(&db, dir.path());
+
+        // Delete one file (simulates offline deletion)
+        std::fs::remove_file(dir.path().join("gone.png")).unwrap();
+
+        // Rescan (startup)
+        scanner::rescan(&db, dir.path());
+
+        // Now load file list via handle_drop (same as UI)
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "keep.jpg");
+        // Verify the file actually exists on disk
+        assert!(std::path::Path::new(&files[0].path).exists());
+    }
+
+    #[test]
+    fn rescan_then_simulate_refresh_consistent() {
+        // Regression: after rescan, simulate_refresh should see the
+        // same file list as the initial load.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"b").unwrap();
+        std::fs::write(dir.path().join("c.mp4"), b"c").unwrap();
+
+        scanner::rescan(&db, dir.path());
+
+        // Delete b offline
+        std::fs::remove_file(dir.path().join("b.png")).unwrap();
+        scanner::rescan(&db, dir.path());
+
+        // Load via handle_drop
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let initial_count = files.len();
+
+        // simulate_refresh should not change anything
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+        assert_eq!(files.len(), initial_count);
+        assert!(!needs_display, "no changes since rescan");
+    }
+
+    #[test]
+    fn no_file_not_found_after_rescan() {
+        // Regression: the exact bug — files deleted while app was closed
+        // should not trigger "File not found" after startup rescan.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"b").unwrap();
+
+        scanner::rescan(&db, dir.path());
+
+        // Simulate offline deletion
+        std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
+
+        // Startup rescan
+        scanner::rescan(&db, dir.path());
+
+        // Load file list
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Every file in the list must exist on disk
+        for f in &files {
+            assert!(
+                std::path::Path::new(&f.path).exists(),
+                "File not found would trigger for: {}",
+                f.path
+            );
+        }
+    }
+
+    #[test]
+    fn rescan_cursor_stays_valid_after_prune() {
+        // If cursor was pointing at a file that got pruned,
+        // it should clamp to a valid position.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"b").unwrap();
+        std::fs::write(dir.path().join("c.mp4"), b"c").unwrap();
+
+        scanner::rescan(&db, dir.path());
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Set cursor to last file
+        cursor = files.len() - 1;
+        let last_file = files[cursor].filename.clone();
+
+        // Delete the last file offline
+        std::fs::remove_file(dir.path().join(&last_file)).unwrap();
+        scanner::rescan(&db, dir.path());
+
+        // Refresh file list
+        let new_files = db.files_by_dir(&current_dir);
+        let old_id = files.get(cursor).map(|f| f.id);
+        files = new_files;
+        cursor = old_id
+            .and_then(|id| files.iter().position(|f| f.id == id))
+            .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+
+        // Cursor should be valid
+        assert!(cursor < files.len(), "cursor out of bounds after prune");
+        assert!(std::path::Path::new(&files[cursor].path).exists());
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner

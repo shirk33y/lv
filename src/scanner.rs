@@ -387,4 +387,146 @@ mod tests {
         assert_eq!(updated, 0);
         assert_eq!(pruned, 0);
     }
+
+    #[test]
+    fn rescan_idempotent() {
+        // Running rescan twice with no disk changes should be a no-op
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"img2").unwrap();
+
+        let (u1, p1) = rescan(&db, dir.path());
+        assert_eq!(u1, 2);
+        assert_eq!(p1, 0);
+
+        // Second rescan: nothing changed on disk
+        let (u2, p2) = rescan(&db, dir.path());
+        assert_eq!(u2, 0, "no new files to add");
+        assert_eq!(p2, 0, "no files to prune");
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        assert_eq!(db.files_by_dir(&dir_str).len(), 2);
+    }
+
+    #[test]
+    fn rescan_non_media_files_ignored() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readme.txt"), b"text").unwrap();
+        std::fs::write(dir.path().join("data.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join("script.py"), b"print()").unwrap();
+        std::fs::write(dir.path().join("photo.jpg"), b"img").unwrap();
+
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert_eq!(updated, 1, "only photo.jpg should be added");
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn rescan_with_subdirectories() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.jpg"), b"img").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/nested.png"), b"img2").unwrap();
+
+        let (updated, _pruned) = rescan(&db, dir.path());
+        assert!(updated >= 2, "should find files in subdirectories");
+    }
+
+    #[test]
+    fn rescan_prune_all_files_leaves_empty_list() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"img2").unwrap();
+
+        rescan(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        assert_eq!(db.files_by_dir(&dir_str).len(), 2);
+
+        // Delete all files
+        std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
+        std::fs::remove_file(dir.path().join("b.png")).unwrap();
+
+        let (_u, pruned) = rescan(&db, dir.path());
+        assert_eq!(pruned, 2);
+        assert!(db.files_by_dir(&dir_str).is_empty());
+    }
+
+    #[test]
+    fn rescan_files_by_dir_matches_disk_exactly() {
+        // Regression: after rescan, files_by_dir should return exactly
+        // the files that exist on disk — no stale entries, no missing entries.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"b").unwrap();
+        std::fs::write(dir.path().join("c.mp4"), b"c").unwrap();
+
+        rescan(&db, dir.path());
+
+        // Offline: delete b, add d, keep a and c
+        std::fs::remove_file(dir.path().join("b.png")).unwrap();
+        std::fs::write(dir.path().join("d.gif"), b"d").unwrap();
+
+        rescan(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        let names: Vec<&str> = files.iter().map(|f| f.filename.as_str()).collect();
+
+        // Every file in the list should exist on disk
+        for f in &files {
+            assert!(
+                std::path::Path::new(&f.path).exists(),
+                "stale entry in DB: {}",
+                f.path
+            );
+        }
+
+        // Every media file on disk should be in the list
+        assert!(names.contains(&"a.jpg"));
+        assert!(names.contains(&"c.mp4"));
+        assert!(names.contains(&"d.gif"));
+        assert!(!names.contains(&"b.png"), "deleted file still in DB");
+    }
+
+    #[test]
+    fn discover_does_not_reinsert_deleted_files() {
+        // Regression: discover() should skip files that don't exist on disk
+        // (canonicalize fails → continue). This ensures rescan's prune
+        // isn't undone by a subsequent discover call.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+
+        discover(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        assert_eq!(db.files_by_dir(&dir_str).len(), 1);
+
+        // Delete from disk, then prune from DB
+        std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
+        let files = db.files_by_dir(&dir_str);
+        db.remove_file_by_id(files[0].id);
+        assert!(db.files_by_dir(&dir_str).is_empty());
+
+        // discover again — should NOT re-add the deleted file
+        let added = discover(&db, dir.path());
+        assert_eq!(added, 0);
+        assert!(db.files_by_dir(&dir_str).is_empty());
+    }
 }
