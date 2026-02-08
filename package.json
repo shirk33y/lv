@@ -13,7 +13,7 @@
     "appimage": "tauri build --bundles appimage",
     "appimage:arm64": "tauri build --target aarch64-unknown-linux-gnu --bundles appimage",
     "win": "npm run build && cd src-tauri && cargo win",
-    "dev:win": "bash dev-win.sh"
+    "dev:win": "cd src-tauri && cargo xwin build --target x86_64-pc-windows-msvc --no-default-features && ./target/x86_64-pc-windows-msvc/debug/lv.exe"
   },
   "dependencies": {
     "@preact/signals": "^2.7.0",
