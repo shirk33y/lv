@@ -5,40 +5,61 @@ use std::path::Path;
 use crate::db::Db;
 use crate::scanner;
 
-pub fn add(db: &Db, path: &Path) {
+pub fn track(db: &Db, path: &Path) {
     let abs = match path.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("lv add: {}: {}", path.display(), e);
+            eprintln!("lv track: {}: {}", path.display(), e);
             return;
         }
     };
-
-    db.watched_add(&abs.to_string_lossy());
-
+    db.dir_track(&abs.to_string_lossy(), true);
     println!("Scanning {}...", abs.display());
     let count = scanner::discover(db, &abs);
-    println!("Added {} ({} media files)", abs.display(), count);
+    println!("Tracked {} ({} media files)", abs.display(), count);
+}
+
+pub fn untrack(db: &Db, path: &Path) {
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    db.dir_untrack(&abs.to_string_lossy());
+    println!("Untracked {}", abs.display());
+}
+
+pub fn watch(db: &Db, path: &Path) {
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    db.dir_watch(&abs.to_string_lossy());
+    println!("Watching {}", abs.display());
+}
+
+pub fn unwatch(db: &Db, path: &Path) {
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    db.dir_unwatch(&abs.to_string_lossy());
+    println!("Unwatched {}", abs.display());
 }
 
 pub fn scan(db: &Db, path: Option<&Path>) {
-    let dirs: Vec<String> = if let Some(p) = path {
-        vec![p
-            .canonicalize()
-            .unwrap_or(p.to_path_buf())
-            .to_string_lossy()
-            .into()]
+    let dirs: Vec<(String, bool)> = if let Some(p) = path {
+        vec![(
+            p.canonicalize()
+                .unwrap_or_else(|_| p.to_path_buf())
+                .to_string_lossy()
+                .into(),
+            true,
+        )]
     } else {
-        db.watched_list()
+        db.tracked_list()
+            .into_iter()
+            .map(|(p, _recursive, _watched)| (p, true))
+            .collect()
     };
 
     if dirs.is_empty() {
-        println!("No watched directories. Use `lv add PATH` first.");
+        println!("No tracked directories. Use `lv track PATH` first.");
         return;
     }
 
     let mut total = 0usize;
-    for dir in &dirs {
+    for (dir, _recursive) in &dirs {
         println!("Scanning {}...", dir);
         let count = scanner::discover(db, Path::new(dir));
         println!("  {} new/changed", count);
@@ -49,7 +70,7 @@ pub fn scan(db: &Db, path: Option<&Path>) {
 
 pub fn status(db: &Db) {
     let stats = db.collection_stats();
-    let watched = db.watched_list();
+    let tracked = db.tracked_list();
 
     println!("lv status");
     println!("=========");
@@ -57,9 +78,15 @@ pub fn status(db: &Db) {
     println!("hashed:  {}/{}", stats.hashed, stats.total_files);
     println!("exif:    {}/{}", stats.with_exif, stats.total_files);
     println!("failed:  {}", stats.failed);
-    println!("watched: {}", watched.len());
-    for p in &watched {
-        println!("  {}", p);
+    println!("tracked: {}", tracked.len());
+    for (p, recursive, watched) in &tracked {
+        let flags = match (*recursive, *watched) {
+            (true, true) => " [recursive, watched]",
+            (true, false) => " [recursive]",
+            (false, true) => " [watched]",
+            (false, false) => "",
+        };
+        println!("  {}{}", p, flags);
     }
 }
 

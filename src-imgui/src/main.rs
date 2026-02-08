@@ -308,9 +308,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Add directory to library and scan it
-    Add { path: PathBuf },
-    /// Re-scan watched directories (or a specific path)
+    /// Track a directory (recursive scan + metadata)
+    Track { path: PathBuf },
+    /// Stop tracking a directory
+    Untrack { path: PathBuf },
+    /// Enable live filesystem monitoring on a tracked directory
+    Watch { path: PathBuf },
+    /// Disable live filesystem monitoring
+    Unwatch { path: PathBuf },
+    /// Re-scan tracked directories (or a specific path)
     Scan { path: Option<PathBuf> },
     /// Show library statistics
     Status,
@@ -329,7 +335,10 @@ fn main() {
     if let Some(cmd) = args.command {
         lv_db.ensure_jobs_schema();
         match cmd {
-            Commands::Add { path } => cli::add(&lv_db, &path),
+            Commands::Track { path } => cli::track(&lv_db, &path),
+            Commands::Untrack { path } => cli::untrack(&lv_db, &path),
+            Commands::Watch { path } => cli::watch(&lv_db, &path),
+            Commands::Unwatch { path } => cli::unwatch(&lv_db, &path),
             Commands::Scan { path } => cli::scan(&lv_db, path.as_deref()),
             Commands::Status => cli::status(&lv_db),
             Commands::Worker => cli::worker(&lv_db),

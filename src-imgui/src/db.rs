@@ -17,6 +17,8 @@ pub struct FileEntry {
     #[allow(dead_code)]
     pub meta_id: Option<i64>,
     pub liked: bool,
+    #[allow(dead_code)]
+    pub temporary: bool,
 }
 
 /// Aggregate stats for the info sidebar.
@@ -95,35 +97,331 @@ impl Db {
                     action        TEXT NOT NULL,
                     created_at    TEXT DEFAULT (datetime('now'))
                 );
-                CREATE TABLE IF NOT EXISTS watched (
+                CREATE TABLE IF NOT EXISTS directories (
                     id            INTEGER PRIMARY KEY,
                     path          TEXT NOT NULL UNIQUE,
-                    active        INTEGER DEFAULT 1,
+                    tracked       INTEGER NOT NULL DEFAULT 1,
+                    watched       INTEGER NOT NULL DEFAULT 0,
+                    recursive     INTEGER NOT NULL DEFAULT 1,
                     created_at    TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
                 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);",
             )
             .expect("schema creation failed");
+
+        // Migrations
+        let db = self.conn();
+        // Add temporary column if missing
+        let has_temp: bool = db.prepare("SELECT temporary FROM files LIMIT 0").is_ok();
+        if !has_temp {
+            db.execute_batch("ALTER TABLE files ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;")
+                .ok();
+        }
+        // Migrate old watched table → directories
+        let has_old: bool = db.prepare("SELECT path FROM watched LIMIT 0").is_ok();
+        if has_old {
+            db.execute_batch(
+                "INSERT OR IGNORE INTO directories (path, tracked, watched, recursive)
+                 SELECT path, 1, active, 1 FROM watched;
+                 DROP TABLE watched;",
+            )
+            .ok();
+        }
     }
 
-    // ── Scanner / watched ────────────────────────────────────────────────
+    // ── Directories (track / watch) ────────────────────────────────────
 
-    pub fn watched_add(&self, path: &str) {
+    pub fn dir_track(&self, path: &str, recursive: bool) {
         self.conn()
-            .execute("INSERT OR IGNORE INTO watched (path) VALUES (?1)", [path])
+            .execute(
+                "INSERT INTO directories (path, tracked, watched, recursive)
+                 VALUES (?1, 1, 0, ?2)
+                 ON CONFLICT(path) DO UPDATE SET tracked = 1, recursive = ?2",
+                rusqlite::params![path, recursive as i32],
+            )
             .ok();
     }
 
+    pub fn dir_untrack(&self, path: &str) {
+        self.conn()
+            .execute(
+                "UPDATE directories SET tracked = 0, watched = 0 WHERE path = ?1",
+                [path],
+            )
+            .ok();
+    }
+
+    pub fn dir_watch(&self, path: &str) {
+        self.conn()
+            .execute(
+                "UPDATE directories SET watched = 1 WHERE path = ?1 AND tracked = 1",
+                [path],
+            )
+            .ok();
+    }
+
+    pub fn dir_unwatch(&self, path: &str) {
+        self.conn()
+            .execute("UPDATE directories SET watched = 0 WHERE path = ?1", [path])
+            .ok();
+    }
+
+    #[allow(dead_code)]
+    pub fn tracked_list(&self) -> Vec<(String, bool, bool)> {
+        let db = self.conn();
+        let mut stmt = db
+            .prepare(
+                "SELECT path, recursive, watched FROM directories WHERE tracked = 1 ORDER BY path",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get::<_, i32>(1)? != 0,
+                r.get::<_, i32>(2)? != 0,
+            ))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    #[allow(dead_code)]
     pub fn watched_list(&self) -> Vec<String> {
         let db = self.conn();
         let mut stmt = db
-            .prepare("SELECT path FROM watched WHERE active = 1 ORDER BY path")
+            .prepare("SELECT path FROM directories WHERE tracked = 1 AND watched = 1 ORDER BY path")
             .unwrap();
         stmt.query_map([], |r| r.get(0))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect()
+    }
+
+    // ── Collections (tag-based) ──────────────────────────────────────────
+
+    /// Toggle collection tag (c2-c8) on a file. Returns new state.
+    #[allow(dead_code)]
+    pub fn toggle_collection(&self, file_id: i64, collection: u8) -> bool {
+        let tag = collection_tag(collection);
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        let meta_id = match meta_id {
+            Some(id) => id,
+            None => return false,
+        };
+        let tags_str: String = db
+            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| {
+                r.get(0)
+            })
+            .unwrap_or_else(|_| "[]".into());
+        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+
+        let now_in = if tags.contains(&tag) {
+            tags.retain(|t| t != &tag);
+            false
+        } else {
+            tags.push(tag);
+            true
+        };
+        let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+        db.execute(
+            "UPDATE meta SET tags = ?1 WHERE id = ?2",
+            rusqlite::params![json, meta_id],
+        )
+        .ok();
+        now_in
+    }
+
+    /// Check if file belongs to a collection.
+    #[allow(dead_code)]
+    pub fn file_in_collection(&self, file_id: i64, collection: u8) -> bool {
+        match collection {
+            0 => self
+                .conn()
+                .query_row(
+                    "SELECT temporary FROM files WHERE id = ?1",
+                    [file_id],
+                    |r| r.get::<_, i32>(0),
+                )
+                .map(|t| t == 0)
+                .unwrap_or(false),
+            1 => self
+                .conn()
+                .query_row(
+                    "SELECT temporary FROM files WHERE id = ?1",
+                    [file_id],
+                    |r| r.get::<_, i32>(0),
+                )
+                .map(|t| t != 0)
+                .unwrap_or(false),
+            9 => self
+                .conn()
+                .query_row(
+                    "SELECT 1 FROM files f JOIN meta m ON f.meta_id = m.id
+                         WHERE f.id = ?1 AND m.tags LIKE '%\"like\"%'",
+                    [file_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false),
+            2..=8 => {
+                let pattern = format!("%\"{}\"%%", collection_tag(collection));
+                self.conn()
+                    .query_row(
+                        "SELECT 1 FROM files f JOIN meta m ON f.meta_id = m.id
+                         WHERE f.id = ?1 AND m.tags LIKE ?2",
+                        rusqlite::params![file_id, pattern],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    /// Get files for a collection.
+    #[allow(dead_code)]
+    /// Collection 0 = all non-temporary. 1 = temporary.
+    /// 2-8 = tag c2-c8. 9 = tag like.
+    pub fn files_by_collection(&self, collection: u8) -> Vec<FileEntry> {
+        let db = self.conn();
+        let (sql, param): (&str, Option<String>) = match collection {
+            0 => (
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                 FROM files f LEFT JOIN meta m ON f.meta_id = m.id
+                 WHERE f.temporary = 0
+                 ORDER BY f.path",
+                None,
+            ),
+            1 => (
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                 FROM files f LEFT JOIN meta m ON f.meta_id = m.id
+                 WHERE f.temporary = 1
+                 ORDER BY f.path",
+                None,
+            ),
+            9 => (
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
+                 FROM files f JOIN meta m ON f.meta_id = m.id
+                 WHERE m.tags LIKE '%\"like\"%'
+                 ORDER BY f.path",
+                None,
+            ),
+            c @ 2..=8 => (
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                 FROM files f JOIN meta m ON f.meta_id = m.id
+                 WHERE m.tags LIKE ?1
+                 ORDER BY f.path",
+                Some(format!("%\"{}\"%%", collection_tag(c))),
+            ),
+            _ => return vec![],
+        };
+        let mut stmt = db.prepare(sql).unwrap();
+        let rows = if let Some(ref p) = param {
+            stmt.query_map([p.as_str()], row_to_entry)
+        } else {
+            stmt.query_map([], row_to_entry)
+        };
+        rows.unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    /// Random file within a collection.
+    #[allow(dead_code)]
+    pub fn random_in_collection(&self, collection: u8) -> Option<FileEntry> {
+        let db = self.conn();
+        match collection {
+            0 => db
+                .query_row(
+                    "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                 FROM files f LEFT JOIN meta m ON f.meta_id = m.id
+                 WHERE f.temporary = 0
+                 ORDER BY RANDOM() LIMIT 1",
+                    [],
+                    row_to_entry,
+                )
+                .ok(),
+            1 => db
+                .query_row(
+                    "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                 FROM files f LEFT JOIN meta m ON f.meta_id = m.id
+                 WHERE f.temporary = 1
+                 ORDER BY RANDOM() LIMIT 1",
+                    [],
+                    row_to_entry,
+                )
+                .ok(),
+            9 => db
+                .query_row(
+                    "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
+                 FROM files f JOIN meta m ON f.meta_id = m.id
+                 WHERE m.tags LIKE '%\"like\"%'
+                 ORDER BY RANDOM() LIMIT 1",
+                    [],
+                    row_to_entry,
+                )
+                .ok(),
+            c @ 2..=8 => {
+                let pattern = format!("%\"{}\"%%", collection_tag(c));
+                db.query_row(
+                    "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
+                            (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                     FROM files f JOIN meta m ON f.meta_id = m.id
+                     WHERE m.tags LIKE ?1
+                     ORDER BY RANDOM() LIMIT 1",
+                    [&pattern],
+                    row_to_entry,
+                )
+                .ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// Count files + total size for a collection.
+    #[allow(dead_code)]
+    pub fn collection_count_size(&self, collection: u8) -> (i64, i64) {
+        let db = self.conn();
+        let (sql, param): (&str, Option<String>) = match collection {
+            0 => ("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE temporary = 0", None),
+            1 => ("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE temporary = 1", None),
+            9 => (
+                "SELECT COUNT(*), COALESCE(SUM(f.size),0) FROM files f JOIN meta m ON f.meta_id = m.id WHERE m.tags LIKE '%\"like\"%'",
+                None,
+            ),
+            c @ 2..=8 => (
+                "SELECT COUNT(*), COALESCE(SUM(f.size),0) FROM files f JOIN meta m ON f.meta_id = m.id WHERE m.tags LIKE ?1",
+                Some(format!("%\"{}\"%%", collection_tag(c))),
+            ),
+            _ => return (0, 0),
+        };
+        if let Some(ref p) = param {
+            db.query_row(sql, [p.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap_or((0, 0))
+        } else {
+            db.query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap_or((0, 0))
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_temporary(&self, file_id: i64, temp: bool) {
+        self.conn()
+            .execute(
+                "UPDATE files SET temporary = ?1 WHERE id = ?2",
+                rusqlite::params![temp as i32, file_id],
+            )
+            .ok();
     }
 
     pub fn file_lookup(&self, path: &str) -> Option<(i64, Option<i64>, Option<String>)> {
@@ -190,7 +488,7 @@ impl Db {
         let mut stmt = db
             .prepare(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%')
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.dir = ?1
                  ORDER BY f.path",
@@ -219,7 +517,7 @@ impl Db {
         self.conn()
             .query_row(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%')
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  ORDER BY RANDOM() LIMIT 1",
                 [],
@@ -232,7 +530,7 @@ impl Db {
         self.conn()
             .query_row(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%')
+                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  ORDER BY f.modified_at DESC LIMIT 1",
                 [],
@@ -244,7 +542,7 @@ impl Db {
     pub fn random_fav(&self) -> Option<FileEntry> {
         self.conn()
             .query_row(
-                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
                  FROM files f JOIN meta m ON f.meta_id = m.id
                  WHERE m.tags LIKE '%\"like\"%'
                  ORDER BY RANDOM() LIMIT 1",
@@ -257,7 +555,7 @@ impl Db {
     pub fn latest_fav(&self) -> Option<FileEntry> {
         self.conn()
             .query_row(
-                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
                  FROM files f JOIN meta m ON f.meta_id = m.id
                  JOIN history h ON h.file_id = f.id AND h.action = 'like'
                  WHERE m.tags LIKE '%\"like\"%'
@@ -549,7 +847,17 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
         filename: row.get(3)?,
         meta_id: row.get(4)?,
         liked: row.get::<_, i64>(5)? != 0,
+        temporary: row.get::<_, i32>(6).unwrap_or(0) != 0,
     })
+}
+
+#[allow(dead_code)]
+fn collection_tag(c: u8) -> String {
+    match c {
+        9 => "like".into(),
+        n @ 2..=8 => format!("c{n}"),
+        _ => String::new(),
+    }
 }
 
 fn default_db_path() -> PathBuf {
@@ -576,12 +884,20 @@ mod tests {
                  dir TEXT NOT NULL,
                  filename TEXT NOT NULL,
                  meta_id INTEGER REFERENCES meta(id),
-                 modified_at TEXT DEFAULT ''
+                 modified_at TEXT DEFAULT '',
+                 temporary INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE history (
                  id INTEGER PRIMARY KEY,
                  file_id INTEGER NOT NULL,
                  action TEXT NOT NULL
+             );
+             CREATE TABLE directories (
+                 id INTEGER PRIMARY KEY,
+                 path TEXT NOT NULL UNIQUE,
+                 tracked INTEGER NOT NULL DEFAULT 1,
+                 watched INTEGER NOT NULL DEFAULT 0,
+                 recursive INTEGER NOT NULL DEFAULT 1
              );",
         )
         .unwrap();
