@@ -29,6 +29,14 @@ jobs:
         working-directory: src-imgui
         run: cargo test
 
+      - name: Cargo clippy
+        working-directory: src-imgui
+        run: cargo clippy -- -D warnings
+
+      - name: Cargo fmt
+        working-directory: src-imgui
+        run: cargo fmt -- --check
+
       - name: Cargo check (release)
         working-directory: src-imgui
         run: cargo check --release
@@ -63,6 +71,7 @@ jobs:
           workspaces: src-imgui -> target
           cache-all-crates: "true"
 
+      # ── Linux build ──────────────────────────────────────────────────
       - name: Install system dependencies (Linux)
         if: matrix.os == 'linux'
         run: |
@@ -74,11 +83,31 @@ jobs:
         working-directory: src-imgui
         run: cargo build --release
 
+      - name: Package AppImage (Linux)
+        if: matrix.os == 'linux'
+        working-directory: src-imgui
+        run: bash pkg/appimage.sh ${{ matrix.arch }}
+
+      - name: Upload AppImage (Linux)
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv-linux-${{ matrix.arch }}-appimage
+          path: src-imgui/lv-${{ matrix.arch }}.AppImage
+
+      - name: Upload binary (Linux)
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv-linux-${{ matrix.arch }}
+          path: src-imgui/target/release/lv-imgui
+
+      # ── Windows cross-compile ────────────────────────────────────────
       - name: Install cross-compile tools (Windows via xwin)
         if: matrix.os == 'windows'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev
+          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
           cargo install cargo-xwin --locked
 
       - name: Cache xwin MSVC CRT/SDK
@@ -93,14 +122,7 @@ jobs:
         working-directory: src-imgui
         run: cargo xwin build --release --target x86_64-pc-windows-msvc
 
-      - name: Upload artifact (Linux)
-        if: matrix.os == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lv-linux-${{ matrix.arch }}
-          path: src-imgui/target/release/lv-imgui
-
-      - name: Upload artifact (Windows)
+      - name: Upload binary (Windows)
         if: matrix.os == 'windows'
         uses: actions/upload-artifact@v4
         with:
