@@ -2247,6 +2247,439 @@ mod tests {
         assert_eq!(db.files_by_dir("/c").len(), 5);
     }
 
+    // ── Job worker pipeline integration ────────────────────────────────
+
+    #[test]
+    fn job_pipeline_hash_exif_pnginfo() {
+        // Simulate the full worker pipeline: hash → exif → pnginfo
+        // Use file_insert (not insert_file helper) so files start without hash/meta
+        let db = test_db();
+        db.file_insert("/pics/photo.png", "/pics", "photo.png", Some(100), None);
+        db.file_insert("/pics/video.mp4", "/pics", "video.mp4", Some(200), None);
+        db.file_insert("/pics/broken.jpg", "/pics", "broken.jpg", Some(50), None);
+        let files = db.files_by_dir("/pics");
+        let id_png = files.iter().find(|f| f.filename == "photo.png").unwrap().id;
+        let id_mp4 = files.iter().find(|f| f.filename == "video.mp4").unwrap().id;
+        let id_broken = files
+            .iter()
+            .find(|f| f.filename == "broken.jpg")
+            .unwrap()
+            .id;
+
+        // Step 1: next_missing_hash should find unhashed files
+        let missing = db.next_missing_hash();
+        assert!(missing.is_some(), "should find file needing hash");
+
+        // Step 2: Hash the PNG
+        db.file_set_hash_meta(id_png, "sha512_photo");
+        let files = db.files_by_dir("/pics");
+        let f1 = files.iter().find(|f| f.id == id_png).unwrap();
+        assert!(f1.meta_id.is_some(), "file should have meta_id after hash");
+
+        // Hash the video
+        db.file_set_hash_meta(id_mp4, "sha512_video");
+
+        // Step 3: Record job fail for broken.jpg
+        db.record_job_fail(id_broken, "hash", "corrupt file");
+
+        // next_missing_hash should skip failed file
+        // (only file 3 is unhashed, but it's in job_fails)
+        let missing2 = db.next_missing_hash();
+        assert!(missing2.is_none(), "failed file should be skipped");
+
+        // Step 4: next_missing_exif should find hashed images needing exif
+        let exif_job = db.next_missing_exif();
+        assert!(exif_job.is_some(), "should find file needing exif");
+        let (eid, epath) = exif_job.unwrap();
+        assert!(epath.ends_with(".png"), "should pick the PNG for exif");
+
+        // Step 5: Set dimensions
+        db.meta_set_dimensions(eid, 1920, 1080, "PNG");
+        let meta = db.get_file_metadata(eid).unwrap();
+        assert_eq!(meta.width, Some(1920));
+        assert_eq!(meta.height, Some(1080));
+        assert_eq!(meta.format, Some("PNG".into()));
+
+        // Step 6: next_missing_pnginfo for PNG files
+        let pnginfo_job = db.next_missing_pnginfo();
+        assert!(pnginfo_job.is_some());
+        let (pid, ppath) = pnginfo_job.unwrap();
+        assert!(ppath.ends_with(".png"));
+
+        // Step 7: Set pnginfo
+        db.meta_set_pnginfo(pid, "Steps: 20, Sampler: Euler");
+        let meta2 = db.get_file_metadata(pid).unwrap();
+        assert_eq!(meta2.pnginfo, Some("Steps: 20, Sampler: Euler".into()));
+
+        // No more pnginfo jobs
+        assert!(db.next_missing_pnginfo().is_none());
+    }
+
+    #[test]
+    fn job_fail_skips_file_in_all_layers() {
+        let db = test_db();
+        insert_file(&db, 1, "/pics/bad.jpg", "/pics", "bad.jpg");
+        db.file_set_hash_meta(1, "hash_bad");
+
+        // Record failures for multiple layers
+        db.record_job_fail(1, "exif", "decode error");
+        db.record_job_fail(1, "ai_basic", "model error");
+
+        // Should be skipped in exif and pnginfo queues
+        assert!(db.next_missing_exif().is_none());
+        assert!(db.next_missing_pnginfo().is_none());
+    }
+
+    #[test]
+    fn job_fail_replace_updates_error() {
+        let db = test_db();
+        insert_file(&db, 1, "/pics/a.jpg", "/pics", "a.jpg");
+
+        db.record_job_fail(1, "hash", "first error");
+        db.record_job_fail(1, "hash", "second error");
+
+        // INSERT OR REPLACE — should not duplicate, just update
+        // File should still be skipped
+        assert!(db.next_missing_hash().is_none());
+    }
+
+    #[test]
+    fn duplicate_hash_shares_meta() {
+        // Two files with same content (same hash) should share one meta row
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+        insert_file(&db, 2, "/b/photo_copy.jpg", "/b", "photo_copy.jpg");
+
+        db.file_set_hash_meta(1, "same_hash_512");
+        db.file_set_hash_meta(2, "same_hash_512");
+
+        let f1 = db.files_by_dir("/a")[0].meta_id;
+        let f2 = db.files_by_dir("/b")[0].meta_id;
+        assert_eq!(f1, f2, "same hash should share meta row");
+
+        // Like on one should affect the shared meta
+        db.toggle_like(1);
+        let meta1 = db.get_file_metadata(1).unwrap();
+        let meta2 = db.get_file_metadata(2).unwrap();
+        assert!(meta1.tags.contains(&"like".to_string()));
+        assert!(
+            meta2.tags.contains(&"like".to_string()),
+            "shared meta → both liked"
+        );
+    }
+
+    // ── Directory tracking lifecycle ─────────────────────────────────────
+
+    #[test]
+    fn dir_track_untrack_lifecycle() {
+        let db = test_db();
+
+        db.dir_track("/photos", true);
+        assert!(db.dir_is_tracked("/photos"));
+
+        db.dir_untrack("/photos");
+        assert!(!db.dir_is_tracked("/photos"));
+
+        // Re-track should work (INSERT OR REPLACE)
+        db.dir_track("/photos", false);
+        assert!(db.dir_is_tracked("/photos"));
+    }
+
+    #[test]
+    fn dir_watch_unwatch_lifecycle() {
+        let db = test_db();
+
+        db.dir_track("/photos", true);
+        db.dir_watch("/photos");
+
+        let watched = db.watched_dirs();
+        assert_eq!(watched.len(), 1);
+        assert_eq!(watched[0].0, "/photos");
+        assert!(watched[0].1); // recursive
+
+        db.dir_unwatch("/photos");
+        assert!(db.watched_dirs().is_empty());
+    }
+
+    #[test]
+    fn dir_watch_requires_tracked_integration() {
+        let db = test_db();
+
+        // Watch without tracking should be a no-op
+        db.dir_watch("/untracked");
+        assert!(db.watched_dirs().is_empty());
+    }
+
+    #[test]
+    fn dir_untrack_also_unwatches_integration() {
+        let db = test_db();
+
+        db.dir_track("/photos", true);
+        db.dir_watch("/photos");
+        assert_eq!(db.watched_dirs().len(), 1);
+
+        db.dir_untrack("/photos");
+        assert!(db.watched_dirs().is_empty());
+    }
+
+    #[test]
+    fn dir_is_covered_by_recursive_parent() {
+        let db = test_db();
+
+        db.dir_track("/photos", true); // recursive
+        assert!(db.dir_is_covered("/photos/vacation"));
+        assert!(db.dir_is_covered("/photos/vacation/2024"));
+        assert!(!db.dir_is_covered("/videos")); // different root
+        assert!(!db.dir_is_covered("/photo")); // prefix but not child
+    }
+
+    #[test]
+    fn tracked_list_returns_all() {
+        let db = test_db();
+
+        db.dir_track("/a", true);
+        db.dir_track("/b", false);
+        db.dir_watch("/a");
+
+        let list = db.tracked_list();
+        assert_eq!(list.len(), 2);
+        // (path, recursive, watched)
+        let a = list.iter().find(|(p, _, _)| p == "/a").unwrap();
+        assert!(a.1); // recursive
+        assert!(a.2); // watched
+        let b = list.iter().find(|(p, _, _)| p == "/b").unwrap();
+        assert!(!b.1); // not recursive
+        assert!(!b.2); // not watched
+    }
+
+    // ── Collection & navigation queries ──────────────────────────────────
+
+    #[test]
+    fn toggle_like_twice_unlikes() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+        db.file_set_hash_meta(1, "h1");
+
+        assert!(db.toggle_like(1)); // like
+        assert!(db.file_in_collection(1, 9));
+
+        assert!(!db.toggle_like(1)); // unlike
+        assert!(!db.file_in_collection(1, 9));
+    }
+
+    #[test]
+    fn toggle_like_without_meta_returns_false() {
+        let db = test_db();
+        // Use file_insert so file has no meta_id (insert_file helper auto-creates meta)
+        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None);
+        let files = db.files_by_dir("/a");
+        assert!(!db.toggle_like(files[0].id));
+    }
+
+    #[test]
+    fn toggle_collection_tags() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+        db.file_set_hash_meta(1, "h1");
+
+        // Add to collection 3
+        assert!(db.toggle_collection(1, 3));
+        assert!(db.file_in_collection(1, 3));
+
+        // Add to collection 5 simultaneously
+        assert!(db.toggle_collection(1, 5));
+        assert!(db.file_in_collection(1, 3));
+        assert!(db.file_in_collection(1, 5));
+
+        // Remove from collection 3
+        assert!(!db.toggle_collection(1, 3));
+        assert!(!db.file_in_collection(1, 3));
+        assert!(db.file_in_collection(1, 5)); // 5 still there
+    }
+
+    #[test]
+    fn collection_count_size_with_temporary() {
+        let db = test_db();
+        // Use file_insert to set size (insert_file helper doesn't set size)
+        db.file_insert("/a/a.jpg", "/a", "a.jpg", Some(100), None);
+        db.file_insert("/a/b.jpg", "/a", "b.jpg", Some(100), None);
+        db.file_insert("/a/c.jpg", "/a", "c.jpg", Some(100), None);
+
+        let (count, size) = db.collection_count_size(0);
+        assert_eq!(count, 3);
+        assert_eq!(size, 300);
+
+        // Mark one as temporary
+        let files = db.files_by_dir("/a");
+        db.set_temporary(files[2].id, true);
+        let (count0, _) = db.collection_count_size(0);
+        let (count1, _) = db.collection_count_size(1);
+        assert_eq!(count0, 2); // non-temporary
+        assert_eq!(count1, 1); // temporary
+    }
+
+    #[test]
+    fn navigate_dir_wraps_and_clamps() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/b/2.jpg", "/b", "2.jpg");
+        insert_file(&db, 3, "/c/3.jpg", "/c", "3.jpg");
+
+        // Forward navigation
+        assert_eq!(db.navigate_dir("/a", 1), Some("/b".into()));
+        assert_eq!(db.navigate_dir("/b", 1), Some("/c".into()));
+        assert_eq!(db.navigate_dir("/c", 1), None); // at end, clamps
+
+        // Backward navigation
+        assert_eq!(db.navigate_dir("/c", -1), Some("/b".into()));
+        assert_eq!(db.navigate_dir("/a", -1), None); // at start, clamps
+
+        // Unknown dir defaults to index 0
+        assert_eq!(db.navigate_dir("/unknown", 1), Some("/b".into()));
+    }
+
+    #[test]
+    fn navigate_dir_empty_returns_none() {
+        let db = test_db();
+        assert_eq!(db.navigate_dir("/a", 1), None);
+    }
+
+    #[test]
+    fn random_file_empty_and_nonempty() {
+        let db = test_db();
+        assert!(db.random_file().is_none());
+
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+        let f = db.random_file().unwrap();
+        assert_eq!(f.id, 1);
+    }
+
+    #[test]
+    fn newest_file_by_mtime() {
+        let db = test_db();
+        db.file_insert("/a/old.jpg", "/a", "old.jpg", Some(100), Some("2020-01-01"));
+        db.file_insert("/a/new.jpg", "/a", "new.jpg", Some(100), Some("2025-12-31"));
+        db.file_insert("/a/mid.jpg", "/a", "mid.jpg", Some(100), Some("2023-06-15"));
+
+        let newest = db.newest_file().unwrap();
+        assert_eq!(newest.filename, "new.jpg");
+    }
+
+    #[test]
+    fn random_fav_and_latest_fav() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/a.jpg", "/a", "a.jpg");
+        insert_file(&db, 2, "/a/b.jpg", "/a", "b.jpg");
+        db.file_set_hash_meta(1, "h1");
+        db.file_set_hash_meta(2, "h2");
+
+        // No favorites yet
+        assert!(db.random_fav().is_none());
+        assert!(db.latest_fav().is_none());
+
+        // Like file 1, then file 2
+        db.toggle_like(1);
+        db.toggle_like(2);
+
+        // random_fav should return one of them
+        let fav = db.random_fav().unwrap();
+        assert!(fav.id == 1 || fav.id == 2);
+
+        // latest_fav should return file 2 (liked most recently)
+        let latest = db.latest_fav().unwrap();
+        assert_eq!(latest.id, 2);
+    }
+
+    #[test]
+    fn get_file_metadata_full() {
+        let db = test_db();
+        db.file_insert(
+            "/a/photo.png",
+            "/a",
+            "photo.png",
+            Some(5000),
+            Some("2025-01-15"),
+        );
+        let files = db.files_by_dir("/a");
+        let fid = files[0].id;
+
+        db.file_set_hash_meta(fid, "sha512_abc");
+        db.meta_set_dimensions(fid, 3840, 2160, "PNG");
+        db.meta_set_pnginfo(fid, "Steps: 30");
+
+        let meta = db.get_file_metadata(fid).unwrap();
+        assert_eq!(meta.filename, "photo.png");
+        assert_eq!(meta.path, "/a/photo.png");
+        assert_eq!(meta.dir, "/a");
+        assert_eq!(meta.size, Some(5000));
+        assert_eq!(meta.modified_at, Some("2025-01-15".into()));
+        assert_eq!(meta.hash_sha512, Some("sha512_abc".into()));
+        assert_eq!(meta.width, Some(3840));
+        assert_eq!(meta.height, Some(2160));
+        assert_eq!(meta.format, Some("PNG".into()));
+        assert_eq!(meta.pnginfo, Some("Steps: 30".into()));
+        assert!(meta.tags.is_empty());
+    }
+
+    #[test]
+    fn get_file_metadata_no_meta() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+
+        // No hash → no meta row, but get_file_metadata should still work
+        let meta = db.get_file_metadata(1).unwrap();
+        assert_eq!(meta.filename, "photo.jpg");
+        assert!(meta.width.is_none());
+        assert!(meta.hash_sha512.is_none());
+    }
+
+    #[test]
+    fn collection_stats_full() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/a.jpg", "/a", "a.jpg");
+        insert_file(&db, 2, "/b/b.jpg", "/b", "b.jpg");
+        insert_file(&db, 3, "/a/c.png", "/a", "c.png");
+
+        db.file_set_hash_meta(1, "h1");
+        db.file_set_hash_meta(2, "h2");
+        db.meta_set_dimensions(1, 100, 100, "JPEG");
+
+        db.record_job_fail(3, "hash", "error");
+
+        let stats = db.collection_stats();
+        assert_eq!(stats.total_files, 3);
+        assert_eq!(stats.total_dirs, 2);
+        assert_eq!(stats.hashed, 2);
+        assert_eq!(stats.with_exif, 1);
+        assert_eq!(stats.failed, 1);
+    }
+
+    #[test]
+    fn temporary_files_excluded_from_collection_0() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/keep.jpg", "/a", "keep.jpg");
+        insert_file(&db, 2, "/a/temp.jpg", "/a", "temp.jpg");
+
+        db.set_temporary(2, true);
+
+        let col0 = db.files_by_collection(0);
+        assert_eq!(col0.len(), 1);
+        assert_eq!(col0[0].filename, "keep.jpg");
+
+        let col1 = db.files_by_collection(1);
+        assert_eq!(col1.len(), 1);
+        assert_eq!(col1[0].filename, "temp.jpg");
+    }
+
+    #[test]
+    fn file_path_by_id_lookup() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+
+        assert_eq!(db.file_path_by_id(1), Some("/a/photo.jpg".into()));
+        assert_eq!(db.file_path_by_id(999), None);
+    }
+
     #[test]
     fn to_string_lossy_deterministic() {
         use std::ffi::OsStr;

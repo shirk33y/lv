@@ -4040,6 +4040,557 @@ mod tests {
         assert_eq!(db.files_by_dir(&dir_str).len(), 2);
     }
 
+    // ── Multi-dir workflow integration tests ────────────────────────────
+
+    #[test]
+    fn multi_dir_navigate_h_l_keys() {
+        // Simulate h/l key navigation across directories
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+
+        for d in [&dir_a, &dir_b, &dir_c] {
+            std::fs::write(d.path().join("photo.jpg"), b"img").unwrap();
+            std::fs::write(d.path().join("video.mp4"), b"vid").unwrap();
+        }
+        scanner::discover(&db, dir_a.path());
+        scanner::discover(&db, dir_b.path());
+        scanner::discover(&db, dir_c.path());
+
+        let dirs = db.dirs();
+        assert_eq!(dirs.len(), 3);
+
+        // Start in first dir
+        let mut current_dir = dirs[0].clone();
+        let mut files = db.files_by_dir(&current_dir);
+        let mut cursor = 0usize;
+        assert_eq!(files.len(), 2);
+
+        // Navigate forward (l key)
+        if let Some(next) = db.navigate_dir(&current_dir, 1) {
+            switch_dir(
+                &db,
+                &next,
+                &mut files,
+                &mut current_dir,
+                &mut cursor,
+                "first",
+            );
+        }
+        assert_eq!(current_dir, dirs[1]);
+        assert_eq!(cursor, 0);
+
+        // Navigate forward again
+        if let Some(next) = db.navigate_dir(&current_dir, 1) {
+            switch_dir(
+                &db,
+                &next,
+                &mut files,
+                &mut current_dir,
+                &mut cursor,
+                "first",
+            );
+        }
+        assert_eq!(current_dir, dirs[2]);
+
+        // Navigate backward (h key)
+        if let Some(prev) = db.navigate_dir(&current_dir, -1) {
+            switch_dir(
+                &db,
+                &prev,
+                &mut files,
+                &mut current_dir,
+                &mut cursor,
+                "last",
+            );
+        }
+        assert_eq!(current_dir, dirs[1]);
+        // "last" should put cursor at end
+        assert_eq!(cursor, files.len() - 1);
+
+        // Navigate backward past start — should stay
+        let first_dir = dirs[0].clone();
+        switch_dir(
+            &db,
+            &first_dir,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        let stayed = db.navigate_dir(&current_dir, -1);
+        assert!(stayed.is_none(), "already at first dir");
+    }
+
+    #[test]
+    fn multi_dir_random_jump_then_navigate_back() {
+        // u key (random) → jump to random file → h/l to navigate dirs
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("img{:02}.jpg", i)), b"img").unwrap();
+        }
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut current_dir = dir_str.clone();
+        let mut cursor = 0usize;
+
+        // Random file (u key)
+        let random = db.random_file().unwrap();
+        jump_to(&db, random, &mut files, &mut current_dir, &mut cursor);
+        assert!(cursor < files.len());
+        assert_eq!(current_dir, dir_str);
+    }
+
+    #[test]
+    fn watcher_add_file_then_navigate_to_it() {
+        // Simulate: watcher adds file → user presses j to navigate to it
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("existing.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut cursor = 0usize;
+        assert_eq!(files.len(), 1);
+
+        // Watcher adds a new file
+        let new_path = dir.path().join("new_photo.png");
+        std::fs::write(&new_path, b"new img").unwrap();
+        let canonical = std::fs::canonicalize(&new_path).unwrap();
+        let canonical_str = clean_path(&canonical.to_string_lossy());
+        db.file_insert(&canonical_str, &dir_str, "new_photo.png", Some(7), None);
+
+        // Simulate refresh (watcher event)
+        simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
+        assert_eq!(files.len(), 2);
+
+        // Navigate forward (j key)
+        if cursor + 1 < files.len() {
+            cursor += 1;
+        }
+        assert!(cursor < files.len());
+    }
+
+    #[test]
+    fn rapid_dir_switch_while_files_changing() {
+        // User rapidly switches dirs while watcher is modifying file lists
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+
+        for i in 0..5 {
+            std::fs::write(dir_a.path().join(format!("a{}.jpg", i)), b"img").unwrap();
+            std::fs::write(dir_b.path().join(format!("b{}.jpg", i)), b"img").unwrap();
+        }
+        scanner::discover(&db, dir_a.path());
+        scanner::discover(&db, dir_b.path());
+
+        let dir_a_str = clean_path(&dir_a.path().canonicalize().unwrap().to_string_lossy());
+        let dir_b_str = clean_path(&dir_b.path().canonicalize().unwrap().to_string_lossy());
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+
+        // Switch to A
+        switch_dir(
+            &db,
+            &dir_a_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(files.len(), 5);
+
+        // Delete some files from A while we're about to switch
+        let a_files = db.files_by_dir(&dir_a_str);
+        for f in a_files.iter().take(3) {
+            db.remove_file_by_id(f.id);
+        }
+
+        // Switch to B before refresh
+        switch_dir(
+            &db,
+            &dir_b_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(current_dir, dir_b_str);
+        assert_eq!(files.len(), 5);
+        assert!(cursor < files.len());
+
+        // Switch back to A — should see reduced file count
+        switch_dir(
+            &db,
+            &dir_a_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn newest_and_latest_fav_jump_integration() {
+        // n key (newest) and b key (latest fav) with jump_to
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_jobs_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("new.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut current_dir = dir_str.clone();
+        let mut cursor = 0usize;
+
+        // Set different mtimes
+        let old_file = files.iter().find(|f| f.filename == "old.jpg").unwrap();
+        let new_file = files.iter().find(|f| f.filename == "new.jpg").unwrap();
+        db.file_update_meta(old_file.id, Some(100), Some("2020-01-01"));
+        db.file_update_meta(new_file.id, Some(200), Some("2025-12-31"));
+
+        // n key — jump to newest
+        let newest = db.newest_file().unwrap();
+        assert_eq!(newest.filename, "new.jpg");
+        jump_to(&db, newest, &mut files, &mut current_dir, &mut cursor);
+        assert_eq!(files[cursor].filename, "new.jpg");
+
+        // Like a file, then use b key (latest fav)
+        // Need hash first for toggle_like
+        let files_fresh = db.files_by_dir(&dir_str);
+        let f = files_fresh
+            .iter()
+            .find(|f| f.filename == "old.jpg")
+            .unwrap();
+        db.file_set_hash_meta(f.id, "hash_old");
+        db.toggle_like(f.id);
+
+        let latest = db.latest_fav().unwrap();
+        assert_eq!(latest.filename, "old.jpg");
+        jump_to(&db, latest, &mut files, &mut current_dir, &mut cursor);
+        assert_eq!(files[cursor].filename, "old.jpg");
+    }
+
+    #[test]
+    fn collection_mode_full_workflow() {
+        // Switch between dir mode and collection mode
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_jobs_schema();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        for name in &["a1.jpg", "a2.jpg", "a3.jpg"] {
+            std::fs::write(dir_a.path().join(name), b"img").unwrap();
+        }
+        for name in &["b1.jpg", "b2.jpg"] {
+            std::fs::write(dir_b.path().join(name), b"img").unwrap();
+        }
+        scanner::discover(&db, dir_a.path());
+        scanner::discover(&db, dir_b.path());
+
+        let dir_a_str = clean_path(&dir_a.path().canonicalize().unwrap().to_string_lossy());
+
+        let mut files = db.files_by_dir(&dir_a_str);
+        let mut cursor = 0usize;
+
+        // Hash all files and like some
+        let all_files = db.files_by_collection(0);
+        for (i, f) in all_files.iter().enumerate() {
+            db.file_set_hash_meta(f.id, &format!("hash_{}", i));
+        }
+        // Re-fetch after hash
+        let all_files = db.files_by_collection(0);
+        db.toggle_like(all_files[0].id); // a1.jpg
+        db.toggle_like(all_files[3].id); // b1.jpg
+
+        // Switch to likes collection (collection 9)
+        let liked = db.files_by_collection(9);
+        assert_eq!(liked.len(), 2);
+
+        // Simulate collection mode switch
+        let old_id = files.get(cursor).map(|f| f.id);
+        files = liked;
+        cursor = old_id
+            .and_then(|id| files.iter().position(|f| f.id == id))
+            .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+        assert!(cursor < files.len());
+
+        // Navigate within collection
+        cursor = 0;
+        assert!(files[cursor].liked);
+        if cursor + 1 < files.len() {
+            cursor += 1;
+        }
+        assert!(files[cursor].liked);
+
+        // Switch back to dir mode
+        files = db.files_by_dir(&dir_a_str);
+        cursor = 0;
+        assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn delete_all_files_then_add_new_ones() {
+        // Edge case: all files deleted, then new ones appear
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("b.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut cursor = 0usize;
+        assert_eq!(files.len(), 2);
+
+        // Delete all files from disk and DB
+        std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
+        std::fs::remove_file(dir.path().join("b.jpg")).unwrap();
+        for f in files.iter() {
+            db.remove_file_by_id(f.id);
+        }
+        simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
+        assert!(files.is_empty());
+        assert_eq!(cursor, 0);
+
+        // New files appear on disk
+        std::fs::write(dir.path().join("c.jpg"), b"new").unwrap();
+        std::fs::write(dir.path().join("d.jpg"), b"new").unwrap();
+        scanner::discover(&db, dir.path());
+
+        simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
+        assert_eq!(files.len(), 2);
+        assert!(cursor < files.len());
+    }
+
+    #[test]
+    fn scan_multiple_dirs_interleaved_with_navigation() {
+        // Scan dir A → navigate → scan dir B → navigate back
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("a.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir_a.path());
+
+        let dir_a_str = clean_path(&dir_a.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_a_str);
+        let mut current_dir = dir_a_str.clone();
+        let mut cursor = 0usize;
+        assert_eq!(files.len(), 1);
+
+        // User is viewing dir A, scan dir B in background
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("b1.jpg"), b"img").unwrap();
+        std::fs::write(dir_b.path().join("b2.jpg"), b"img").unwrap();
+        std::fs::write(dir_b.path().join("b3.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir_b.path());
+
+        // Dir A view should be unaffected
+        assert_eq!(files.len(), 1);
+        assert_eq!(current_dir, dir_a_str);
+
+        // Navigate to dir B
+        let dir_b_str = clean_path(&dir_b.path().canonicalize().unwrap().to_string_lossy());
+        switch_dir(
+            &db,
+            &dir_b_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(files.len(), 3);
+        assert_eq!(current_dir, dir_b_str);
+
+        // Navigate back to A
+        switch_dir(
+            &db,
+            &dir_a_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "last",
+        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(cursor, 0); // only 1 file, so "last" = 0
+    }
+
+    #[test]
+    fn watcher_bulk_add_during_slideshow() {
+        // Simulate slideshow (auto-advance cursor) while watcher adds files
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("slide{:02}.jpg", i)), b"img").unwrap();
+        }
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut cursor = 0usize;
+
+        // Simulate slideshow: advance cursor
+        for _ in 0..3 {
+            if cursor + 1 < files.len() {
+                cursor += 1;
+            }
+        }
+        let viewing_id = files[cursor].id;
+
+        // Watcher adds 3 more files
+        for i in 5..8 {
+            let p = dir.path().join(format!("slide{:02}.jpg", i));
+            std::fs::write(&p, b"new").unwrap();
+            let canon = std::fs::canonicalize(&p).unwrap();
+            let canon_str = clean_path(&canon.to_string_lossy());
+            db.file_insert(
+                &canon_str,
+                &dir_str,
+                &format!("slide{:02}.jpg", i),
+                Some(3),
+                None,
+            );
+        }
+
+        // Refresh — cursor should stay on same file
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
+        assert!(!needs_display, "cursor file unchanged");
+        assert_eq!(files[cursor].id, viewing_id);
+        assert_eq!(files.len(), 8);
+    }
+
+    #[test]
+    fn drop_dir_with_nested_subdirs() {
+        // handle_drop on a dir with subdirectories
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let root = tempfile::tempdir().unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let subsub = sub.join("deep");
+        std::fs::create_dir(&subsub).unwrap();
+
+        std::fs::write(root.path().join("root.jpg"), b"img").unwrap();
+        std::fs::write(sub.join("sub.png"), b"img").unwrap();
+        std::fs::write(subsub.join("deep.gif"), b"img").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            root.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Should find files across all subdirs, current_dir set to root
+        assert!(
+            files.len() >= 1,
+            "should find at least root.jpg in current dir"
+        );
+        // Total files in DB should be 3
+        assert_eq!(db.file_count(), 3);
+        // dirs should include root, sub, and deep
+        let dirs = db.dirs();
+        assert_eq!(dirs.len(), 3);
+    }
+
+    #[test]
+    fn drop_single_file_sets_dir() {
+        // handle_drop on a single file should set current_dir to its parent
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("single.jpg");
+        std::fs::write(&file, b"img").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            &file,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "single.jpg");
+        assert!(!current_dir.is_empty());
+    }
+
+    #[test]
+    fn rescan_while_user_navigates() {
+        // Rescan modifies DB while user is navigating — cursor stays valid
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("f{:02}.jpg", i)), b"img").unwrap();
+        }
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut cursor = 5usize; // middle of list
+        let viewing_id = files[cursor].id;
+
+        // Delete some files from disk (simulating external deletion)
+        std::fs::remove_file(dir.path().join("f00.jpg")).unwrap();
+        std::fs::remove_file(dir.path().join("f01.jpg")).unwrap();
+        std::fs::remove_file(dir.path().join("f09.jpg")).unwrap();
+
+        // Rescan prunes them
+        let (_updated, pruned) = scanner::rescan(&db, dir.path());
+        assert_eq!(pruned, 3);
+
+        // Refresh UI
+        simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
+        assert_eq!(files.len(), 7);
+        assert!(cursor < files.len());
+        // If the viewed file wasn't deleted, cursor should still point to it
+        assert_eq!(files[cursor].id, viewing_id);
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner
