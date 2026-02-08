@@ -1,0 +1,31 @@
+# Build lv for Linux aarch64 (cross-compiled from x86_64)
+# Usage: docker build -f docker/Dockerfile.linux-aarch64 -o dist .
+FROM debian:bookworm-slim AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN dpkg --add-architecture arm64 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl pkg-config \
+    libsdl2-dev libmpv-dev \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+    libsdl2-dev:arm64 libmpv2:arm64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/lib/aarch64-linux-gnu/libmpv.so.2 /usr/lib/aarch64-linux-gnu/libmpv.so
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal \
+    -t aarch64-unknown-linux-gnu
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' \
+    >> /root/.cargo/config.toml
+
+WORKDIR /src
+COPY . .
+RUN PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
+    cargo build --release --target aarch64-unknown-linux-gnu \
+    && aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/lv-imgui
+
+FROM scratch
+COPY --from=build /src/target/aarch64-unknown-linux-gnu/release/lv-imgui /lv-imgui-linux-aarch64
