@@ -60,6 +60,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: ${{ matrix.os == 'windows' }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -121,6 +123,25 @@ jobs:
         if: matrix.os == 'windows'
         working-directory: src-imgui
         run: cargo xwin build --release --target x86_64-pc-windows-msvc
+
+      - name: Package installer (Windows)
+        if: matrix.os == 'windows'
+        working-directory: src-imgui
+        run: |
+          mkdir -p build-installer
+          cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/
+          cp pkg/win64/SDL2.dll build-installer/
+          cp pkg/win64/libmpv-2.dll build-installer/
+          cp pkg/installer.nsi build-installer/
+          cd build-installer
+          makensis installer.nsi
+
+      - name: Upload installer (Windows)
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv-windows-x86_64-installer
+          path: src-imgui/build-installer/lv-setup.exe
 
       - name: Upload binary (Windows)
         if: matrix.os == 'windows'

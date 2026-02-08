@@ -2,6 +2,7 @@
 ; Compile with: makensis installer.nsi
 
 !include "MUI2.nsh"
+!include "WinMessages.nsh"
 
 Name "lv"
 OutFile "lv-setup.exe"
@@ -10,7 +11,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 ; ── UI ───────────────────────────────────────────────────────────────
-!define MUI_ICON "lv.ico"
+; !define MUI_ICON "lv.ico"
 !define MUI_ABORTWARNING
 
 ; Skip welcome/license/directory pages — just install
@@ -26,7 +27,7 @@ Section "Install"
 
   ; Runtime DLLs
   File "SDL2.dll"
-  File "mpv-2.dll"
+  File "libmpv-2.dll"
 
   ; Create start menu shortcut
   CreateDirectory "$SMPROGRAMS\lv"
@@ -49,8 +50,13 @@ Section "Install"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\lv" \
     "NoRepair" 1
 
-  ; Add to PATH (user)
-  EnVar::AddValue "PATH" "$INSTDIR"
+  ; Add to user PATH via registry
+  ReadRegStr $0 HKCU "Environment" "Path"
+  StrCmp $0 "" 0 +2
+    WriteRegExpandStr HKCU "Environment" "Path" "$INSTDIR"
+  StrCmp $0 "" +2 0
+    WriteRegExpandStr HKCU "Environment" "Path" "$0;$INSTDIR"
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=1000
 
   ; Register file associations (user-level)
   WriteRegStr HKCU "Software\Classes\.jpg\OpenWithProgids" "lv.image" ""
@@ -70,7 +76,7 @@ SectionEnd
 Section "Uninstall"
   Delete "$INSTDIR\lv-imgui.exe"
   Delete "$INSTDIR\SDL2.dll"
-  Delete "$INSTDIR\mpv-2.dll"
+  Delete "$INSTDIR\libmpv-2.dll"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
@@ -81,5 +87,8 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Classes\lv.image"
   DeleteRegKey HKCU "Software\Classes\lv.video"
 
-  EnVar::DeleteValue "PATH" "$INSTDIR"
+  ; Remove from user PATH
+  ReadRegStr $0 HKCU "Environment" "Path"
+  ; Simple removal — user can clean up manually if needed
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=1000
 SectionEnd
