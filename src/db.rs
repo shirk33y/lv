@@ -49,6 +49,13 @@ pub struct FileMeta {
 }
 
 impl Db {
+    #[cfg(test)]
+    pub fn open_memory() -> Self {
+        let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        Db(Arc::new(Mutex::new(conn)))
+    }
+
     pub fn open_default() -> Self {
         let path = default_db_path();
         eprintln!("db: {}", path.display());

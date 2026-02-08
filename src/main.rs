@@ -59,6 +59,100 @@ pub(crate) fn clean_path(p: &str) -> String {
     p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
 }
 
+/// Handle a dropped file or directory path.
+///
+/// - **File**: scan its parent dir (track temporarily if needed), switch to it, jump to the file.
+/// - **Directory**: scan it (track temporarily if needed), switch to it.
+///
+/// Returns `true` if the drop was handled (files/cursor/dir were updated).
+fn handle_drop(
+    db: &Db,
+    dropped: &std::path::Path,
+    files: &mut Vec<FileEntry>,
+    current_dir: &mut String,
+    cursor: &mut usize,
+    collection_mode: &mut Option<u8>,
+) -> bool {
+    let path = match std::fs::canonicalize(dropped) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("drop: cannot resolve {}: {}", dropped.display(), e);
+            return false;
+        }
+    };
+
+    if path.is_file() {
+        // Check if it's a media file
+        let path_str = clean_path(&path.to_string_lossy());
+        if !is_image(&path_str) && !is_video(&path_str) {
+            eprintln!("drop: not a media file: {}", path_str);
+            return false;
+        }
+
+        let parent = path.parent().unwrap_or(&path);
+        let parent_str = clean_path(&parent.to_string_lossy());
+
+        // Scan the parent directory (adds new files to DB)
+        if !db.dir_is_tracked(&parent_str) && !db.dir_is_covered(&parent_str) {
+            db.dir_track(&parent_str, false);
+            scanner::discover(db, parent);
+            // Mark as temporary
+            for f in &db.files_by_dir(&parent_str) {
+                db.set_temporary(f.id, true);
+            }
+            eprintln!("drop: tracked (temp) {}", parent_str);
+        } else {
+            scanner::discover(db, parent);
+        }
+
+        // Exit collection mode, switch to dir mode
+        *collection_mode = None;
+        let new_files = db.files_by_dir(&parent_str);
+        if new_files.is_empty() {
+            eprintln!("drop: no files in {}", parent_str);
+            return false;
+        }
+        let idx = new_files
+            .iter()
+            .position(|f| f.path == path_str)
+            .unwrap_or(0);
+        *files = new_files;
+        *current_dir = parent_str;
+        *cursor = idx;
+        eprintln!("drop: file {} [{}/{}]", path_str, idx + 1, files.len());
+        true
+    } else if path.is_dir() {
+        let dir_str = clean_path(&path.to_string_lossy());
+
+        // Scan the directory
+        if !db.dir_is_tracked(&dir_str) && !db.dir_is_covered(&dir_str) {
+            db.dir_track(&dir_str, false);
+            scanner::discover(db, &path);
+            for f in &db.files_by_dir(&dir_str) {
+                db.set_temporary(f.id, true);
+            }
+            eprintln!("drop: tracked (temp) {}", dir_str);
+        } else {
+            scanner::discover(db, &path);
+        }
+
+        *collection_mode = None;
+        let new_files = db.files_by_dir(&dir_str);
+        if new_files.is_empty() {
+            eprintln!("drop: no media files in {}", dir_str);
+            return false;
+        }
+        *files = new_files;
+        *current_dir = dir_str;
+        *cursor = 0;
+        eprintln!("drop: dir {} ({} files)", current_dir, files.len());
+        true
+    } else {
+        eprintln!("drop: not a file or directory: {}", path.display());
+        false
+    }
+}
+
 /// Send mpv "stop" asynchronously so it doesn't block the UI thread.
 unsafe fn mpv_stop_async(handle: *mut libmpv2_sys::mpv_handle) {
     let cmd = std::ffi::CString::new("stop").unwrap();
@@ -954,6 +1048,20 @@ fn main() {
                         _ => {}
                     }
                 }
+                Event::DropFile { filename, .. } => {
+                    let dropped = std::path::PathBuf::from(&filename);
+                    if handle_drop(
+                        &lv_db,
+                        &dropped,
+                        &mut files,
+                        &mut current_dir,
+                        &mut cursor,
+                        &mut collection_mode,
+                    ) {
+                        needs_display = true;
+                    }
+                }
+
                 _ => {}
             }
         }
@@ -1618,6 +1726,370 @@ mod tests {
     #[test]
     fn clean_path_only_prefix() {
         assert_eq!(clean_path(r"\\?\"), "");
+    }
+
+    // ── handle_drop tests ─────────────────────────────────────────────
+
+    /// Helper: create a temp dir with media files.
+    /// Returns (db, TempDir) — keep TempDir alive for the test duration.
+    fn setup_drop_dir(filenames: &[&str]) -> (Db, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        for name in filenames {
+            std::fs::write(dir.path().join(name), b"fake").unwrap();
+        }
+        let db = Db::open_memory();
+        db.ensure_schema();
+        (db, dir)
+    }
+
+    #[test]
+    fn drop_image_file_untracked_dir() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg", "other.png"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert_eq!(files.len(), 2); // photo.jpg + other.png
+        assert!(current_dir.contains(dir.path().file_name().unwrap().to_str().unwrap()));
+        // cursor should point to photo.jpg
+        assert_eq!(files[cursor].filename, "photo.jpg");
+        assert!(col.is_none());
+    }
+
+    #[test]
+    fn drop_video_file() {
+        let (db, dir) = setup_drop_dir(&["clip.mp4", "photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("clip.mp4"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert_eq!(files[cursor].filename, "clip.mp4");
+    }
+
+    #[test]
+    fn drop_non_media_file_rejected() {
+        let (db, dir) = setup_drop_dir(&["readme.txt", "photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("readme.txt"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn drop_directory() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.png", "c.mp4"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert_eq!(files.len(), 3);
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn drop_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_memory();
+        db.ensure_schema();
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn drop_dir_with_no_media() {
+        let (db, dir) = setup_drop_dir(&["readme.md", "config.toml", ".gitignore"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn drop_nonexistent_path() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            std::path::Path::new("/nonexistent/path/photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok);
+    }
+
+    #[test]
+    fn drop_exits_collection_mode() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = Some(3u8); // in collection mode
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert!(col.is_none()); // should exit collection mode
+    }
+
+    #[test]
+    fn drop_file_in_already_tracked_dir() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg", "other.png"]);
+        let dir_str = clean_path(&dir.path().to_string_lossy());
+        db.dir_track(&dir_str, true);
+        scanner::discover(&db, dir.path());
+
+        let mut files = db.files_by_dir(&dir_str);
+        let mut current_dir = dir_str.clone();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        // Drop a file in the already-tracked dir
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("other.png"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert_eq!(files[cursor].filename, "other.png");
+        assert_eq!(current_dir, dir_str);
+    }
+
+    #[test]
+    fn drop_marks_untracked_as_temporary() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            &dir.path().join("photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        // Files from untracked dirs should be marked temporary
+        assert!(files[0].temporary);
+    }
+
+    #[test]
+    fn drop_tracked_dir_not_marked_temporary() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg"]);
+        let dir_str = clean_path(&dir.path().to_string_lossy());
+        db.dir_track(&dir_str, true);
+        scanner::discover(&db, dir.path());
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            &dir.path().join("photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!files[0].temporary);
+    }
+
+    #[test]
+    fn drop_file_cursor_points_to_correct_file() {
+        let (db, dir) = setup_drop_dir(&["aaa.jpg", "bbb.jpg", "ccc.jpg", "ddd.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        // Drop the third file
+        handle_drop(
+            &db,
+            &dir.path().join("ccc.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files[cursor].filename, "ccc.jpg");
+    }
+
+    #[test]
+    fn drop_dir_cursor_starts_at_zero() {
+        let (db, dir) = setup_drop_dir(&["z.jpg", "a.jpg", "m.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 99usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn drop_mixed_media_and_non_media_dir() {
+        let (db, dir) = setup_drop_dir(&["photo.jpg", "readme.txt", "clip.mp4", "notes.md"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        // Only media files should be in the list
+        assert_eq!(files.len(), 2);
+        let names: Vec<&str> = files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"photo.jpg"));
+        assert!(names.contains(&"clip.mp4"));
+    }
+
+    #[test]
+    fn drop_replaces_previous_file_list() {
+        let (db, dir1) = setup_drop_dir(&["a.jpg"]);
+        let dir2 = tempfile::tempdir().unwrap();
+        std::fs::write(dir2.path().join("b.png"), b"fake").unwrap();
+        std::fs::write(dir2.path().join("c.png"), b"fake").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir1.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 1);
+
+        handle_drop(
+            &db,
+            dir2.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn drop_case_insensitive_extension() {
+        let (db, dir) = setup_drop_dir(&["PHOTO.JPG", "VIDEO.MP4"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("PHOTO.JPG"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
     }
 
     #[test]
