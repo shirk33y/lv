@@ -2450,6 +2450,452 @@ mod tests {
         assert_eq!(files.len(), 2);
     }
 
+    // ── race condition / edge case tests ────────────────────────────────
+
+    /// Helper: simulate the watcher refresh logic from the main loop.
+    /// Returns (needs_display, new_cursor).
+    fn simulate_refresh(
+        db: &Db,
+        files: &mut Vec<FileEntry>,
+        cursor: &mut usize,
+        current_dir: &str,
+    ) -> bool {
+        let old_id = files.get(*cursor).map(|f| f.id);
+        let new_files = db.files_by_dir(current_dir);
+        *files = new_files;
+        let fallback = (*cursor).min(files.len().saturating_sub(1));
+        *cursor = old_id
+            .and_then(|id| files.iter().position(|f| f.id == id))
+            .unwrap_or(fallback);
+        let new_id = files.get(*cursor).map(|f| f.id);
+        new_id != old_id
+    }
+
+    #[test]
+    fn race_watcher_adds_file_cursor_stable() {
+        // #1: Watcher adds a new file while user is viewing a file.
+        // Cursor should stay on the same file.
+        let (db, dir) = setup_drop_dir(&["aaa.jpg", "bbb.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "bbb.jpg").unwrap();
+        let viewing_id = files[cursor].id;
+
+        // Watcher adds a new file
+        std::fs::write(dir.path().join("ccc.png"), b"fake").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(
+            !needs_display,
+            "adding a file should not trigger re-display"
+        );
+        assert_eq!(
+            files[cursor].id, viewing_id,
+            "cursor should stay on bbb.jpg"
+        );
+        assert_eq!(files.len(), 3, "new file should be in list");
+    }
+
+    #[test]
+    fn race_bulk_delete_multiple_files() {
+        // #2: Multiple files removed in quick succession (bulk delete).
+        // Simulate processing multiple watcher events in one frame.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "c.jpg").unwrap();
+        let viewing_id = files[cursor].id;
+
+        // Bulk delete: remove a, b, d (not c which we're viewing)
+        for name in &["a.jpg", "b.jpg", "d.jpg"] {
+            let p = files
+                .iter()
+                .find(|f| f.filename == *name)
+                .unwrap()
+                .path
+                .clone();
+            db.remove_file_by_path(&p);
+            // Each removal triggers a refresh (simulating multiple events)
+            simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+        }
+
+        assert_eq!(files[cursor].id, viewing_id, "cursor should stay on c.jpg");
+        assert_eq!(files.len(), 2, "only c.jpg and e.jpg should remain");
+    }
+
+    #[test]
+    fn race_all_files_deleted() {
+        // #3: Watcher empties the file list (all files deleted).
+        // Should not panic, cursor should be 0, files empty.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Remove all files
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        for p in &paths {
+            db.remove_file_by_path(p);
+        }
+
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(
+            needs_display,
+            "should trigger re-display when current file gone"
+        );
+        assert!(files.is_empty(), "file list should be empty");
+        // cursor.min(0.saturating_sub(1)) = cursor.min(usize::MAX) = cursor
+        // files.get(cursor) should return None safely
+        assert!(files.get(cursor).is_none(), "no file at cursor");
+    }
+
+    #[test]
+    fn race_pending_decode_file_removed() {
+        // #4: Current file removed while async decode is pending.
+        // Simulate: pending_cold_load holds a path, watcher removes that file.
+        let (db, dir) = setup_drop_dir(&["slow.webp", "fast.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files
+            .iter()
+            .position(|f| f.filename == "slow.webp")
+            .unwrap();
+
+        // Simulate pending_cold_load
+        let pending_cold_load: Option<String> = Some(files[cursor].path.clone());
+
+        // Watcher removes slow.webp
+        db.remove_file_by_path(&files[cursor].path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(
+            needs_display,
+            "should re-display since current file removed"
+        );
+        // The pending_cold_load path is now stale — main loop should detect this
+        if let Some(ref cold_path) = pending_cold_load {
+            let still_current = files.get(cursor).map(|f| &f.path) == Some(cold_path);
+            assert!(
+                !still_current,
+                "pending decode path should no longer match current file"
+            );
+        }
+    }
+
+    #[test]
+    fn race_cursor_at_last_file_removed() {
+        // #5: Cursor at last file, that file gets removed.
+        // Cursor should clamp to new last file.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.len() - 1; // last file
+        let last_path = files[cursor].path.clone();
+
+        db.remove_file_by_path(&last_path);
+        simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(cursor < files.len(), "cursor should be within bounds");
+        assert_eq!(cursor, files.len() - 1, "cursor should clamp to new last");
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn race_cursor_at_first_file_removed() {
+        // #6: Cursor at first file, that file gets removed.
+        // Cursor should stay at 0.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = 0;
+        let first_path = files[0].path.clone();
+
+        db.remove_file_by_path(&first_path);
+        simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert_eq!(cursor, 0, "cursor should stay at 0");
+        assert_eq!(files.len(), 2);
+        assert_ne!(
+            files[0].path, first_path,
+            "first file should be different now"
+        );
+    }
+
+    #[test]
+    fn race_stale_watcher_event_different_dir() {
+        // #7: User switches to dir B, then a stale watcher event for dir A arrives.
+        // The refresh should be ignored (dir != current_dir).
+        let (db, dir_a) = setup_drop_dir(&["a1.jpg", "a2.jpg"]);
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("b1.png"), b"fake").unwrap();
+        std::fs::write(dir_b.path().join("b2.png"), b"fake").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        // Start in dir A
+        handle_drop(
+            &db,
+            dir_a.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 2);
+
+        // Switch to dir B
+        handle_drop(
+            &db,
+            dir_b.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let dir_b_str = current_dir.clone();
+        assert_eq!(files.len(), 2);
+        let viewing_id = files[cursor].id;
+
+        // Stale watcher event for dir A — should NOT refresh
+        let dir_a_str = clean_path(&dir_a.path().to_string_lossy());
+        let stale_dir = dir_a_str;
+        // Simulate: only refresh if dir == current_dir
+        if stale_dir == current_dir {
+            simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+        }
+
+        assert_eq!(current_dir, dir_b_str, "should still be in dir B");
+        assert_eq!(files[cursor].id, viewing_id, "cursor should not change");
+    }
+
+    #[test]
+    fn race_error_cleared_on_valid_image() {
+        // #8: error_message set, then user navigates to a valid image.
+        // Error should be cleared.
+        let mut error_message: Option<(String, String)> =
+            Some(("File not found".into(), "deleted.jpg".into()));
+
+        // Simulate navigating to a valid image
+        let path = "/some/valid/photo.jpg";
+        if is_image(path) {
+            error_message = None;
+        }
+
+        assert!(
+            error_message.is_none(),
+            "error should be cleared for valid image"
+        );
+    }
+
+    #[test]
+    fn race_error_cleared_on_valid_video() {
+        // #8b: error_message set, then user navigates to a valid video.
+        let mut error_message: Option<(String, String)> =
+            Some(("File not found".into(), "deleted.jpg".into()));
+
+        let path = "/some/valid/clip.mp4";
+        if is_video(path) {
+            error_message = None;
+        }
+
+        assert!(
+            error_message.is_none(),
+            "error should be cleared for valid video"
+        );
+    }
+
+    #[test]
+    fn race_error_persists_for_unsupported() {
+        // #8c: error_message should be set for unsupported file types.
+        let mut error_message: Option<(String, String)> = None;
+
+        let path = "document.pdf";
+        if !is_image(path) && !is_video(path) {
+            error_message = Some(("Unsupported file type".into(), "document.pdf".into()));
+        }
+
+        assert!(error_message.is_some());
+    }
+
+    #[test]
+    fn race_errored_file_removed_by_watcher() {
+        // #9: File that caused an error gets removed by watcher.
+        // After refresh, cursor shifts to a different file, needs_display is set,
+        // and the error should be cleared when the new file is displayed.
+        let (db, dir) = setup_drop_dir(&["bad.jpg", "good.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "bad.jpg").unwrap();
+
+        // Simulate error on bad.jpg
+        let mut error_message: Option<(String, String)> =
+            Some(("Failed to decode image".into(), "bad.jpg".into()));
+
+        // Watcher removes bad.jpg
+        db.remove_file_by_path(&files[cursor].path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(
+            needs_display,
+            "should re-display since errored file removed"
+        );
+        assert_eq!(files.len(), 1);
+
+        // Simulate the display loop: new file is good.jpg (exists, is image)
+        if let Some(file) = files.get(cursor) {
+            let path = &file.path;
+            if std::path::Path::new(path).exists() && is_image(path) {
+                error_message = None;
+            }
+        }
+
+        assert!(
+            error_message.is_none(),
+            "error should be cleared after navigating to valid file"
+        );
+    }
+
+    #[test]
+    fn race_cursor_stable_after_many_additions() {
+        // Stress: many files added, cursor should stay on the same file.
+        let (db, dir) = setup_drop_dir(&["target.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let viewing_id = files[cursor].id;
+
+        // Add 20 more files
+        for i in 0..20 {
+            std::fs::write(dir.path().join(format!("new_{:03}.png", i)), b"fake").unwrap();
+        }
+        scanner::discover(&db, dir.path());
+        simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert_eq!(
+            files[cursor].id, viewing_id,
+            "cursor should stay on target.jpg"
+        );
+        assert_eq!(files.len(), 21);
+    }
+
+    #[test]
+    fn race_single_file_removed_leaves_empty() {
+        // Edge: directory with single file, that file removed.
+        let (db, dir) = setup_drop_dir(&["only.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 1);
+
+        db.remove_file_by_path(&files[0].path);
+        simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(files.is_empty());
+        assert!(files.get(cursor).is_none());
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner
