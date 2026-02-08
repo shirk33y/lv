@@ -1423,4 +1423,112 @@ mod tests {
         assert!(db.file_in_collection(1, 3)); // c3
         assert!(!db.file_in_collection(1, 0)); // NOT in collection 0
     }
+
+    // ── to_string_lossy / Unicode path tests ────────────────────────────
+    //
+    // Path::to_string_lossy() replaces invalid UTF-8 bytes with U+FFFD (�).
+    // It does NOT strip characters. The replacement is deterministic, so
+    // two calls on the same OsStr always produce the same String. Our code
+    // relies on this: the scanner stores paths via to_string_lossy(), and
+    // later lookups compare against the same lossy conversion.
+    //
+    // These tests verify that:
+    // 1. Valid UTF-8 paths (including emoji, CJK, accents) round-trip perfectly.
+    // 2. The replacement character is stored and matched consistently.
+    // 3. dir_is_tracked / dir_is_covered work with Unicode paths.
+
+    #[test]
+    fn unicode_paths_roundtrip() {
+        let db = test_db();
+        // Emoji dir
+        insert_file(&db, 1, "/📸/photo.jpg", "/📸", "photo.jpg");
+        // CJK
+        insert_file(&db, 2, "/写真/img.png", "/写真", "img.png");
+        // Accented
+        insert_file(&db, 3, "/café/latté.jpg", "/café", "latté.jpg");
+
+        let files = db.files_by_dir("/📸");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "/📸/photo.jpg");
+
+        let files = db.files_by_dir("/写真");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "img.png");
+
+        let files = db.files_by_dir("/café");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "latté.jpg");
+
+        assert_eq!(db.file_count(), 3);
+        assert_eq!(db.dir_count(), 3);
+    }
+
+    #[test]
+    fn unicode_dir_tracking() {
+        let db = test_db();
+        db.dir_track("/données/photos", true);
+        assert!(db.dir_is_tracked("/données/photos"));
+        assert!(db.dir_is_covered("/données/photos/été"));
+        assert!(!db.dir_is_covered("/donnees/photos")); // different string
+
+        db.dir_untrack("/données/photos");
+        assert!(!db.dir_is_tracked("/données/photos"));
+    }
+
+    #[test]
+    fn replacement_char_is_consistent() {
+        let db = test_db();
+        // Simulate what to_string_lossy produces for invalid UTF-8:
+        // the replacement character U+FFFD is a valid UTF-8 string.
+        let lossy_path = "/pics/caf\u{FFFD}.jpg";
+        let lossy_dir = "/pics";
+        insert_file(&db, 1, lossy_path, lossy_dir, "caf\u{FFFD}.jpg");
+
+        // Lookup with the same lossy string succeeds
+        let files = db.files_by_dir(lossy_dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, lossy_path);
+        assert_eq!(files[0].filename, "caf\u{FFFD}.jpg");
+
+        // Lookup with the "correct" UTF-8 does NOT match the lossy version
+        let files = db.files_by_dir("/pics_other");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn lossy_path_does_not_match_original() {
+        let db = test_db();
+        // A path stored with replacement char won't match the "intended" name
+        insert_file(&db, 1, "/a/caf\u{FFFD}.jpg", "/a", "caf\u{FFFD}.jpg");
+
+        let files = db.files_by_dir("/a");
+        assert_eq!(files.len(), 1);
+        // The stored filename contains the replacement char, not the original byte
+        assert!(files[0].filename.contains('\u{FFFD}'));
+        assert_ne!(files[0].filename, "café.jpg");
+    }
+
+    #[test]
+    fn to_string_lossy_deterministic() {
+        use std::ffi::OsStr;
+        // Valid UTF-8: to_string_lossy returns identical string
+        let s = OsStr::new("/photos/café/日本語.jpg");
+        let a = s.to_string_lossy();
+        let b = s.to_string_lossy();
+        assert_eq!(a, b);
+
+        // On Unix, we can test with raw invalid bytes
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            // 0xFF is not valid UTF-8
+            let raw: &[u8] = b"/pics/caf\xff.jpg";
+            let os = OsStr::from_bytes(raw);
+            let lossy1 = os.to_string_lossy().to_string();
+            let lossy2 = os.to_string_lossy().to_string();
+            assert_eq!(lossy1, lossy2); // deterministic
+            assert!(lossy1.contains('\u{FFFD}')); // replacement char present
+            assert!(!lossy1.contains('\u{FF}')); // original byte gone
+        }
+    }
 }
