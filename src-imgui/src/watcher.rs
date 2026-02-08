@@ -94,14 +94,15 @@ fn run_watcher(db: Db, tx: mpsc::Sender<FsEvent>, quit: Arc<AtomicBool>) {
         }
     };
 
-    // Watch all dirs marked as watched in DB
+    // Watch all dirs marked as watched in DB, with nested dedup
     let watched = db.watched_dirs();
     if watched.is_empty() {
         eprintln!("watcher: no watched directories, exiting");
         return;
     }
 
-    for (dir, recursive) in &watched {
+    let effective = dedup_nested(&watched);
+    for (dir, recursive) in &effective {
         let mode = if *recursive {
             RecursiveMode::Recursive
         } else {
@@ -111,6 +112,13 @@ fn run_watcher(db: Db, tx: mpsc::Sender<FsEvent>, quit: Arc<AtomicBool>) {
             Ok(()) => eprintln!("watcher: watching {} (recursive={})", dir, recursive),
             Err(e) => eprintln!("watcher: failed to watch {}: {}", dir, e),
         }
+    }
+    if effective.len() < watched.len() {
+        eprintln!(
+            "watcher: deduped {} → {} watches (nested dirs skipped)",
+            watched.len(),
+            effective.len()
+        );
     }
 
     // Process events until quit
@@ -204,6 +212,28 @@ fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
     }
 }
 
+/// Deduplicate nested watched directories: if `/a` is recursive, skip `/a/b`.
+/// Non-recursive dirs are never ancestors (they don't cover children).
+fn dedup_nested(dirs: &[(String, bool)]) -> Vec<(String, bool)> {
+    // Collect recursive dirs first (they can subsume children)
+    let recursive: Vec<&str> = dirs
+        .iter()
+        .filter(|(_, r)| *r)
+        .map(|(p, _)| p.as_str())
+        .collect();
+
+    dirs.iter()
+        .filter(|(path, _)| {
+            // Keep this dir unless a *different* recursive ancestor covers it
+            !recursive.iter().any(|ancestor| {
+                *ancestor != path.as_str()
+                    && (path.starts_with(&format!("{}/", ancestor)) || *ancestor == path.as_str())
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +262,79 @@ mod tests {
     fn is_media_no_extension() {
         assert!(!is_media(Path::new("/a/noext")));
         assert!(!is_media(Path::new("/a/")));
+    }
+
+    // ── dedup_nested ────────────────────────────────────────────────────
+
+    fn d(path: &str, recursive: bool) -> (String, bool) {
+        (path.to_string(), recursive)
+    }
+
+    #[test]
+    fn dedup_no_overlap() {
+        let dirs = vec![d("/a", true), d("/b", true)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn dedup_child_of_recursive_removed() {
+        let dirs = vec![d("/photos", true), d("/photos/vacation", true)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "/photos");
+    }
+
+    #[test]
+    fn dedup_child_of_recursive_nonrecursive_child_removed() {
+        let dirs = vec![d("/photos", true), d("/photos/vacation", false)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "/photos");
+    }
+
+    #[test]
+    fn dedup_nonrecursive_parent_keeps_child() {
+        // /photos is non-recursive, so /photos/vacation is NOT covered
+        let dirs = vec![d("/photos", false), d("/photos/vacation", true)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn dedup_no_false_prefix_match() {
+        // /photo should NOT subsume /photos
+        let dirs = vec![d("/photo", true), d("/photos", true)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn dedup_deeply_nested() {
+        let dirs = vec![
+            d("/a", true),
+            d("/a/b", true),
+            d("/a/b/c", false),
+            d("/x", false),
+        ];
+        let result = dedup_nested(&dirs);
+        // /a covers /a/b and /a/b/c; /x is independent
+        assert_eq!(result.len(), 2);
+        let paths: Vec<&str> = result.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"/a"));
+        assert!(paths.contains(&"/x"));
+    }
+
+    #[test]
+    fn dedup_empty() {
+        let dirs: Vec<(String, bool)> = vec![];
+        assert!(dedup_nested(&dirs).is_empty());
+    }
+
+    #[test]
+    fn dedup_single() {
+        let dirs = vec![d("/only", true)];
+        let result = dedup_nested(&dirs);
+        assert_eq!(result.len(), 1);
     }
 }
