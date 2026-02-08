@@ -59,6 +59,116 @@ impl Db {
         self.0.lock().unwrap()
     }
 
+    pub fn ensure_schema(&self) {
+        self.conn()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS files (
+                    id            INTEGER PRIMARY KEY,
+                    path          TEXT NOT NULL UNIQUE,
+                    dir           TEXT NOT NULL,
+                    filename      TEXT NOT NULL,
+                    size          INTEGER,
+                    modified_at   TEXT,
+                    hash_sha512   TEXT,
+                    meta_id       INTEGER REFERENCES meta(id),
+                    created_at    TEXT DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS meta (
+                    id            INTEGER PRIMARY KEY,
+                    hash_sha512   TEXT NOT NULL UNIQUE,
+                    width         INTEGER,
+                    height        INTEGER,
+                    format        TEXT,
+                    exif_json     TEXT,
+                    pnginfo       TEXT,
+                    duration_ms   INTEGER,
+                    bitrate       INTEGER,
+                    codecs        TEXT,
+                    tags          TEXT DEFAULT '[]',
+                    thumb_ready   INTEGER DEFAULT 0,
+                    created_at    TEXT DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS history (
+                    id            INTEGER PRIMARY KEY,
+                    file_id       INTEGER REFERENCES files(id),
+                    action        TEXT NOT NULL,
+                    created_at    TEXT DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS watched (
+                    id            INTEGER PRIMARY KEY,
+                    path          TEXT NOT NULL UNIQUE,
+                    active        INTEGER DEFAULT 1,
+                    created_at    TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
+                CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);",
+            )
+            .expect("schema creation failed");
+    }
+
+    // ── Scanner / watched ────────────────────────────────────────────────
+
+    pub fn watched_add(&self, path: &str) {
+        self.conn()
+            .execute(
+                "INSERT OR IGNORE INTO watched (path) VALUES (?1)",
+                [path],
+            )
+            .ok();
+    }
+
+    pub fn watched_list(&self) -> Vec<String> {
+        let db = self.conn();
+        let mut stmt = db
+            .prepare("SELECT path FROM watched WHERE active = 1 ORDER BY path")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    pub fn file_lookup(&self, path: &str) -> Option<(i64, Option<i64>, Option<String>)> {
+        self.conn()
+            .query_row(
+                "SELECT id, size, modified_at FROM files WHERE path = ?1",
+                [path],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+
+    pub fn file_insert(
+        &self,
+        path: &str,
+        dir: &str,
+        filename: &str,
+        size: Option<i64>,
+        modified_at: Option<&str>,
+    ) -> Option<i64> {
+        let db = self.conn();
+        db.execute(
+            "INSERT OR IGNORE INTO files (path, dir, filename, size, modified_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![path, dir, filename, size, modified_at],
+        )
+        .ok()?;
+        Some(db.last_insert_rowid())
+    }
+
+    pub fn file_update_meta(
+        &self,
+        file_id: i64,
+        size: Option<i64>,
+        modified_at: Option<&str>,
+    ) {
+        self.conn()
+            .execute(
+                "UPDATE files SET size = ?1, modified_at = ?2, hash_sha512 = NULL, meta_id = NULL WHERE id = ?3",
+                rusqlite::params![size, modified_at, file_id],
+            )
+            .ok();
+    }
+
     // ── Directory listing ───────────────────────────────────────────────
 
     pub fn dirs(&self) -> Vec<String> {

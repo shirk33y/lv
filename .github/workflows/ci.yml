@@ -12,64 +12,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          cache-all-crates: "true"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev
-
-      - name: Install frontend deps
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Cargo check
-        working-directory: src-tauri
-        run: cargo check
-
-      - name: Clippy
-        working-directory: src-tauri
-        run: cargo clippy -- -D warnings
-
-      - name: Rustfmt
-        working-directory: src-tauri
-        run: cargo fmt -- --check
-
-      - name: Cargo test
-        working-directory: src-tauri
-        run: cargo test
-
-  test-imgui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -81,9 +23,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libsdl2-dev \
-            libmpv-dev
+          sudo apt-get install -y libsdl2-dev libmpv-dev
 
       - name: Cargo test
         working-directory: src-imgui
@@ -94,7 +34,7 @@ jobs:
         run: cargo check --release
 
   build:
-    needs: [test, test-imgui]
+    needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -103,23 +43,15 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
             os: linux
-            artifact_glob: 'src-tauri/target/release/bundle/appimage/*.AppImage'
           - arch: aarch64
             runner: ubuntu-24.04-arm
             os: linux
-            artifact_glob: 'src-tauri/target/release/bundle/appimage/*.AppImage'
           - arch: x86_64
             runner: ubuntu-latest
             os: windows
-            artifact_glob: 'src-tauri/target/x86_64-pc-windows-msvc/release/lv.exe'
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -128,25 +60,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: src-imgui -> target
           cache-all-crates: "true"
 
-      - name: Install system dependencies (Linux AppImage)
+      - name: Install system dependencies (Linux)
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev
+          sudo apt-get install -y libsdl2-dev libmpv-dev
+
+      - name: Build (Linux)
+        if: matrix.os == 'linux'
+        working-directory: src-imgui
+        run: cargo build --release
 
       - name: Install cross-compile tools (Windows via xwin)
         if: matrix.os == 'windows'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang
+          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev
           cargo install cargo-xwin --locked
 
       - name: Cache xwin MSVC CRT/SDK
@@ -156,31 +88,21 @@ jobs:
           path: ~/.cache/cargo-xwin
           key: xwin-msvc-sdk
 
-      - name: Install frontend deps
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Install Tauri CLI
-        if: matrix.os == 'linux'
-        run: cargo install tauri-cli --version "^2" --locked
-
-      - name: Build AppImage
-        if: matrix.os == 'linux'
-        working-directory: src-tauri
-        run: cargo tauri build --bundles appimage
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
-
-      - name: Build Windows exe
+      - name: Build (Windows)
         if: matrix.os == 'windows'
-        working-directory: src-tauri
+        working-directory: src-imgui
         run: cargo xwin build --release --target x86_64-pc-windows-msvc
 
-      - name: Upload artifact
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: lv-${{ matrix.os }}-${{ matrix.arch }}
-          path: ${{ matrix.artifact_glob }}
-          if-no-files-found: error
+          name: lv-linux-${{ matrix.arch }}
+          path: src-imgui/target/release/lv-imgui
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv-windows-x86_64
+          path: src-imgui/target/x86_64-pc-windows-msvc/release/lv-imgui.exe

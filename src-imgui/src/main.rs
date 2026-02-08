@@ -8,16 +8,20 @@
 //! Usage: cargo run --release [-- <dir_override>]
 
 mod aimeta;
+mod cli;
 mod db;
 mod jobs;
 mod preload;
 mod quad;
+mod scanner;
 mod statusbar;
 
-use std::env;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+use clap::{Parser, Subcommand};
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -291,11 +295,49 @@ struct TimingEntry {
     upload_ms: Option<f64>,
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "lv", about = "Little Viewer — media viewer + library")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Directory or file to open
+    #[arg(trailing_var_arg = true)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Add directory to library and scan it
+    Add { path: PathBuf },
+    /// Re-scan watched directories (or a specific path)
+    Scan { path: Option<PathBuf> },
+    /// Show library statistics
+    Status,
+    /// Run headless job worker until done
+    Worker,
+}
+
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let args = Cli::parse();
 
     // ── Database ────────────────────────────────────────────────────────
     let lv_db = Db::open_default();
+    lv_db.ensure_schema();
+
+    // ── CLI subcommands (non-GUI, exit after) ───────────────────────────
+    if let Some(cmd) = args.command {
+        lv_db.ensure_jobs_schema();
+        match cmd {
+            Commands::Add { path } => cli::add(&lv_db, &path),
+            Commands::Scan { path } => cli::scan(&lv_db, path.as_deref()),
+            Commands::Status => cli::status(&lv_db),
+            Commands::Worker => cli::worker(&lv_db),
+        }
+        return;
+    }
+
+    // ── GUI mode ─────────────────────────────────────────────────────────
     let total_files = lv_db.file_count();
     let total_dirs = lv_db.dir_count();
     eprintln!("lv.db: {} files in {} dirs", total_files, total_dirs);
@@ -304,8 +346,8 @@ fn main() {
     let mut job_engine = jobs::JobEngine::start(lv_db.clone());
 
     // Load initial directory
-    let initial_dir = if let Some(dir) = args.first() {
-        dir.clone()
+    let initial_dir = if let Some(p) = args.paths.first() {
+        p.to_string_lossy().to_string()
     } else {
         lv_db.first_dir().unwrap_or_default()
     };
