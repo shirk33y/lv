@@ -3786,6 +3786,260 @@ mod tests {
         assert_eq!(files.len(), 3);
     }
 
+    // ── Navigation edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn jump_to_deleted_file_no_panic() {
+        // jump_to a file that was just deleted from DB.
+        // Should gracefully handle missing file (dir query returns empty or
+        // file not found in list).
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Grab file B's entry, then delete it
+        let b_entry = files
+            .iter()
+            .find(|f| f.filename == "b.jpg")
+            .unwrap()
+            .clone();
+        db.remove_file_by_path(&b_entry.path);
+
+        // jump_to the deleted file — should not panic
+        let _old_cursor = cursor;
+        let _old_dir = current_dir.clone();
+        jump_to(&db, b_entry, &mut files, &mut current_dir, &mut cursor);
+
+        // Since b.jpg is gone from DB, files_by_dir for its dir won't contain it.
+        // jump_to should either stay in current dir or load the dir with b.jpg missing.
+        // Either way, cursor must be valid.
+        if !files.is_empty() {
+            assert!(cursor < files.len(), "cursor must be in bounds");
+        }
+        // Should not have crashed — that's the main assertion
+    }
+
+    #[test]
+    fn jump_to_file_in_empty_dir() {
+        // jump_to a file whose dir has no files in DB.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut current_dir = dir_str.clone();
+        let mut cursor = 0usize;
+
+        let entry = files[0].clone();
+
+        // Remove all files from DB
+        db.remove_file_by_id(entry.id);
+
+        // jump_to with stale entry — dir is now empty
+        jump_to(&db, entry, &mut files, &mut current_dir, &mut cursor);
+
+        // jump_to returns early if new_files is empty, so files/cursor unchanged
+        // (they still hold the old stale data, but that's fine — no crash)
+    }
+
+    #[test]
+    fn switch_dir_during_rescan() {
+        // Simulate: rescan is pruning files from dir A, user switches to dir B.
+        // After switch, cursor should be valid in dir B regardless of dir A state.
+        let (db, dir_a) = setup_drop_dir(&["a1.jpg", "a2.jpg", "a3.jpg"]);
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("b1.png"), b"img").unwrap();
+        std::fs::write(dir_b.path().join("b2.png"), b"img").unwrap();
+        scanner::discover(&db, dir_b.path());
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        // Start in dir A
+        handle_drop(
+            &db,
+            dir_a.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 3);
+
+        // Simulate rescan pruning a1.jpg and a2.jpg from dir A (deleted from disk)
+        let a1 = files
+            .iter()
+            .find(|f| f.filename == "a1.jpg")
+            .unwrap()
+            .path
+            .clone();
+        let a2 = files
+            .iter()
+            .find(|f| f.filename == "a2.jpg")
+            .unwrap()
+            .path
+            .clone();
+        db.remove_file_by_path(&a1);
+        db.remove_file_by_path(&a2);
+
+        // User switches to dir B before refresh processes
+        let dir_b_str = clean_path(&dir_b.path().canonicalize().unwrap().to_string_lossy());
+        switch_dir(
+            &db,
+            &dir_b_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+
+        assert_eq!(current_dir, dir_b_str);
+        assert_eq!(files.len(), 2);
+        assert!(cursor < files.len());
+        assert!(files[cursor].filename.starts_with("b"));
+    }
+
+    #[test]
+    fn collection_switch_cursor_boundary() {
+        // Cursor at end of dir list, switch to collection with fewer files.
+        // Cursor should clamp to valid range.
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        for name in &["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"] {
+            std::fs::write(dir.path().join(name), b"img").unwrap();
+        }
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let mut files = db.files_by_dir(&dir_str);
+        let mut cursor = files.len() - 1; // cursor at last file (index 4)
+        assert_eq!(cursor, 4);
+
+        // toggle_like needs meta_id, so assign hashes first
+        for (i, f) in files.iter().enumerate() {
+            db.file_set_hash_meta(f.id, &format!("hash_{}", i));
+        }
+        // Re-fetch so meta_id is populated
+        files = db.files_by_dir(&dir_str);
+        cursor = files.len() - 1;
+
+        // Like only 2 files
+        db.toggle_like(files[0].id);
+        db.toggle_like(files[1].id);
+
+        // Switch to "likes" collection (collection 9 = like tag)
+        let liked_files = db.files_by_collection(9);
+        assert_eq!(liked_files.len(), 2);
+
+        // Simulate collection switch with cursor clamping
+        let old_id = files.get(cursor).map(|f| f.id);
+        files = liked_files;
+        cursor = old_id
+            .and_then(|id| files.iter().position(|f| f.id == id))
+            .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+
+        // Cursor was 4, but collection only has 2 files → should clamp to 1
+        assert!(
+            cursor < files.len(),
+            "cursor must be in bounds after collection switch"
+        );
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn full_lifecycle_track_scan_view_like_prune() {
+        // End-to-end headless integration test:
+        // track dir → scan → view files → like → delete → rescan → verify
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_jobs_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+
+        // 1. Track directory
+        db.dir_track(&dir_str, false);
+
+        // 2. Add media files
+        for name in &["photo1.jpg", "photo2.png", "video.mp4", "clip.mkv"] {
+            std::fs::write(dir.path().join(name), b"fake media content").unwrap();
+        }
+
+        // 3. Scan
+        let added = scanner::discover(&db, dir.path());
+        assert_eq!(added, 4);
+
+        // dirs() queries files table — should now contain our dir
+        assert!(db.dirs().iter().any(|d| d == &dir_str));
+
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 4);
+
+        // 4. Assign hashes so toggle_like works (needs meta_id)
+        for (i, f) in files.iter().enumerate() {
+            db.file_set_hash_meta(f.id, &format!("hash_{}", i));
+        }
+        let files = db.files_by_dir(&dir_str);
+
+        // 5. View and like photo1 (find by name, not index — order is alphabetical)
+        let photo1 = files.iter().find(|f| f.filename == "photo1.jpg").unwrap();
+        let photo1_id = photo1.id;
+        db.record_view(photo1_id);
+        db.toggle_like(photo1_id);
+
+        // 6. Verify like (collection 9 = like tag)
+        let liked = db.files_by_collection(9);
+        assert_eq!(liked.len(), 1);
+        assert_eq!(liked[0].id, photo1_id);
+
+        // 7. Delete a non-liked file via watcher path (remove from disk + DB)
+        let clip = files.iter().find(|f| f.filename == "clip.mkv").unwrap();
+        std::fs::remove_file(dir.path().join("clip.mkv")).unwrap();
+        db.remove_file_by_id(clip.id);
+
+        let files_after = db.files_by_dir(&dir_str);
+        assert_eq!(files_after.len(), 3);
+        assert!(!files_after.iter().any(|f| f.filename == "clip.mkv"));
+
+        // Like should still work (photo1 was not deleted)
+        let liked_after = db.files_by_collection(9);
+        assert_eq!(
+            liked_after.len(),
+            1,
+            "photo1 like should survive deletion of clip.mkv"
+        );
+
+        // 8. Delete the liked file — should cascade history
+        std::fs::remove_file(dir.path().join("photo1.jpg")).unwrap();
+        db.remove_file_by_id(photo1_id);
+
+        // Liked collection should now be empty
+        let liked_final = db.files_by_collection(9);
+        assert_eq!(liked_final.len(), 0);
+
+        // 9. Final state
+        assert_eq!(db.files_by_dir(&dir_str).len(), 2);
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner

@@ -1062,4 +1062,185 @@ mod tests {
         assert_eq!(str_parent("/a//b.jpg"), "/a/");
         assert_eq!(str_parent(r"C:\\dir\\file.jpg"), r"C:\\dir\");
     }
+
+    // ── Watcher race conditions ─────────────────────────────────────────
+
+    #[test]
+    fn handle_event_rename_is_remove_plus_create() {
+        // Rename A → B: notify sends Remove(A) + Create(B).
+        // After both events, A should be gone and B should be in DB.
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        // Create file A
+        let a_path = dir.path().join("a.jpg");
+        std::fs::write(&a_path, b"image data").unwrap();
+        let a_canonical = std::fs::canonicalize(&a_path).unwrap();
+        let a_str = a_canonical.to_string_lossy().to_string();
+        db.file_insert(&a_str, &dir_str, "a.jpg", Some(10), None);
+
+        let (tx, _rx) = mpsc::channel();
+
+        // Rename a.jpg → b.jpg on disk
+        let b_path = dir.path().join("b.jpg");
+        std::fs::rename(&a_path, &b_path).unwrap();
+
+        // Process Remove(A)
+        let remove_event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![a_path.clone()],
+        );
+        handle_event(&db, &tx, remove_event);
+
+        // A should be gone
+        assert!(db.file_lookup(&a_str).is_none(), "a.jpg should be removed");
+
+        // Process Create(B)
+        let create_event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![b_path.clone()],
+        );
+        handle_event(&db, &tx, create_event);
+
+        // B should be in DB
+        let b_canonical = std::fs::canonicalize(&b_path).unwrap();
+        let b_str = b_canonical.to_string_lossy().to_string();
+        assert!(db.file_lookup(&b_str).is_some(), "b.jpg should be added");
+    }
+
+    #[test]
+    fn handle_event_atomic_replace_updates_meta() {
+        // mv new.jpg old.jpg — watcher sees Modify on old.jpg.
+        // Content changed, so size/mtime should be updated.
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("photo.jpg");
+        std::fs::write(&file_path, b"old content").unwrap();
+
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        db.file_insert(
+            &canonical_str,
+            &dir_str,
+            "photo.jpg",
+            Some(11),
+            Some("1000"),
+        );
+
+        // Atomically replace: write new content
+        std::fs::write(&file_path, b"completely new and much larger content here").unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            vec![file_path],
+        );
+        handle_event(&db, &tx, event);
+
+        let (_, new_size, _) = db.file_lookup(&canonical_str).unwrap();
+        assert!(
+            new_size.unwrap() > 11,
+            "size should be updated after atomic replace"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_event_symlink_target_deleted() {
+        // File is a symlink, target gets deleted.
+        // Remove event should clean up DB entry.
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let target = dir.path().join("real.jpg");
+        let link = dir.path().join("link.jpg");
+        std::fs::write(&target, b"image").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // Insert the canonical path (which resolves to real.jpg)
+        let canonical = std::fs::canonicalize(&link).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        db.file_insert(&canonical_str, &dir_str, "real.jpg", Some(5), None);
+
+        // Delete the target
+        std::fs::remove_file(&target).unwrap();
+
+        // Notify sends Remove for the target path
+        let (tx, _rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![target],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(
+            db.file_lookup(&canonical_str).is_none(),
+            "symlink target deleted → DB entry should be removed"
+        );
+    }
+
+    #[test]
+    fn handle_event_rapid_create_delete_same_file() {
+        // File created then immediately deleted — both events arrive.
+        // DB should end up clean (no stale entry).
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("flash.jpg");
+        std::fs::write(&file_path, b"brief").unwrap();
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+
+        let (tx, _rx) = mpsc::channel();
+
+        // Create event
+        let create = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, create);
+        assert!(db.file_lookup(&canonical_str).is_some());
+
+        // Delete from disk
+        std::fs::remove_file(&file_path).unwrap();
+
+        // Remove event
+        let remove = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![canonical.clone()],
+        );
+        handle_event(&db, &tx, remove);
+
+        assert!(
+            db.file_lookup(&canonical_str).is_none(),
+            "rapid create+delete should leave DB clean"
+        );
+    }
 }

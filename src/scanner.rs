@@ -503,6 +503,123 @@ mod tests {
         assert!(!names.contains(&"b.png"), "deleted file still in DB");
     }
 
+    // ── Scanner edge cases ────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_circular_symlink_no_infinite_loop() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.jpg"), b"img").unwrap();
+        // Create circular symlink: sub -> ..
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+
+        // discover uses WalkDir with follow_links(true) which has cycle detection
+        // This should complete without hanging
+        let count = discover(&db, dir.path());
+        assert!(count >= 1, "should find at least real.jpg");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_permission_denied_skips_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readable.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("secret.jpg"), b"img").unwrap();
+
+        // Make secret.jpg unreadable
+        let perms = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(dir.path().join("secret.jpg"), perms).unwrap();
+
+        // discover should not panic, should find at least readable.jpg
+        let count = discover(&db, dir.path());
+        assert!(count >= 1);
+
+        // Cleanup: restore permissions so tempdir can be deleted
+        let perms = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(dir.path().join("secret.jpg"), perms).unwrap();
+    }
+
+    #[test]
+    fn discover_zero_byte_media_files() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Zero-byte file with media extension
+        std::fs::write(dir.path().join("empty.jpg"), b"").unwrap();
+        std::fs::write(dir.path().join("normal.png"), b"img data").unwrap();
+
+        let count = discover(&db, dir.path());
+        // Both should be added (we don't reject zero-byte files at scan time)
+        assert_eq!(count, 2);
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 2);
+
+        // Zero-byte file should have size 0
+        let empty = files.iter().find(|f| f.filename == "empty.jpg").unwrap();
+        let (_, size, _) = db.file_lookup(&empty.path).unwrap();
+        assert_eq!(size, Some(0));
+    }
+
+    #[test]
+    fn discover_file_disappears_during_scan() {
+        // TOCTOU: file exists when readdir runs but gone by canonicalize
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stable.jpg"), b"img").unwrap();
+        // Create and immediately delete — WalkDir may or may not see it
+        std::fs::write(dir.path().join("ghost.jpg"), b"img").unwrap();
+        std::fs::remove_file(dir.path().join("ghost.jpg")).unwrap();
+
+        // Should not panic regardless of timing
+        let count = discover(&db, dir.path());
+        assert!(count >= 1, "should find at least stable.jpg");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_symlink_target_deleted() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.jpg");
+        std::fs::write(&target, b"img").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("link.jpg")).unwrap();
+
+        // Both real and link should be found (they canonicalize to same path)
+        discover(&db, dir.path());
+
+        // Now delete the target
+        std::fs::remove_file(&target).unwrap();
+
+        // Rescan should prune the dead entries
+        let (_updated, pruned) = rescan(&db, dir.path());
+        assert!(pruned >= 1, "dead symlink target should be pruned");
+    }
+
+    #[test]
+    fn rescan_nonexistent_dir_no_panic() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (updated, pruned) = rescan(&db, std::path::Path::new("/nonexistent/dir/xyz"));
+        assert_eq!(updated, 0);
+        assert_eq!(pruned, 0);
+    }
+
     #[test]
     fn discover_does_not_reinsert_deleted_files() {
         // Regression: discover() should skip files that don't exist on disk

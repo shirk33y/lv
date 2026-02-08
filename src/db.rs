@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
 
+#[derive(Clone)]
 pub struct FileEntry {
     pub id: i64,
     pub path: String,
@@ -2058,6 +2059,192 @@ mod tests {
         let db = test_db();
         insert_file(&db, 1, "/pics/a.jpg", "/pics", "a.jpg");
         assert!(db.file_paths_under("/nonexistent").is_empty());
+    }
+
+    // ── DB edge cases: special characters, long paths, concurrency ────
+
+    #[test]
+    fn paths_with_special_sql_characters() {
+        let db = test_db();
+        // Percent, underscore, single quote, backslash — all valid in paths
+        let cases = [
+            (1, "/pics/100%_done.jpg", "/pics", "100%_done.jpg"),
+            (2, "/pics/file_name.jpg", "/pics", "file_name.jpg"),
+            (3, "/pics/it's a photo.jpg", "/pics", "it's a photo.jpg"),
+            (4, r"C:\Users\test\photo.jpg", r"C:\Users\test", "photo.jpg"),
+            (5, "/pics/[brackets].jpg", "/pics", "[brackets].jpg"),
+            (6, "/pics/file (1).jpg", "/pics", "file (1).jpg"),
+        ];
+
+        for (id, path, dir, filename) in &cases {
+            insert_file(&db, *id, path, dir, filename);
+        }
+
+        assert_eq!(db.file_count(), 6);
+
+        // Exact lookups must work
+        for (_, path, dir, _) in &cases {
+            assert!(
+                db.file_lookup(path).is_some(),
+                "lookup failed for: {}",
+                path
+            );
+            assert!(
+                !db.files_by_dir(dir).is_empty(),
+                "files_by_dir failed for: {}",
+                dir
+            );
+        }
+
+        // Percent and underscore are SQL LIKE wildcards — files_by_dir uses = not LIKE
+        let pics = db.files_by_dir("/pics");
+        assert_eq!(pics.len(), 5, "all /pics files should be found");
+    }
+
+    #[test]
+    fn long_filename_windows_max_path() {
+        let db = test_db();
+        // 260 char path (Windows MAX_PATH)
+        let long_name = "a".repeat(200);
+        let path = format!("/long/{}.jpg", long_name);
+        let dir = "/long";
+        let filename = format!("{}.jpg", long_name);
+
+        insert_file(&db, 1, &path, dir, &filename);
+        assert!(db.file_lookup(&path).is_some());
+        let files = db.files_by_dir(dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, filename);
+    }
+
+    #[test]
+    fn very_long_path_beyond_max_path() {
+        let db = test_db();
+        // Path > 260 chars (extended-length path territory)
+        let deep = (0..30)
+            .map(|i| format!("dir{:02}", i))
+            .collect::<Vec<_>>()
+            .join("/");
+        let path = format!("/{}/photo.jpg", deep);
+        let dir = format!("/{}", deep);
+
+        db.file_insert(&path, &dir, "photo.jpg", Some(100), None);
+        assert!(db.file_lookup(&path).is_some());
+        assert_eq!(db.files_by_dir(&dir).len(), 1);
+    }
+
+    #[test]
+    fn same_filename_different_dirs() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/photo.jpg", "/a", "photo.jpg");
+        insert_file(&db, 2, "/b/photo.jpg", "/b", "photo.jpg");
+        insert_file(&db, 3, "/c/photo.jpg", "/c", "photo.jpg");
+
+        assert_eq!(db.file_count(), 3);
+        assert_eq!(db.files_by_dir("/a").len(), 1);
+        assert_eq!(db.files_by_dir("/b").len(), 1);
+        assert_eq!(db.files_by_dir("/c").len(), 1);
+
+        // Each has unique path
+        assert_ne!(db.files_by_dir("/a")[0].id, db.files_by_dir("/b")[0].id);
+    }
+
+    #[test]
+    fn concurrent_db_access_from_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let db = Arc::new(test_db());
+
+        // Insert files from main thread
+        for i in 0..20 {
+            let path = format!("/t/file{:03}.jpg", i);
+            db.file_insert(&path, "/t", &format!("file{:03}.jpg", i), Some(100), None);
+        }
+
+        // Spawn threads that read and write concurrently
+        let mut handles = vec![];
+
+        // Reader threads
+        for _ in 0..4 {
+            let db = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    let _ = db.files_by_dir("/t");
+                    let _ = db.file_count();
+                    let _ = db.dirs();
+                }
+            }));
+        }
+
+        // Writer thread: toggle likes
+        {
+            let db = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                let files = db.files_by_dir("/t");
+                for f in &files {
+                    db.toggle_like(f.id);
+                }
+            }));
+        }
+
+        // Writer thread: record views
+        {
+            let db = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                let files = db.files_by_dir("/t");
+                for f in &files {
+                    db.record_view(f.id);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join()
+                .expect("thread panicked during concurrent DB access");
+        }
+
+        // DB should still be consistent
+        assert_eq!(db.file_count(), 20);
+        assert_eq!(db.files_by_dir("/t").len(), 20);
+    }
+
+    #[test]
+    fn concurrent_insert_and_delete() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let db = Arc::new(test_db());
+
+        // Pre-insert files
+        for i in 0..10 {
+            let path = format!("/c/f{}.jpg", i);
+            db.file_insert(&path, "/c", &format!("f{}.jpg", i), Some(100), None);
+        }
+
+        // One thread deletes, another reads
+        let db1 = Arc::clone(&db);
+        let db2 = Arc::clone(&db);
+
+        let deleter = thread::spawn(move || {
+            let files = db1.files_by_dir("/c");
+            for f in files.iter().take(5) {
+                db1.remove_file_by_id(f.id);
+            }
+        });
+
+        let reader = thread::spawn(move || {
+            for _ in 0..20 {
+                let files = db2.files_by_dir("/c");
+                // Should never panic, count should be between 5 and 10
+                assert!(files.len() <= 10);
+            }
+        });
+
+        deleter.join().unwrap();
+        reader.join().unwrap();
+
+        assert_eq!(db.files_by_dir("/c").len(), 5);
     }
 
     #[test]
