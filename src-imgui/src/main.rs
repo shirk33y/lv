@@ -1214,7 +1214,14 @@ fn main() {
                 if let Some(ref meta) = cached_meta {
                     statusbar::draw_info_panel(ui, meta, w as f32, h as f32, info_scroll.take());
                 }
-                statusbar::draw_stats_section(ui, &job_engine.stats, &lv_db, w as f32, h as f32);
+                statusbar::draw_stats_section(
+                    ui,
+                    &job_engine.stats,
+                    &lv_db,
+                    w as f32,
+                    h as f32,
+                    collection_mode,
+                );
             }
         }
 

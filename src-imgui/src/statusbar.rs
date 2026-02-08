@@ -411,6 +411,38 @@ fn format_duration(ms: i64) -> String {
     }
 }
 
+fn fmt_size(bytes: i64) -> String {
+    const KB: i64 = 1024;
+    const MB: i64 = 1024 * 1024;
+    const GB: i64 = 1024 * 1024 * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn collection_name(c: Option<u8>) -> &'static str {
+    match c {
+        None => "Library",
+        Some(0) => "C0 Permanent",
+        Some(1) => "C1 Temporary",
+        Some(2) => "C2",
+        Some(3) => "C3",
+        Some(4) => "C4",
+        Some(5) => "C5",
+        Some(6) => "C6",
+        Some(7) => "C7",
+        Some(8) => "C8",
+        Some(9) => "C9 Favorites",
+        _ => "Collection",
+    }
+}
+
 /// Draw job/collection stats at bottom of the info sidebar.
 pub fn draw_stats_section(
     ui: &imgui::Ui,
@@ -418,12 +450,17 @@ pub fn draw_stats_section(
     db: &crate::db::Db,
     display_w: f32,
     display_h: f32,
+    collection_mode: Option<u8>,
 ) {
     use std::sync::atomic::Ordering;
 
     let panel_w = 320.0_f32.min(display_w * 0.35);
     let bar_h = 24.0;
-    let panel_h = 130.0;
+    let panel_h = if collection_mode.is_some() {
+        155.0
+    } else {
+        130.0
+    };
 
     let stats_flags = WindowFlags::NO_TITLE_BAR
         .union(WindowFlags::NO_RESIZE)
@@ -457,8 +494,25 @@ pub fn draw_stats_section(
         };
 
         // Collection
-        ui.text_colored(HEADER_COL, "Collection");
+        ui.text_colored(HEADER_COL, collection_name(collection_mode));
         ui.separator();
+        if let Some(c) = collection_mode {
+            let (col_count, col_size) = db.collection_count_size(c);
+            ui.text_colored(
+                DIM,
+                format!(
+                    "{} files  {}  (of {} total)",
+                    col_count,
+                    fmt_size(col_size),
+                    cs.total_files
+                ),
+            );
+        } else {
+            ui.text_colored(
+                DIM,
+                format!("{} files  {} dirs", cs.total_files, cs.total_dirs),
+            );
+        }
         let pct_hash = if cs.total_files > 0 {
             cs.hashed * 100 / cs.total_files
         } else {
@@ -469,10 +523,6 @@ pub fn draw_stats_section(
         } else {
             0
         };
-        ui.text_colored(
-            DIM,
-            format!("{} files  {} dirs", cs.total_files, cs.total_dirs),
-        );
         ui.text_colored(
             DIM,
             format!("# {}/{}  {}%", cs.hashed, cs.total_files, pct_hash),
