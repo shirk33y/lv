@@ -1,8 +1,8 @@
 .PHONY: ci dist dist-linux dist-arm64 dist-win clean
 
-# ── Checks ────────────────────────────────────────────────────────────
+# ── Checks (parallel via multi.sh) ────────────────────────────────────
 ci:
-	cargo test && cargo clippy -- -D warnings && cargo fmt -- --check
+	@printf '%s\0' 'cargo test' 'cargo clippy -- -D warnings' 'cargo fmt -- --check' | bash scripts/multi.sh
 
 # ── Multi-stage Docker builds → ./dist/ ───────────────────────────────
 # Each target is a self-contained multi-stage Dockerfile.
