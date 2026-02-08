@@ -2,6 +2,8 @@
 
 Native media viewer frontend replacing the Tauri/Preact webview.
 
+![screenshot](screenshot01.jpg)
+
 ## Architecture
 
 ```
