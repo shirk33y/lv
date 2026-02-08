@@ -5,6 +5,11 @@ use walkdir::WalkDir;
 
 use crate::db::Db;
 
+/// Strip Windows extended-length path prefix (`\\?\`) if present.
+fn clean_path(s: &str) -> String {
+    s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
+}
+
 const MEDIA_EXTENSIONS: &[&str] = &[
     // images
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "heic", "heif", "ico",
@@ -40,11 +45,7 @@ pub fn discover(db: &Db, root: &Path) -> usize {
             Err(_) => continue,
         };
 
-        let dir = abs
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .to_string();
+        let dir = clean_path(&abs.parent().unwrap_or(Path::new("")).to_string_lossy());
         let filename = abs
             .file_name()
             .unwrap_or_default()
@@ -62,7 +63,7 @@ pub fn discover(db: &Db, root: &Path) -> usize {
                     .map(|d| iso_lite(d.as_secs()))
             });
 
-        let path_str = abs.to_string_lossy().to_string();
+        let path_str = clean_path(&abs.to_string_lossy());
         let mtime_ref = modified_at.as_deref();
 
         if let Some((file_id, db_size, db_mtime)) = db.file_lookup(&path_str) {

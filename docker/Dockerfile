@@ -27,14 +27,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── arm64 cross-compile deps (multiarch) ─────────────────────────────
+# Note: libmpv-dev:arm64 has broken deps (libjack) on bookworm, so we
+# install only the runtime lib and reuse the native mpv headers.
 RUN dpkg --add-architecture arm64 \
     && apt-get update && apt-get install -y --no-install-recommends \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
     libc6-dev-arm64-cross \
     libsdl2-dev:arm64 \
-    libmpv-dev:arm64 \
-    && rm -rf /var/lib/apt/lists/*
+    libmpv2:arm64 \
+    && rm -rf /var/lib/apt/lists/* \
+    # Symlink arm64 mpv .so for the linker (headers come from native libmpv-dev)
+    && ln -sf /usr/lib/aarch64-linux-gnu/libmpv.so.2 /usr/lib/aarch64-linux-gnu/libmpv.so
 
 # ── Rust ──────────────────────────────────────────────────────────────
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \

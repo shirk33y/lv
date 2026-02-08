@@ -16,6 +16,9 @@ SetCompressor /SOLID lzma
 
 ; Skip welcome/license/directory pages — just install
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN "$INSTDIR\lv-imgui.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch lv"
+!insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
 
 ; ── Install ──────────────────────────────────────────────────────────

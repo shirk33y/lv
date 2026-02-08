@@ -53,6 +53,13 @@ fn is_video(path: &str) -> bool {
     VIDEO_EXTS.contains(&ext_of(path).as_str())
 }
 
+/// Strip Windows extended-length path prefix (`\\?\`) if present.
+/// Windows `canonicalize` returns `\\?\C:\...` paths; we strip the prefix
+/// so paths display cleanly and match across the codebase.
+fn clean_path(p: &str) -> String {
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
+}
+
 /// Send mpv "stop" asynchronously so it doesn't block the UI thread.
 unsafe fn mpv_stop_async(handle: *mut libmpv2_sys::mpv_handle) {
     let cmd = std::ffi::CString::new("stop").unwrap();
@@ -365,7 +372,7 @@ fn main() {
         let path = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
         if path.is_file() {
             let parent = path.parent().unwrap_or(&path);
-            let parent_str = parent.to_string_lossy();
+            let parent_str = clean_path(&parent.to_string_lossy());
             let already_tracked =
                 lv_db.dir_is_tracked(&parent_str) || lv_db.dir_is_covered(&parent_str);
 
@@ -373,12 +380,10 @@ fn main() {
                 // File is in an already-tracked dir → open in dir mode, no temporary flag
                 scanner::discover(&lv_db, parent);
                 let f = lv_db.files_by_dir(&parent_str);
-                let idx = f
-                    .iter()
-                    .position(|e| e.path == path.to_string_lossy().as_ref())
-                    .unwrap_or(0);
-                eprintln!("open (tracked): {}", path.display());
-                (f, parent_str.to_string(), idx)
+                let clean = clean_path(&path.to_string_lossy());
+                let idx = f.iter().position(|e| e.path == clean).unwrap_or(0);
+                eprintln!("open (tracked): {}", clean);
+                (f, parent_str, idx)
             } else {
                 // External file open → track parent non-recursively, mark temporary
                 lv_db.dir_track(&parent_str, false);
@@ -393,15 +398,13 @@ fn main() {
                     lv_db.set_temporary(f.id, true);
                 }
                 collection_mode = Some(1);
+                let clean = clean_path(&path.to_string_lossy());
                 let all = lv_db.files_by_collection(1);
-                let idx = all
-                    .iter()
-                    .position(|f| f.path == path.to_string_lossy().as_ref())
-                    .unwrap_or(0);
-                (all, parent_str.to_string(), idx)
+                let idx = all.iter().position(|f| f.path == clean).unwrap_or(0);
+                (all, parent_str, idx)
             }
         } else if path.is_dir() {
-            let dir_str = path.to_string_lossy().to_string();
+            let dir_str = clean_path(&path.to_string_lossy());
             let f = lv_db.files_by_dir(&dir_str);
             (f, dir_str, 0)
         } else {
@@ -1302,12 +1305,27 @@ fn main() {
 
     // ── Shutdown ──────────────────────────────────────────────────────
     job_engine.stop();
-    // Stop mpv playback first so the render thread isn't blocked waiting for frames
+    // Stop mpv playback and signal render thread to exit
     unsafe {
         mpv_stop_async(mpv_handle);
     }
     mpv_shared.quit.store(true, Ordering::Release);
-    render_thread.join().ok();
+    // Give render thread a short deadline, then move on
+    let deadline = std::time::Duration::from_secs(2);
+    let start = Instant::now();
+    loop {
+        if render_thread.is_finished() {
+            render_thread.join().ok();
+            break;
+        }
+        if start.elapsed() > deadline {
+            eprintln!("warn: render thread did not exit in time, continuing shutdown");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Force-destroy mpv to release resources
+    drop(mpv);
 
     #[cfg(debug_assertions)]
     if !timings.is_empty() {
@@ -1381,16 +1399,10 @@ fn schedule_preload(
     }
 }
 
-/// Strip Windows extended-length path prefix (`\\?\`) if present.
-fn strip_win_prefix(p: &str) -> &str {
-    p.strip_prefix(r"\\?\").unwrap_or(p)
-}
-
 fn update_title(window: &sdl2::video::Window, files: &[FileEntry], cursor: usize, dir: &str) {
     if let Some(file) = files.get(cursor) {
         let like = if file.liked { " ♥" } else { "" };
-        let clean_dir = strip_win_prefix(dir);
-        let dir_short = clean_dir.rsplit(['/', '\\']).next().unwrap_or(clean_dir);
+        let dir_short = dir.rsplit(['/', '\\']).next().unwrap_or(dir);
         let title = format!(
             "[{}/{}] {}{} — {} — lv",
             cursor + 1,
@@ -1573,6 +1585,38 @@ mod tests {
     }
 
     // ── IMAGE_EXTS vs scanner::MEDIA_EXTENSIONS consistency ─────────────
+
+    // ── clean_path (Windows \\?\ prefix stripping) ────────────────────
+
+    #[test]
+    fn clean_path_strips_win_prefix() {
+        assert_eq!(clean_path(r"\\?\C:\Users\test"), "C:\\Users\\test");
+        assert_eq!(
+            clean_path(r"\\?\C:\Users\shirk3y\Downloads"),
+            "C:\\Users\\shirk3y\\Downloads"
+        );
+    }
+
+    #[test]
+    fn clean_path_preserves_unix() {
+        assert_eq!(clean_path("/home/user/pics"), "/home/user/pics");
+        assert_eq!(clean_path("/tmp/test.jpg"), "/tmp/test.jpg");
+    }
+
+    #[test]
+    fn clean_path_preserves_plain_windows() {
+        assert_eq!(clean_path("C:\\Users\\test"), "C:\\Users\\test");
+    }
+
+    #[test]
+    fn clean_path_empty() {
+        assert_eq!(clean_path(""), "");
+    }
+
+    #[test]
+    fn clean_path_only_prefix() {
+        assert_eq!(clean_path(r"\\?\"), "");
+    }
 
     #[test]
     fn image_exts_subset_of_media() {
