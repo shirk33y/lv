@@ -1,4 +1,4 @@
-.PHONY: ci clean \
+.PHONY: ci clean dev-linux dev-windows \
 	build-linux-intel build-linux-arm build-windows-intel \
 	docker-build-linux-intel docker-build-linux-arm docker-build-windows-intel
 
@@ -7,6 +7,32 @@ LV_VERSION := $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\
 # ── Checks ────────────────────────────────────────────────────────────
 ci:
 	@printf '%s\0' 'cargo test' 'cargo clippy -- -D warnings' 'cargo fmt -- --check' | bash scripts/multi.sh
+
+# ── Dev ───────────────────────────────────────────────────────────────
+# Separate target dirs so dev-linux and dev-windows never clash.
+# dev-linux  → target-linux/  (default would be target/)
+# dev-windows → uses Windows-native cargo.exe which writes to its own target/
+
+dev-linux:
+	CARGO_TARGET_DIR=target-linux-intel cargo run -- $(ARGS)
+
+WIN_TARGET_PARENT := /mnt/c/Users/$(USER)/AppData/Local/lv-dev
+
+dev-windows:
+	@if grep -qi microsoft /proc/version 2>/dev/null; then \
+		echo ":: building via Windows cargo.exe …"; \
+		mkdir -p $(WIN_TARGET_PARENT); \
+		WIN_TD=$$(wslpath -w "$(WIN_TARGET_PARENT)/target-windows-intel"); \
+		cargo.exe build --target-dir "$$WIN_TD"; \
+		echo ":: copying DLLs …"; \
+		cp -u pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll \
+			$(WIN_TARGET_PARENT)/target-windows-intel/debug/; \
+		echo ":: launching …"; \
+		$(WIN_TARGET_PARENT)/target-windows-intel/debug/lv-imgui.exe $(ARGS); \
+	else \
+		echo ":: building + running for Windows (native) …"; \
+		cargo run --target-dir target-windows-intel -- $(ARGS); \
+	fi
 
 # ── Native builds ─────────────────────────────────────────────────────
 build-linux-intel:
@@ -39,4 +65,5 @@ docker-build-windows-intel:
 
 # ── Clean ─────────────────────────────────────────────────────────────
 clean:
-	rm -rf dist/ build-installer/
+	rm -rf dist/ build-installer/ target-linux-intel/ target-linux-arm/ target-windows-intel/
+	rm -rf $(WIN_TARGET_PARENT)/target-windows-intel/ 2>/dev/null || true
