@@ -24,7 +24,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Mod};
 use sdl2::video::GLProfile;
 
 use libmpv2::Mpv;
@@ -503,6 +503,7 @@ fn main() {
     let mut last_mouse_move = Instant::now();
     let mut cursor_visible = true;
     let start_time = Instant::now();
+    let mut collection_mode: Option<u8> = None; // None = dir-based, Some(n) = collection view
 
     // Debounce video loading: defer mpv loadfile until user stops navigating
     const VIDEO_DEBOUNCE_MS: u128 = 150;
@@ -541,19 +542,131 @@ fn main() {
                 }
 
                 Event::KeyDown {
-                    keycode: Some(key), ..
-                } if !imgui_ctx.io().want_capture_keyboard => match key {
-                    // ── Quit ─────────────────────────────────────────
-                    Keycode::Q | Keycode::Escape => running = false,
+                    keycode: Some(key),
+                    keymod,
+                    ..
+                } if !imgui_ctx.io().want_capture_keyboard => {
+                    let ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
 
-                    // ── j/k: next/prev in current dir ───────────────
-                    Keycode::J => {
-                        nav_forward = true;
-                        if cursor + 1 < files.len() {
-                            cursor += 1;
-                            needs_display = true;
+                    // ── Ctrl+0-9: switch collection view ────────────
+                    let col_key = match key {
+                        Keycode::Num0 | Keycode::Kp0 if ctrl => Some(0u8),
+                        Keycode::Num1 | Keycode::Kp1 if ctrl => Some(1),
+                        Keycode::Num2 | Keycode::Kp2 if ctrl => Some(2),
+                        Keycode::Num3 | Keycode::Kp3 if ctrl => Some(3),
+                        Keycode::Num4 | Keycode::Kp4 if ctrl => Some(4),
+                        Keycode::Num5 | Keycode::Kp5 if ctrl => Some(5),
+                        Keycode::Num6 | Keycode::Kp6 if ctrl => Some(6),
+                        Keycode::Num7 | Keycode::Kp7 if ctrl => Some(7),
+                        Keycode::Num8 | Keycode::Kp8 if ctrl => Some(8),
+                        Keycode::Num9 | Keycode::Kp9 if ctrl => Some(9),
+                        _ => None,
+                    };
+                    if let Some(c) = col_key {
+                        let new_mode = Some(c);
+                        if collection_mode == new_mode {
+                            // Toggle off → back to dir mode
+                            collection_mode = None;
+                            files = lv_db.files_by_dir(&current_dir);
+                            cursor = 0;
+                            eprintln!("collection: off (dir: {})", current_dir);
                         } else {
-                            // End of dir → try next dir
+                            collection_mode = new_mode;
+                            files = lv_db.files_by_collection(c);
+                            cursor = 0;
+                            eprintln!("collection: {} ({} files)", c, files.len());
+                        }
+                        needs_display = true;
+                        continue;
+                    }
+
+                    // ── 2-8: toggle collection tag on current file ──
+                    let tag_key = match key {
+                        Keycode::Num2 | Keycode::Kp2 if !ctrl => Some(2u8),
+                        Keycode::Num3 | Keycode::Kp3 if !ctrl => Some(3),
+                        Keycode::Num4 | Keycode::Kp4 if !ctrl => Some(4),
+                        Keycode::Num5 | Keycode::Kp5 if !ctrl => Some(5),
+                        Keycode::Num6 | Keycode::Kp6 if !ctrl => Some(6),
+                        Keycode::Num7 | Keycode::Kp7 if !ctrl => Some(7),
+                        Keycode::Num8 | Keycode::Kp8 if !ctrl => Some(8),
+                        _ => None,
+                    };
+                    if let Some(c) = tag_key {
+                        if let Some(file) = files.get(cursor) {
+                            let now_in = lv_db.toggle_collection(file.id, c);
+                            eprintln!(
+                                "{} {} c{}",
+                                if now_in { "+" } else { "-" },
+                                file.filename,
+                                c
+                            );
+                        }
+                        continue;
+                    }
+
+                    // ── 9: toggle like (= collection 9) ────────────
+                    if matches!(key, Keycode::Num9 | Keycode::Kp9) && !ctrl {
+                        if cursor < files.len() {
+                            let file_id = files[cursor].id;
+                            let liked = lv_db.toggle_like(file_id);
+                            files[cursor].liked = liked;
+                            eprintln!(
+                                "{} {} ♥",
+                                if liked { "+" } else { "-" },
+                                files[cursor].filename
+                            );
+                        }
+                        continue;
+                    }
+
+                    match key {
+                        // ── Quit ─────────────────────────────────────────
+                        Keycode::Q | Keycode::Escape => running = false,
+
+                        // ── j/k: next/prev in current dir ───────────────
+                        Keycode::J => {
+                            nav_forward = true;
+                            if cursor + 1 < files.len() {
+                                cursor += 1;
+                                needs_display = true;
+                            } else {
+                                // End of dir → try next dir
+                                if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
+                                    switch_dir(
+                                        &lv_db,
+                                        &dir,
+                                        &mut files,
+                                        &mut current_dir,
+                                        &mut cursor,
+                                        "first",
+                                    );
+                                    needs_display = true;
+                                }
+                            }
+                        }
+                        Keycode::K => {
+                            nav_forward = false;
+                            if cursor > 0 {
+                                cursor -= 1;
+                                needs_display = true;
+                            } else {
+                                // Start of dir → try prev dir
+                                if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
+                                    switch_dir(
+                                        &lv_db,
+                                        &dir,
+                                        &mut files,
+                                        &mut current_dir,
+                                        &mut cursor,
+                                        "last",
+                                    );
+                                    needs_display = true;
+                                }
+                            }
+                        }
+
+                        // ── h/l: prev/next directory ────────────────────
+                        Keycode::L => {
                             if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
                                 switch_dir(
                                     &lv_db,
@@ -566,222 +679,205 @@ fn main() {
                                 needs_display = true;
                             }
                         }
-                    }
-                    Keycode::K => {
-                        nav_forward = false;
-                        if cursor > 0 {
-                            cursor -= 1;
-                            needs_display = true;
-                        } else {
-                            // Start of dir → try prev dir
-                            if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
+                        Keycode::H => {
+                            if cursor > 0 {
+                                // Go to first file in current directory
+                                cursor = 0;
+                                needs_display = true;
+                            } else if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
                                 switch_dir(
                                     &lv_db,
                                     &dir,
                                     &mut files,
                                     &mut current_dir,
                                     &mut cursor,
-                                    "last",
+                                    "first",
                                 );
                                 needs_display = true;
                             }
                         }
-                    }
 
-                    // ── h/l: prev/next directory ────────────────────
-                    Keycode::L => {
-                        if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
-                            switch_dir(
-                                &lv_db,
-                                &dir,
-                                &mut files,
-                                &mut current_dir,
-                                &mut cursor,
-                                "first",
-                            );
-                            needs_display = true;
-                        }
-                    }
-                    Keycode::H => {
-                        if cursor > 0 {
-                            // Go to first file in current directory
-                            cursor = 0;
-                            needs_display = true;
-                        } else if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
-                            switch_dir(
-                                &lv_db,
-                                &dir,
-                                &mut files,
-                                &mut current_dir,
-                                &mut cursor,
-                                "first",
-                            );
-                            needs_display = true;
-                        }
-                    }
-
-                    // ── u: random file ──────────────────────────────
-                    Keycode::U => {
-                        if let Some(file) = lv_db.random_file() {
-                            jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
-                            needs_display = true;
-                        }
-                    }
-
-                    // ── n: newest file ──────────────────────────────
-                    Keycode::N => {
-                        if let Some(file) = lv_db.newest_file() {
-                            jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
-                            needs_display = true;
-                        }
-                    }
-
-                    // ── m: random favourite ─────────────────────────
-                    Keycode::M => {
-                        if let Some(file) = lv_db.random_fav() {
-                            jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
-                            needs_display = true;
-                        }
-                    }
-
-                    // ── b: latest favourite ─────────────────────────
-                    Keycode::B => {
-                        if let Some(file) = lv_db.latest_fav() {
-                            jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
-                            needs_display = true;
-                        }
-                    }
-
-                    // ── y: toggle like ──────────────────────────────
-                    Keycode::Y => {
-                        if cursor < files.len() {
-                            let file_id = files[cursor].id;
-                            let liked = lv_db.toggle_like(file_id);
-                            files[cursor].liked = liked;
-                            let sym = if liked { "♥" } else { "♡" };
-                            eprintln!("{} {}", sym, files[cursor].filename);
-                            update_title(&window, &files, cursor, &current_dir);
-                        }
-                    }
-
-                    // ── f: toggle fullscreen ────────────────────────
-                    Keycode::F => {
-                        use sdl2::video::FullscreenType;
-                        let current = window.fullscreen_state();
-                        let next = if current == FullscreenType::Off {
-                            FullscreenType::Desktop
-                        } else {
-                            FullscreenType::Off
-                        };
-                        unsafe {
-                            sdl2::sys::SDL_SetWindowFullscreen(window.raw(), next as u32);
-                        }
-                    }
-
-                    // ── i: toggle info sidebar ───────────────────
-                    Keycode::I => {
-                        show_info = !show_info;
-                        if show_info {
-                            cached_meta_file_id = -1;
-                            info_scroll_y = 0.0;
-                        }
-                    }
-
-                    // ── info panel scrolling ─────────────────────
-                    Keycode::PageUp => {
-                        if show_info {
-                            info_scroll_y = (info_scroll_y - 200.0).max(0.0);
-                            info_scroll = Some(info_scroll_y);
-                        }
-                    }
-                    Keycode::PageDown => {
-                        if show_info {
-                            info_scroll_y += 200.0;
-                            info_scroll = Some(info_scroll_y);
-                        }
-                    }
-                    Keycode::Home => {
-                        if show_info {
-                            info_scroll_y = 0.0;
-                            info_scroll = Some(0.0);
-                        }
-                    }
-                    Keycode::End => {
-                        if show_info {
-                            info_scroll_y = f32::MAX;
-                            info_scroll = Some(f32::MAX);
-                        }
-                    }
-
-                    // ── -: toggle turbo mode ─────────────────────
-                    Keycode::Minus => {
-                        let stats = &job_engine.stats;
-                        let was = stats.turbo.load(Ordering::Relaxed);
-                        stats.turbo.store(!was, Ordering::Relaxed);
-                        eprintln!("jobs: {} mode", if !was { "TURBO" } else { "lazy" });
-                    }
-
-                    // ── r: refresh current directory ───────────────
-                    Keycode::R => {
-                        let old_id = files.get(cursor).map(|f| f.id);
-                        files = lv_db.files_by_dir(&current_dir);
-                        if files.is_empty() {
-                            cursor = 0;
-                        } else if let Some(oid) = old_id {
-                            cursor = files.iter().position(|f| f.id == oid).unwrap_or(0);
-                        }
-                        needs_display = true;
-                        cached_meta_file_id = -1;
-                        eprintln!("refresh: {} ({} files)", current_dir, files.len());
-                    }
-
-                    // ── c: copy path to clipboard ───────────────────
-                    Keycode::C => {
-                        if let Some(file) = files.get(cursor) {
-                            if let Ok(clipboard) = sdl.video().map(|v| v.clipboard()) {
-                                clipboard.set_clipboard_text(&file.path).ok();
-                                eprintln!("copied: {}", file.path);
+                        // ── u: random file (collection-aware) ────────────
+                        Keycode::U => {
+                            let file = if let Some(c) = collection_mode {
+                                lv_db.random_in_collection(c)
+                            } else {
+                                lv_db.random_file()
+                            };
+                            if let Some(file) = file {
+                                if collection_mode.is_some() {
+                                    // In collection mode, just find cursor position
+                                    if let Some(idx) = files.iter().position(|f| f.id == file.id) {
+                                        cursor = idx;
+                                    }
+                                } else {
+                                    jump_to(
+                                        &lv_db,
+                                        file,
+                                        &mut files,
+                                        &mut current_dir,
+                                        &mut cursor,
+                                    );
+                                }
+                                needs_display = true;
                             }
                         }
-                    }
 
-                    // ── space: pause video ──────────────────────────
-                    Keycode::Space => {
-                        if using_mpv {
-                            mpv.command("cycle", &["pause"]).ok();
+                        // ── n: newest file ──────────────────────────────
+                        Keycode::N => {
+                            if let Some(file) = lv_db.newest_file() {
+                                jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
+                                needs_display = true;
+                            }
                         }
-                    }
 
-                    // ── video seek / volume ─────────────────────────
-                    Keycode::Left => {
-                        if using_mpv {
-                            mpv.command("seek", &["-5"]).ok();
+                        // ── m: random favourite ─────────────────────────
+                        Keycode::M => {
+                            if let Some(file) = lv_db.random_fav() {
+                                jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
+                                needs_display = true;
+                            }
                         }
-                    }
-                    Keycode::Right => {
-                        if using_mpv {
-                            mpv.command("seek", &["15"]).ok();
-                        }
-                    }
-                    Keycode::Up => {
-                        if using_mpv {
-                            volume = (volume + 5).min(150);
-                            mpv.set_property("volume", volume).ok();
-                        }
-                    }
-                    Keycode::Down => {
-                        if using_mpv {
-                            volume = (volume - 5).max(0);
-                            mpv.set_property("volume", volume).ok();
-                        }
-                    }
 
-                    // ── p: print timing report ──────────────────────
-                    #[cfg(debug_assertions)]
-                    Keycode::P => print_report(&timings),
+                        // ── b: latest favourite ─────────────────────────
+                        Keycode::B => {
+                            if let Some(file) = lv_db.latest_fav() {
+                                jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
+                                needs_display = true;
+                            }
+                        }
 
-                    _ => {}
-                },
+                        // ── y: toggle like ──────────────────────────────
+                        Keycode::Y => {
+                            if cursor < files.len() {
+                                let file_id = files[cursor].id;
+                                let liked = lv_db.toggle_like(file_id);
+                                files[cursor].liked = liked;
+                                let sym = if liked { "♥" } else { "♡" };
+                                eprintln!("{} {}", sym, files[cursor].filename);
+                                update_title(&window, &files, cursor, &current_dir);
+                            }
+                        }
+
+                        // ── f: toggle fullscreen ────────────────────────
+                        Keycode::F => {
+                            use sdl2::video::FullscreenType;
+                            let current = window.fullscreen_state();
+                            let next = if current == FullscreenType::Off {
+                                FullscreenType::Desktop
+                            } else {
+                                FullscreenType::Off
+                            };
+                            unsafe {
+                                sdl2::sys::SDL_SetWindowFullscreen(window.raw(), next as u32);
+                            }
+                        }
+
+                        // ── i: toggle info sidebar ───────────────────
+                        Keycode::I => {
+                            show_info = !show_info;
+                            if show_info {
+                                cached_meta_file_id = -1;
+                                info_scroll_y = 0.0;
+                            }
+                        }
+
+                        // ── info panel scrolling ─────────────────────
+                        Keycode::PageUp => {
+                            if show_info {
+                                info_scroll_y = (info_scroll_y - 200.0).max(0.0);
+                                info_scroll = Some(info_scroll_y);
+                            }
+                        }
+                        Keycode::PageDown => {
+                            if show_info {
+                                info_scroll_y += 200.0;
+                                info_scroll = Some(info_scroll_y);
+                            }
+                        }
+                        Keycode::Home => {
+                            if show_info {
+                                info_scroll_y = 0.0;
+                                info_scroll = Some(0.0);
+                            }
+                        }
+                        Keycode::End => {
+                            if show_info {
+                                info_scroll_y = f32::MAX;
+                                info_scroll = Some(f32::MAX);
+                            }
+                        }
+
+                        // ── -: toggle turbo mode ─────────────────────
+                        Keycode::Minus => {
+                            let stats = &job_engine.stats;
+                            let was = stats.turbo.load(Ordering::Relaxed);
+                            stats.turbo.store(!was, Ordering::Relaxed);
+                            eprintln!("jobs: {} mode", if !was { "TURBO" } else { "lazy" });
+                        }
+
+                        // ── r: refresh current directory ───────────────
+                        Keycode::R => {
+                            let old_id = files.get(cursor).map(|f| f.id);
+                            files = lv_db.files_by_dir(&current_dir);
+                            if files.is_empty() {
+                                cursor = 0;
+                            } else if let Some(oid) = old_id {
+                                cursor = files.iter().position(|f| f.id == oid).unwrap_or(0);
+                            }
+                            needs_display = true;
+                            cached_meta_file_id = -1;
+                            eprintln!("refresh: {} ({} files)", current_dir, files.len());
+                        }
+
+                        // ── c: copy path to clipboard ───────────────────
+                        Keycode::C => {
+                            if let Some(file) = files.get(cursor) {
+                                if let Ok(clipboard) = sdl.video().map(|v| v.clipboard()) {
+                                    clipboard.set_clipboard_text(&file.path).ok();
+                                    eprintln!("copied: {}", file.path);
+                                }
+                            }
+                        }
+
+                        // ── space: pause video ──────────────────────────
+                        Keycode::Space => {
+                            if using_mpv {
+                                mpv.command("cycle", &["pause"]).ok();
+                            }
+                        }
+
+                        // ── video seek / volume ─────────────────────────
+                        Keycode::Left => {
+                            if using_mpv {
+                                mpv.command("seek", &["-5"]).ok();
+                            }
+                        }
+                        Keycode::Right => {
+                            if using_mpv {
+                                mpv.command("seek", &["15"]).ok();
+                            }
+                        }
+                        Keycode::Up => {
+                            if using_mpv {
+                                volume = (volume + 5).min(150);
+                                mpv.set_property("volume", volume).ok();
+                            }
+                        }
+                        Keycode::Down => {
+                            if using_mpv {
+                                volume = (volume - 5).max(0);
+                                mpv.set_property("volume", volume).ok();
+                            }
+                        }
+
+                        // ── p: print timing report ──────────────────────
+                        #[cfg(debug_assertions)]
+                        Keycode::P => print_report(&timings),
+
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
