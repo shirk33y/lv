@@ -56,7 +56,7 @@ fn is_video(path: &str) -> bool {
 /// Strip Windows extended-length path prefix (`\\?\`) if present.
 /// Windows `canonicalize` returns `\\?\C:\...` paths; we strip the prefix
 /// so paths display cleanly and match across the codebase.
-fn clean_path(p: &str) -> String {
+pub(crate) fn clean_path(p: &str) -> String {
     p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
 }
 
@@ -1402,7 +1402,8 @@ fn schedule_preload(
 fn update_title(window: &sdl2::video::Window, files: &[FileEntry], cursor: usize, dir: &str) {
     if let Some(file) = files.get(cursor) {
         let like = if file.liked { " ♥" } else { "" };
-        let dir_short = dir.rsplit(['/', '\\']).next().unwrap_or(dir);
+        let clean = clean_path(dir);
+        let dir_short = clean.rsplit(['/', '\\']).next().unwrap_or(&clean);
         let title = format!(
             "[{}/{}] {}{} — {} — lv",
             cursor + 1,

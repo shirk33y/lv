@@ -163,9 +163,10 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
         let left_max = (right_x - pad * 2.0 - heart_w).max(50.0);
 
         // Split path into dir + basename
-        let (dir_part, base_part) = match info.path.rfind('/') {
-            Some(pos) => (&info.path[..=pos], &info.path[pos + 1..]),
-            None => ("", info.path),
+        let clean = crate::clean_path(info.path);
+        let (dir_part, base_part) = match clean.rfind(['/', '\\']) {
+            Some(pos) => (&clean[..=pos], &clean[pos + 1..]),
+            None => ("", clean.as_str()),
         };
 
         // Measure full path width
@@ -191,7 +192,7 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
             let trunc = middle_ellipsis(ui, base_part, left_max - dir_w);
             ui.text_colored(BRIGHT, trunc);
         } else {
-            let trunc = middle_ellipsis(ui, info.path, left_max);
+            let trunc = middle_ellipsis(ui, &clean, left_max);
             ui.text_colored(BRIGHT, trunc);
         }
 
@@ -302,7 +303,7 @@ pub fn draw_info_panel(
 
         let mut rows: Vec<(&str, String)> = Vec::new();
         rows.push(("Filename", meta.filename.clone()));
-        rows.push(("Directory", meta.dir.clone()));
+        rows.push(("Directory", crate::clean_path(&meta.dir)));
         if let Some(size) = meta.size {
             rows.push(("Size", format_size(size)));
         }
@@ -382,7 +383,7 @@ pub fn draw_info_panel(
         ui.separator();
         ui.spacing();
         ui.text_colored(LABEL_COL, "Path");
-        ui.text_wrapped(&meta.path);
+        ui.text_wrapped(crate::clean_path(&meta.path));
     }
 
     panel_w
