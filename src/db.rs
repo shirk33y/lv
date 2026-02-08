@@ -210,11 +210,33 @@ impl Db {
             .collect()
     }
 
-    /// Remove files from DB whose path starts with `dir` (+ optional recursion).
+    /// Remove a single file from DB by exact path.
     pub fn remove_file_by_path(&self, path: &str) {
         self.conn()
             .execute("DELETE FROM files WHERE path = ?1", [path])
             .ok();
+    }
+
+    /// Remove a single file from DB by id.
+    pub fn remove_file_by_id(&self, file_id: i64) {
+        self.conn()
+            .execute("DELETE FROM files WHERE id = ?1", [file_id])
+            .ok();
+    }
+
+    /// Return all (id, path) pairs for files whose dir matches or is under `dir_prefix`.
+    pub fn file_paths_under(&self, dir_prefix: &str) -> Vec<(i64, String)> {
+        let db = self.conn();
+        let mut stmt = db
+            .prepare("SELECT id, path FROM files WHERE dir = ?1 OR dir LIKE ?2")
+            .unwrap();
+        let like = format!("{}/%", dir_prefix.replace('%', "\\%"));
+        stmt.query_map(rusqlite::params![dir_prefix, like], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
     }
 
     pub fn dir_unwatch(&self, path: &str) {

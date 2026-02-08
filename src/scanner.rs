@@ -86,6 +86,49 @@ pub fn discover(db: &Db, root: &Path) -> usize {
     count
 }
 
+/// Full rescan of a watched directory: discover new/updated files, prune deleted ones.
+/// Returns (added_or_updated, pruned).
+pub fn rescan(db: &Db, root: &Path) -> (usize, usize) {
+    let updated = discover(db, root);
+
+    // Prune: check every file in DB under this dir and remove if gone from disk.
+    let dir_str = clean_path(&root.to_string_lossy());
+    // Also try canonicalized form (Windows canonicalize adds \\?\ which clean_path strips)
+    let canon_dir = root
+        .canonicalize()
+        .map(|p| clean_path(&p.to_string_lossy()))
+        .unwrap_or_else(|_| dir_str.clone());
+
+    let db_paths = db.file_paths_under(&canon_dir);
+    let mut pruned = 0usize;
+    for (id, path) in &db_paths {
+        if !Path::new(path).exists() {
+            db.remove_file_by_id(*id);
+            eprintln!("rescan: pruned {}", path);
+            pruned += 1;
+        }
+    }
+    // If canon_dir differs from dir_str, also check files stored under the raw dir
+    if canon_dir != dir_str {
+        for (id, path) in &db.file_paths_under(&dir_str) {
+            if !Path::new(path).exists() {
+                db.remove_file_by_id(*id);
+                eprintln!("rescan: pruned {}", path);
+                pruned += 1;
+            }
+        }
+    }
+
+    if updated > 0 || pruned > 0 {
+        eprintln!(
+            "rescan: {} — {} added/updated, {} pruned",
+            dir_str, updated, pruned
+        );
+    }
+
+    (updated, pruned)
+}
+
 fn iso_lite(epoch_secs: u64) -> String {
     let s = epoch_secs;
     let days = s / 86400;
@@ -236,5 +279,123 @@ mod tests {
     #[test]
     fn empty_ext_rejected() {
         assert!(!is_media_ext(""));
+    }
+
+    // ── rescan ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn rescan_adds_new_files() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert_eq!(updated, 1, "should add new file");
+        assert_eq!(pruned, 0);
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "a.jpg");
+    }
+
+    #[test]
+    fn rescan_prunes_deleted_files() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"img").unwrap();
+
+        // Initial scan
+        rescan(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        assert_eq!(db.files_by_dir(&dir_str).len(), 2);
+
+        // Delete one file from disk
+        std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
+
+        // Rescan should prune it
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert_eq!(pruned, 1, "should prune deleted file");
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "b.png");
+    }
+
+    #[test]
+    fn rescan_updates_changed_files() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"small").unwrap();
+
+        rescan(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        let old_size = db.file_lookup(&files[0].path).unwrap().1;
+
+        // Modify the file (make it bigger)
+        std::fs::write(dir.path().join("a.jpg"), b"much larger content here!!!").unwrap();
+
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert!(updated >= 1, "should detect changed file");
+        assert_eq!(pruned, 0);
+
+        let new_size = db.file_lookup(&files[0].path).unwrap().1;
+        assert_ne!(old_size, new_size, "size should be updated");
+    }
+
+    #[test]
+    fn rescan_full_sync() {
+        // Simulate what happens between app sessions:
+        // some files added, some deleted, some changed
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.jpg"), b"keep").unwrap();
+        std::fs::write(dir.path().join("delete_me.png"), b"gone").unwrap();
+        std::fs::write(dir.path().join("change_me.gif"), b"old").unwrap();
+
+        rescan(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        assert_eq!(db.files_by_dir(&dir_str).len(), 3);
+
+        // Simulate offline changes
+        std::fs::remove_file(dir.path().join("delete_me.png")).unwrap();
+        std::fs::write(
+            dir.path().join("change_me.gif"),
+            b"new content that is longer",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("new_file.mp4"), b"video").unwrap();
+
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert!(updated >= 2, "should add new + update changed");
+        assert_eq!(pruned, 1, "should prune deleted");
+
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 3, "keep + changed + new");
+        let names: Vec<&str> = files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"keep.jpg"));
+        assert!(names.contains(&"change_me.gif"));
+        assert!(names.contains(&"new_file.mp4"));
+        assert!(!names.contains(&"delete_me.png"));
+    }
+
+    #[test]
+    fn rescan_empty_dir_no_panic() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let (updated, pruned) = rescan(&db, dir.path());
+        assert_eq!(updated, 0);
+        assert_eq!(pruned, 0);
     }
 }

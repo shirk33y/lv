@@ -453,6 +453,28 @@ fn main() {
     let total_dirs = lv_db.dir_count();
     eprintln!("lv.db: {} files in {} dirs", total_files, total_dirs);
 
+    // ── Rescan watched directories (sync DB with disk) ──────────────────
+    {
+        let watched = lv_db.watched_dirs();
+        if !watched.is_empty() {
+            let t0 = Instant::now();
+            let mut total_updated = 0usize;
+            let mut total_pruned = 0usize;
+            for (dir, _recursive) in &watched {
+                let (u, p) = scanner::rescan(&lv_db, std::path::Path::new(dir));
+                total_updated += u;
+                total_pruned += p;
+            }
+            eprintln!(
+                "rescan: {} watched dirs in {:.0}ms ({} added/updated, {} pruned)",
+                watched.len(),
+                t0.elapsed().as_secs_f64() * 1000.0,
+                total_updated,
+                total_pruned,
+            );
+        }
+    }
+
     // ── Background job engine ────────────────────────────────────────────
     let mut job_engine = jobs::JobEngine::start(lv_db.clone());
 
