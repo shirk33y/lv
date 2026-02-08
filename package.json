@@ -12,7 +12,8 @@
     "check": "npm run typecheck && npm test && npm run build && cd src-tauri && cargo fmt -- --check && cargo clippy -- -D warnings && cargo test",
     "appimage": "tauri build --bundles appimage",
     "appimage:arm64": "tauri build --target aarch64-unknown-linux-gnu --bundles appimage",
-    "win": "npm run build && cd src-tauri && cargo win"
+    "win": "npm run build && cd src-tauri && cargo win",
+    "dev:win": "bash dev-win.sh"
   },
   "dependencies": {
     "@preact/signals": "^2.7.0",
