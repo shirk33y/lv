@@ -3562,6 +3562,230 @@ mod tests {
         assert!(std::path::Path::new(&files[cursor].path).exists());
     }
 
+    // ── Delete-while-viewing navigation tests ─────────────────────────
+
+    #[test]
+    fn delete_current_file_advances_to_next() {
+        // When the currently viewed file is deleted, cursor should land
+        // on the next file (same index position), not stay on stale data.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "b.jpg").unwrap();
+
+        // Delete b.jpg (the one we're viewing)
+        std::fs::remove_file(dir.path().join("b.jpg")).unwrap();
+        db.remove_file_by_path(&files[cursor].path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(needs_display, "must re-display after current file deleted");
+        assert_eq!(files.len(), 2);
+        // Cursor should be valid and point to an existing file
+        assert!(cursor < files.len());
+        assert!(std::path::Path::new(&files[cursor].path).exists());
+        // Should NOT be b.jpg
+        assert_ne!(files[cursor].filename, "b.jpg");
+    }
+
+    #[test]
+    fn delete_current_only_file_leaves_empty() {
+        // Single file in dir, delete it while viewing → empty list, no panic
+        let (db, dir) = setup_drop_dir(&["only.mp4"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 1);
+
+        std::fs::remove_file(dir.path().join("only.mp4")).unwrap();
+        db.remove_file_by_path(&files[0].path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(needs_display);
+        assert!(files.is_empty());
+        assert!(files.get(cursor).is_none());
+    }
+
+    #[test]
+    fn rapid_sequential_deletes_cursor_always_valid() {
+        // User is viewing files, and they keep getting deleted one by one
+        // (e.g. another process cleaning up). Cursor must always be valid.
+        let names: Vec<String> = (0..10).map(|i| format!("file{:02}.jpg", i)).collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let (db, dir) = setup_drop_dir(&name_refs);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(files.len(), 10);
+
+        // Delete files one by one, always deleting whatever cursor points at
+        for _ in 0..10 {
+            if files.is_empty() {
+                break;
+            }
+            let path = files[cursor].path.clone();
+            let fname = files[cursor].filename.clone();
+            std::fs::remove_file(dir.path().join(&fname)).unwrap();
+            db.remove_file_by_path(&path);
+            simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+            // Invariant: cursor must always be valid
+            if !files.is_empty() {
+                assert!(
+                    cursor < files.len(),
+                    "cursor {} >= len {}",
+                    cursor,
+                    files.len()
+                );
+                assert!(
+                    std::path::Path::new(&files[cursor].path).exists(),
+                    "cursor points to non-existent file: {}",
+                    files[cursor].path
+                );
+            }
+        }
+        assert!(files.is_empty(), "all files should be deleted");
+    }
+
+    #[test]
+    fn delete_current_plus_add_new_cursor_valid() {
+        // Simultaneous delete + add (e.g. download finishes while old file deleted)
+        let (db, dir) = setup_drop_dir(&["old.jpg", "keep.png"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "old.jpg").unwrap();
+
+        // Delete old.jpg and add new.mp4 before refresh
+        std::fs::remove_file(dir.path().join("old.jpg")).unwrap();
+        db.remove_file_by_path(&files[cursor].path);
+        std::fs::write(dir.path().join("new.mp4"), b"video").unwrap();
+        scanner::discover(&db, dir.path());
+        simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert_eq!(files.len(), 2, "keep.png + new.mp4");
+        assert!(cursor < files.len(), "cursor must be in bounds");
+        assert!(
+            std::path::Path::new(&files[cursor].path).exists(),
+            "cursor must point to existing file"
+        );
+        assert_ne!(
+            files[cursor].filename, "old.jpg",
+            "deleted file must not be current"
+        );
+    }
+
+    #[test]
+    fn delete_middle_file_cursor_on_later_file_stays() {
+        // Cursor is on file D, file B gets deleted. Cursor should stay on D.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "d.jpg").unwrap();
+        let viewing_id = files[cursor].id;
+
+        // Delete b.jpg (before cursor)
+        let b_path = files
+            .iter()
+            .find(|f| f.filename == "b.jpg")
+            .unwrap()
+            .path
+            .clone();
+        std::fs::remove_file(dir.path().join("b.jpg")).unwrap();
+        db.remove_file_by_path(&b_path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(!needs_display, "cursor file not affected");
+        assert_eq!(files[cursor].id, viewing_id, "should still be on d.jpg");
+        assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn delete_file_after_cursor_stays() {
+        // Cursor is on file B, file D gets deleted. Cursor should stay on B.
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        cursor = files.iter().position(|f| f.filename == "b.jpg").unwrap();
+        let viewing_id = files[cursor].id;
+
+        let d_path = files
+            .iter()
+            .find(|f| f.filename == "d.jpg")
+            .unwrap()
+            .path
+            .clone();
+        std::fs::remove_file(dir.path().join("d.jpg")).unwrap();
+        db.remove_file_by_path(&d_path);
+        let needs_display = simulate_refresh(&db, &mut files, &mut cursor, &current_dir);
+
+        assert!(!needs_display, "cursor file not affected");
+        assert_eq!(files[cursor].id, viewing_id, "should still be on b.jpg");
+        assert_eq!(files.len(), 3);
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner
