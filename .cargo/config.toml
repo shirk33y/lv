@@ -1,2 +1,2 @@
-[alias]
-ci = ["test", "--", "--nocapture"]
+# cargo ci → runs scripts/ci.sh (test + clippy + fmt in parallel)
+# Cargo aliases can't chain commands, so we use `make ci` or `bash scripts/ci.sh`

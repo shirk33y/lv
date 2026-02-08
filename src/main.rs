@@ -1311,7 +1311,7 @@ fn main() {
     }
     mpv_shared.quit.store(true, Ordering::Release);
     // Give render thread a short deadline, then move on
-    let deadline = std::time::Duration::from_secs(2);
+    let deadline = std::time::Duration::from_millis(500);
     let start = Instant::now();
     loop {
         if render_thread.is_finished() {
@@ -1319,13 +1319,13 @@ fn main() {
             break;
         }
         if start.elapsed() > deadline {
-            eprintln!("warn: render thread did not exit in time, continuing shutdown");
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Force-destroy mpv to release resources
-    drop(mpv);
+    // Leak mpv handle — mpv_destroy can block for seconds on Windows.
+    // The process is exiting anyway, the OS will reclaim all resources.
+    std::mem::forget(mpv);
 
     #[cfg(debug_assertions)]
     if !timings.is_empty() {
