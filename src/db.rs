@@ -219,12 +219,19 @@ impl Db {
 
     /// Remove a single file from DB by id.
     pub fn remove_file_by_id(&self, file_id: i64) {
-        self.conn()
-            .execute("DELETE FROM files WHERE id = ?1", [file_id])
-            .ok();
+        let db = self.conn();
+        match db.execute("DELETE FROM files WHERE id = ?1", [file_id]) {
+            Ok(n) => {
+                if n == 0 {
+                    eprintln!("db: remove_file_by_id({}) — no rows deleted!", file_id);
+                }
+            }
+            Err(e) => eprintln!("db: remove_file_by_id({}) failed: {}", file_id, e),
+        }
     }
 
     /// Return all (id, path) pairs for files whose dir matches or is under `dir_prefix`.
+    #[allow(dead_code)]
     pub fn file_paths_under(&self, dir_prefix: &str) -> Vec<(i64, String)> {
         let db = self.conn();
         let mut stmt = db

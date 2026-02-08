@@ -91,38 +91,27 @@ pub fn discover(db: &Db, root: &Path) -> usize {
 pub fn rescan(db: &Db, root: &Path) -> (usize, usize) {
     let updated = discover(db, root);
 
-    // Prune: check every file in DB under this dir and remove if gone from disk.
-    let dir_str = clean_path(&root.to_string_lossy());
-    // Also try canonicalized form (Windows canonicalize adds \\?\ which clean_path strips)
+    // Prune: get the canonical dir (what discover stores in the DB) and check
+    // every file under it for existence on disk.
     let canon_dir = root
         .canonicalize()
         .map(|p| clean_path(&p.to_string_lossy()))
-        .unwrap_or_else(|_| dir_str.clone());
+        .unwrap_or_else(|_| clean_path(&root.to_string_lossy()));
 
-    let db_paths = db.file_paths_under(&canon_dir);
+    let db_files = db.files_by_dir(&canon_dir);
     let mut pruned = 0usize;
-    for (id, path) in &db_paths {
-        if !Path::new(path).exists() {
-            db.remove_file_by_id(*id);
-            eprintln!("rescan: pruned {}", path);
+    for f in &db_files {
+        if !Path::new(&f.path).exists() {
+            db.remove_file_by_id(f.id);
+            eprintln!("rescan: pruned {}", f.path);
             pruned += 1;
-        }
-    }
-    // If canon_dir differs from dir_str, also check files stored under the raw dir
-    if canon_dir != dir_str {
-        for (id, path) in &db.file_paths_under(&dir_str) {
-            if !Path::new(path).exists() {
-                db.remove_file_by_id(*id);
-                eprintln!("rescan: pruned {}", path);
-                pruned += 1;
-            }
         }
     }
 
     if updated > 0 || pruned > 0 {
         eprintln!(
             "rescan: {} — {} added/updated, {} pruned",
-            dir_str, updated, pruned
+            canon_dir, updated, pruned
         );
     }
 
@@ -319,7 +308,7 @@ mod tests {
         std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
 
         // Rescan should prune it
-        let (updated, pruned) = rescan(&db, dir.path());
+        let (_updated, pruned) = rescan(&db, dir.path());
         assert_eq!(pruned, 1, "should prune deleted file");
         let files = db.files_by_dir(&dir_str);
         assert_eq!(files.len(), 1);
