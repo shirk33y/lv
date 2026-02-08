@@ -1203,7 +1203,7 @@ fn main() {
         let mpv_display_tex = mpv_shared.display_tex.load(Ordering::Acquire);
         if using_mpv && video_has_frame && mpv_display_tex != 0 {
             // Blit texture produced by mpv render thread (sub-1ms)
-            quad_renderer.draw(mpv_display_tex, w, h, w, h);
+            quad_renderer.draw_video(mpv_display_tex, w, h, w, h);
         } else if !using_mpv {
             if let Some(file) = files.get(cursor) {
                 if let Some(tex_info) = tex_cache.get(&file.path) {

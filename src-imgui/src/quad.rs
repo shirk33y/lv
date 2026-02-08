@@ -16,10 +16,13 @@ layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUV;
 out vec2 vUV;
 uniform vec4 uRect; // x, y, w, h in NDC
+uniform int uFlipY; // 1 = flip vertically (for mpv FBO textures)
 void main() {
     vec2 pos = uRect.xy + aPos * uRect.zw;
     gl_Position = vec4(pos, 0.0, 1.0);
-    vUV = aUV;
+    vec2 uv = aUV;
+    if (uFlipY != 0) uv.y = 1.0 - uv.y;
+    vUV = uv;
 }
 "#;
 
@@ -78,7 +81,17 @@ impl QuadRenderer {
     }
 
     /// Draw a texture fitted within the viewport, preserving aspect ratio.
+    /// `flip_y`: set true for mpv video textures (rendered into FBO with GL origin).
     pub fn draw(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32) {
+        self.draw_inner(texture, img_w, img_h, viewport_w, viewport_h, false);
+    }
+
+    /// Draw a video texture (flipped Y to correct for mpv FBO orientation).
+    pub fn draw_video(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32) {
+        self.draw_inner(texture, img_w, img_h, viewport_w, viewport_h, true);
+    }
+
+    fn draw_inner(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32, flip_y: bool) {
         let img_aspect = img_w as f32 / img_h.max(1) as f32;
         let vp_aspect = viewport_w as f32 / viewport_h.max(1) as f32;
 
@@ -100,6 +113,9 @@ impl QuadRenderer {
 
             let loc = gl::GetUniformLocation(self.program, CString::new("uRect").unwrap().as_ptr());
             gl::Uniform4f(loc, x, y, quad_w, quad_h);
+
+            let flip_loc = gl::GetUniformLocation(self.program, CString::new("uFlipY").unwrap().as_ptr());
+            gl::Uniform1i(flip_loc, flip_y as i32);
 
             gl::ActiveTexture(gl::TEXTURE0);
             gl::BindTexture(gl::TEXTURE_2D, texture);
