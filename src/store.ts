@@ -118,11 +118,13 @@ export function updateFileAt(idx: number, patch: Partial<FileEntry>) {
   files.value = copy;
 }
 
-export function moveCursor(delta: number) {
+export function moveCursor(delta: number): boolean {
   const next = cursorIndex.value + delta;
   if (next >= 0 && next < files.value.length) {
     cursorIndex.value = next;
+    return true;
   }
+  return false;
 }
 
 export function setCursor(index: number) {

@@ -53,15 +53,47 @@ describe("keyboard navigation", () => {
     expect(cursorIndex.value).toBe(1);
   });
 
-  it("j at end stays", () => {
-    resetStore([makeFile(1), makeFile(2)], 1);
+  it("j at end navigates to next dir", () => {
+    resetStore([makeFile(1, "/a")], 0);
+    mockInvoke.mockResolvedValueOnce([makeFile(10, "/b")]);
     pressKey("j");
-    expect(cursorIndex.value).toBe(1);
+    expect(cursorIndex.value).toBe(0); // stays until async resolves
+    expect(mockInvoke).toHaveBeenCalledWith("navigate_dir", {
+      currentDir: "/a",
+      delta: 1,
+    });
   });
 
-  it("k at start stays", () => {
+  it("j at end loads next dir files", async () => {
+    resetStore([makeFile(1, "/a")], 0);
+    mockInvoke.mockResolvedValueOnce([makeFile(10, "/b"), makeFile(11, "/b")]);
+    pressKey("j");
+    await vi.waitFor(() => {
+      expect(files.value[0]?.dir).toBe("/b");
+    });
+    expect(cursorIndex.value).toBe(0); // first file
+    expect(files.value.length).toBe(2);
+  });
+
+  it("k at start navigates to prev dir (cursor at last file)", async () => {
+    resetStore([makeFile(1, "/b")], 0);
+    mockInvoke.mockResolvedValueOnce([makeFile(5, "/a"), makeFile(6, "/a"), makeFile(7, "/a")]);
     pressKey("k");
-    expect(cursorIndex.value).toBe(0);
+    await vi.waitFor(() => {
+      expect(files.value[0]?.dir).toBe("/a");
+    });
+    expect(cursorIndex.value).toBe(2); // last file of prev dir
+    expect(files.value.length).toBe(3);
+  });
+
+  it("j at end with single-file dir crosses to next dir", async () => {
+    resetStore([makeFile(1, "/a")], 0);
+    mockInvoke.mockResolvedValueOnce([makeFile(20, "/c")]);
+    pressKey("j");
+    await vi.waitFor(() => {
+      expect(files.value[0]?.dir).toBe("/c");
+    });
+    expect(files.value.length).toBe(1);
   });
 
   it("h navigates dir backward", () => {

@@ -18,7 +18,7 @@ import {
 
 let navigating = false;
 
-async function navigateDir(delta: number) {
+async function navigateDir(delta: number, cursorAt: "first" | "last" = "first") {
   if (navigating) return;
   const file = currentFile.value;
   let dir = file ? file.dir : lastDir.value;
@@ -35,7 +35,7 @@ async function navigateDir(delta: number) {
       const filtered = filterSupported(raw);
       if (filtered.length > 0) {
         files.value = filtered;
-        cursorIndex.value = 0;
+        cursorIndex.value = cursorAt === "last" ? filtered.length - 1 : 0;
         navigating = false;
         return;
       }
@@ -78,7 +78,10 @@ export function setupKeyboard(): () => void {
       return;
     }
     if (now - lastMove >= INTERVAL) {
-      moveCursor(heldKey === "j" ? 1 : -1);
+      const delta = heldKey === "j" ? 1 : -1;
+      if (!moveCursor(delta)) {
+        navigateDir(delta, delta < 0 ? "last" : "first");
+      }
       lastMove = now;
     }
     rafId = requestAnimationFrame(tick);
@@ -104,7 +107,10 @@ export function setupKeyboard(): () => void {
       case "j":
       case "k": {
         if (e.repeat || e.key === heldKey) return;
-        moveCursor(e.key === "j" ? 1 : -1);
+        const delta = e.key === "j" ? 1 : -1;
+        if (!moveCursor(delta)) {
+          navigateDir(delta, delta < 0 ? "last" : "first");
+        }
         heldKey = e.key;
         keyDownAt = performance.now();
         lastMove = keyDownAt;
