@@ -78,14 +78,7 @@ impl QuadRenderer {
     }
 
     /// Draw a texture fitted within the viewport, preserving aspect ratio.
-    pub fn draw(
-        &self,
-        texture: u32,
-        img_w: u32,
-        img_h: u32,
-        viewport_w: u32,
-        viewport_h: u32,
-    ) {
+    pub fn draw(&self, texture: u32, img_w: u32, img_h: u32, viewport_w: u32, viewport_h: u32) {
         let img_aspect = img_w as f32 / img_h.max(1) as f32;
         let vp_aspect = viewport_w as f32 / viewport_h.max(1) as f32;
 
@@ -105,19 +98,14 @@ impl QuadRenderer {
         unsafe {
             gl::UseProgram(self.program);
 
-            let loc = gl::GetUniformLocation(
-                self.program,
-                CString::new("uRect").unwrap().as_ptr(),
-            );
+            let loc = gl::GetUniformLocation(self.program, CString::new("uRect").unwrap().as_ptr());
             gl::Uniform4f(loc, x, y, quad_w, quad_h);
 
             gl::ActiveTexture(gl::TEXTURE0);
             gl::BindTexture(gl::TEXTURE_2D, texture);
 
-            let tex_loc = gl::GetUniformLocation(
-                self.program,
-                CString::new("uTex").unwrap().as_ptr(),
-            );
+            let tex_loc =
+                gl::GetUniformLocation(self.program, CString::new("uTex").unwrap().as_ptr());
             gl::Uniform1i(tex_loc, 0);
 
             gl::BindVertexArray(self.vao);
@@ -128,6 +116,7 @@ impl QuadRenderer {
     }
 
     /// Draw a texture at an arbitrary NDC rectangle with alpha blending.
+    #[allow(dead_code)]
     pub fn draw_rect(&self, texture: u32, x: f32, y: f32, w: f32, h: f32) {
         unsafe {
             gl::Enable(gl::BLEND);
@@ -135,19 +124,14 @@ impl QuadRenderer {
 
             gl::UseProgram(self.program);
 
-            let loc = gl::GetUniformLocation(
-                self.program,
-                CString::new("uRect").unwrap().as_ptr(),
-            );
+            let loc = gl::GetUniformLocation(self.program, CString::new("uRect").unwrap().as_ptr());
             gl::Uniform4f(loc, x, y, w, h);
 
             gl::ActiveTexture(gl::TEXTURE0);
             gl::BindTexture(gl::TEXTURE_2D, texture);
 
-            let tex_loc = gl::GetUniformLocation(
-                self.program,
-                CString::new("uTex").unwrap().as_ptr(),
-            );
+            let tex_loc =
+                gl::GetUniformLocation(self.program, CString::new("uTex").unwrap().as_ptr());
             gl::Uniform1i(tex_loc, 0);
 
             gl::BindVertexArray(self.vao);
@@ -186,10 +170,7 @@ unsafe fn create_program(vert_src: &str, frag_src: &str) -> u32 {
         gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
         let mut buf = vec![0u8; len as usize];
         gl::GetProgramInfoLog(program, len, ptr::null_mut(), buf.as_mut_ptr() as *mut _);
-        panic!(
-            "Shader link error: {}",
-            String::from_utf8_lossy(&buf)
-        );
+        panic!("Shader link error: {}", String::from_utf8_lossy(&buf));
     }
 
     gl::DeleteShader(vs);

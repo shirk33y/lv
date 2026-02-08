@@ -14,6 +14,7 @@ pub struct FileEntry {
     pub path: String,
     pub dir: String,
     pub filename: String,
+    #[allow(dead_code)]
     pub meta_id: Option<i64>,
     pub liked: bool,
 }
@@ -110,10 +111,7 @@ impl Db {
 
     pub fn watched_add(&self, path: &str) {
         self.conn()
-            .execute(
-                "INSERT OR IGNORE INTO watched (path) VALUES (?1)",
-                [path],
-            )
+            .execute("INSERT OR IGNORE INTO watched (path) VALUES (?1)", [path])
             .ok();
     }
 
@@ -155,12 +153,7 @@ impl Db {
         Some(db.last_insert_rowid())
     }
 
-    pub fn file_update_meta(
-        &self,
-        file_id: i64,
-        size: Option<i64>,
-        modified_at: Option<&str>,
-    ) {
+    pub fn file_update_meta(&self, file_id: i64, size: Option<i64>, modified_at: Option<&str>) {
         self.conn()
             .execute(
                 "UPDATE files SET size = ?1, modified_at = ?2, hash_sha512 = NULL, meta_id = NULL WHERE id = ?3",
@@ -438,11 +431,11 @@ impl Db {
             [hash],
         )
         .ok();
-        if let Ok(meta_id) = db.query_row(
-            "SELECT id FROM meta WHERE hash_sha512 = ?1",
-            [hash],
-            |r| r.get::<_, i64>(0),
-        ) {
+        if let Ok(meta_id) =
+            db.query_row("SELECT id FROM meta WHERE hash_sha512 = ?1", [hash], |r| {
+                r.get::<_, i64>(0)
+            })
+        {
             db.execute(
                 "UPDATE files SET hash_sha512 = ?1, meta_id = ?2 WHERE id = ?3",
                 rusqlite::params![hash, meta_id, file_id],
@@ -538,6 +531,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)]
     pub fn file_path_by_id(&self, file_id: i64) -> Option<String> {
         self.conn()
             .query_row("SELECT path FROM files WHERE id = ?1", [file_id], |r| {
@@ -596,11 +590,8 @@ mod tests {
 
     fn insert_file(db: &Db, id: i64, path: &str, dir: &str, filename: &str) {
         let conn = db.conn();
-        conn.execute(
-            "INSERT INTO meta (id, tags) VALUES (?1, '[]')",
-            [id],
-        )
-        .ok();
+        conn.execute("INSERT INTO meta (id, tags) VALUES (?1, '[]')", [id])
+            .ok();
         conn.execute(
             "INSERT INTO files (id, path, dir, filename, meta_id) VALUES (?1, ?2, ?3, ?4, ?1)",
             rusqlite::params![id, path, dir, filename],

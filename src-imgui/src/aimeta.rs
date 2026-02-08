@@ -55,7 +55,7 @@ pub fn extract_png(path: &str) -> Result<AiBasic, String> {
                     if rest.len() >= 2 {
                         let comp_flag = rest[0];
                         let after = &rest[2..]; // skip comp flag + method
-                        // skip language\0translated_keyword\0
+                                                // skip language\0translated_keyword\0
                         let mut pos = 0;
                         let mut nulls = 0;
                         for (i, &b) in after.iter().enumerate() {
@@ -130,8 +130,7 @@ fn parse_comfyui(json: &str) -> Option<AiBasic> {
             "CLIPTextEncode" => {
                 if let Some(text) = inputs["text"].as_str() {
                     let is_neg = title.to_lowercase().contains("negative");
-                    if !is_neg && (prompt.is_empty() || title.to_lowercase().contains("positive"))
-                    {
+                    if !is_neg && (prompt.is_empty() || title.to_lowercase().contains("positive")) {
                         prompt = text.to_string();
                     }
                 }
@@ -157,7 +156,6 @@ fn parse_comfyui(json: &str) -> Option<AiBasic> {
 /// Parse A1111 parameters text → extract prompt + model.
 fn parse_a1111(params: &str) -> AiBasic {
     // Format: prompt\nNegative prompt: ...\nSteps: N, ..., Model: name, ...
-    let mut prompt = String::new();
     let mut model = String::new();
 
     let mut lines = params.lines();
@@ -166,9 +164,7 @@ fn parse_a1111(params: &str) -> AiBasic {
     let mut prompt_lines = Vec::new();
     for line in &mut lines {
         if line.starts_with("Negative prompt:") || (line.contains(": ") && line.contains(", ")) {
-            // This is either neg prompt or the params line
             if line.contains("Model:") || line.contains("Steps:") {
-                // Parse key-value pairs
                 for pair in line.split(", ") {
                     if let Some((k, v)) = pair.split_once(": ") {
                         if k == "Model" {
@@ -181,7 +177,7 @@ fn parse_a1111(params: &str) -> AiBasic {
         }
         prompt_lines.push(line);
     }
-    prompt = prompt_lines.join("\n");
+    let prompt = prompt_lines.join("\n");
 
     // Continue scanning remaining lines for Model
     for line in lines {
@@ -222,7 +218,10 @@ mod tests {
 
     #[test]
     fn extract_test_png() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/z_image_turbo_example.png");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test/z_image_turbo_example.png"
+        );
         if std::path::Path::new(path).exists() {
             let ai = extract_png(path).unwrap();
             assert!(ai.prompt.contains("anime"));

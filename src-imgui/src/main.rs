@@ -30,7 +30,7 @@ use sdl2::video::GLProfile;
 use libmpv2::Mpv;
 
 use db::{Db, FileEntry};
-use preload::{DecodedImage, TextureCache};
+use preload::TextureCache;
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "avif", "ico", "svg",
@@ -197,8 +197,8 @@ fn spawn_mpv_render_thread(
                         w = nw;
                         h = nh;
                         unsafe {
-                            for i in 0..2 {
-                                gl::BindTexture(gl::TEXTURE_2D, tex[i]);
+                            for t in &tex {
+                                gl::BindTexture(gl::TEXTURE_2D, *t);
                                 gl::TexImage2D(
                                     gl::TEXTURE_2D, 0, gl::RGBA8 as i32,
                                     w as i32, h as i32, 0,
@@ -394,9 +394,7 @@ fn main() {
     statusbar::apply_theme(&mut imgui_ctx);
 
     let mut imgui_platform = imgui_sdl2_support::SdlPlatform::new(&mut imgui_ctx);
-    let gl = unsafe {
-        glow::Context::from_loader_function(|s| video.gl_get_proc_address(s) as _)
-    };
+    let gl = unsafe { glow::Context::from_loader_function(|s| video.gl_get_proc_address(s) as _) };
     let mut imgui_renderer = imgui_glow_renderer::AutoRenderer::new(gl, &mut imgui_ctx)
         .expect("Failed to create imgui glow renderer");
 
@@ -417,19 +415,31 @@ fn main() {
         let tp = std::ffi::CString::new("time-pos").unwrap();
         let dur = std::ffi::CString::new("duration").unwrap();
         let pau = std::ffi::CString::new("pause").unwrap();
-        libmpv2_sys::mpv_observe_property(h, OBS_TIME_POS, tp.as_ptr(), libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE);
-        libmpv2_sys::mpv_observe_property(h, OBS_DURATION, dur.as_ptr(), libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE);
-        libmpv2_sys::mpv_observe_property(h, OBS_PAUSE, pau.as_ptr(), libmpv2_sys::mpv_format_MPV_FORMAT_FLAG);
+        libmpv2_sys::mpv_observe_property(
+            h,
+            OBS_TIME_POS,
+            tp.as_ptr(),
+            libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE,
+        );
+        libmpv2_sys::mpv_observe_property(
+            h,
+            OBS_DURATION,
+            dur.as_ptr(),
+            libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE,
+        );
+        libmpv2_sys::mpv_observe_property(
+            h,
+            OBS_PAUSE,
+            pau.as_ptr(),
+            libmpv2_sys::mpv_format_MPV_FORMAT_FLAG,
+        );
     }
 
     // ── Shared GL context for mpv render thread ───────────────────────
     // Enable context sharing so textures created on the render thread
     // are visible from the main context.
     unsafe {
-        sdl2_sys::SDL_GL_SetAttribute(
-            sdl2_sys::SDL_GLattr::SDL_GL_SHARE_WITH_CURRENT_CONTEXT,
-            1,
-        );
+        sdl2_sys::SDL_GL_SetAttribute(sdl2_sys::SDL_GLattr::SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
     }
     let mpv_gl_ctx = window.gl_create_context().expect("GL context 2 failed");
     // Grab raw ptr before switching back to main context
@@ -514,14 +524,15 @@ fn main() {
                 Event::MouseMotion { .. } => {
                     last_mouse_move = Instant::now();
                     if !cursor_visible {
-                        unsafe { sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_ENABLE as i32); }
+                        unsafe {
+                            sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_ENABLE as i32);
+                        }
                         cursor_visible = true;
                     }
                 }
 
                 Event::KeyDown {
-                    keycode: Some(key),
-                    ..
+                    keycode: Some(key), ..
                 } if !imgui_ctx.io().want_capture_keyboard => match key {
                     // ── Quit ─────────────────────────────────────────
                     Keycode::Q | Keycode::Escape => running = false,
@@ -535,7 +546,14 @@ fn main() {
                         } else {
                             // End of dir → try next dir
                             if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
-                                switch_dir(&lv_db, &dir, &mut files, &mut current_dir, &mut cursor, "first");
+                                switch_dir(
+                                    &lv_db,
+                                    &dir,
+                                    &mut files,
+                                    &mut current_dir,
+                                    &mut cursor,
+                                    "first",
+                                );
                                 needs_display = true;
                             }
                         }
@@ -548,7 +566,14 @@ fn main() {
                         } else {
                             // Start of dir → try prev dir
                             if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
-                                switch_dir(&lv_db, &dir, &mut files, &mut current_dir, &mut cursor, "last");
+                                switch_dir(
+                                    &lv_db,
+                                    &dir,
+                                    &mut files,
+                                    &mut current_dir,
+                                    &mut cursor,
+                                    "last",
+                                );
                                 needs_display = true;
                             }
                         }
@@ -557,7 +582,14 @@ fn main() {
                     // ── h/l: prev/next directory ────────────────────
                     Keycode::L => {
                         if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
-                            switch_dir(&lv_db, &dir, &mut files, &mut current_dir, &mut cursor, "first");
+                            switch_dir(
+                                &lv_db,
+                                &dir,
+                                &mut files,
+                                &mut current_dir,
+                                &mut cursor,
+                                "first",
+                            );
                             needs_display = true;
                         }
                     }
@@ -567,7 +599,14 @@ fn main() {
                             cursor = 0;
                             needs_display = true;
                         } else if let Some(dir) = lv_db.navigate_dir(&current_dir, -1) {
-                            switch_dir(&lv_db, &dir, &mut files, &mut current_dir, &mut cursor, "first");
+                            switch_dir(
+                                &lv_db,
+                                &dir,
+                                &mut files,
+                                &mut current_dir,
+                                &mut cursor,
+                                "first",
+                            );
                             needs_display = true;
                         }
                     }
@@ -740,7 +779,9 @@ fn main() {
 
         // Auto-hide mouse cursor after 2s of no movement
         if cursor_visible && last_mouse_move.elapsed().as_secs() >= 2 {
-            unsafe { sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_DISABLE as i32); }
+            unsafe {
+                sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_DISABLE as i32);
+            }
             cursor_visible = false;
         }
 
@@ -778,7 +819,9 @@ fn main() {
                     pending_video = None;
                     pending_cold_load = None; // cancel any prior async decode
                     if using_mpv {
-                        unsafe { mpv_stop_async(mpv_handle); }
+                        unsafe {
+                            mpv_stop_async(mpv_handle);
+                        }
                         using_mpv = false;
                         mpv_shared.has_frame.store(false, Ordering::Release);
                     }
@@ -786,25 +829,34 @@ fn main() {
                     video_duration = 0.0;
                     video_paused = false;
 
-                    let (_method, _decode_ms, _upload_ms): (&str, Option<f64>, Option<f64>) = if tex_cache.has(path) {
-                        ("image/cache", None, None)
-                    } else if let Some(decoded) = preloader.try_take(path) {
-                        let tu = Instant::now();
-                        tex_cache.upload(path, decoded);
-                        ("image/preload", None, Some(tu.elapsed().as_secs_f64() * 1000.0))
-                    } else {
-                        // Don't block main thread — schedule async decode
-                        preloader.schedule(path.to_string());
-                        pending_cold_load = Some(path.to_string());
-                        ("image/async", None, None)
-                    };
+                    let (_method, _decode_ms, _upload_ms): (&str, Option<f64>, Option<f64>) =
+                        if tex_cache.has(path) {
+                            ("image/cache", None, None)
+                        } else if let Some(decoded) = preloader.try_take(path) {
+                            let tu = Instant::now();
+                            tex_cache.upload(path, decoded);
+                            (
+                                "image/preload",
+                                None,
+                                Some(tu.elapsed().as_secs_f64() * 1000.0),
+                            )
+                        } else {
+                            // Don't block main thread — schedule async decode
+                            preloader.schedule(path.to_string());
+                            pending_cold_load = Some(path.to_string());
+                            ("image/async", None, None)
+                        };
 
                     #[cfg(debug_assertions)]
                     {
                         let total = t0.elapsed().as_secs_f64() * 1000.0;
                         eprintln!(
                             "[{:>4}/{}] {:<14} {:>7.2}ms  {}",
-                            cursor + 1, files.len(), _method, total, file.filename,
+                            cursor + 1,
+                            files.len(),
+                            _method,
+                            total,
+                            file.filename,
                         );
                         timings.push(TimingEntry {
                             filename: file.filename.clone(),
@@ -820,7 +872,9 @@ fn main() {
                     // Stop current mpv playback (async) so we don't
                     // show stale video while debouncing
                     if using_mpv {
-                        unsafe { mpv_stop_async(mpv_handle); }
+                        unsafe {
+                            mpv_stop_async(mpv_handle);
+                        }
                         mpv_shared.has_frame.store(false, Ordering::Release);
                     }
                     using_mpv = true;
@@ -859,14 +913,20 @@ fn main() {
             if stamp.elapsed().as_millis() >= VIDEO_DEBOUNCE_MS {
                 let vpath = vpath.clone();
                 let t0 = Instant::now();
-                unsafe { mpv_loadfile_async(mpv_handle, &vpath); }
+                unsafe {
+                    mpv_loadfile_async(mpv_handle, &vpath);
+                }
                 let total = t0.elapsed().as_secs_f64() * 1000.0;
                 let fname = vpath.rsplit('/').next().unwrap_or(&vpath);
                 #[cfg(debug_assertions)]
                 {
                     eprintln!(
                         "[{:>4}/{}] {:<14} {:>7.2}ms  {}",
-                        cursor + 1, files.len(), "mpv", total, fname,
+                        cursor + 1,
+                        files.len(),
+                        "mpv",
+                        total,
+                        fname,
                     );
                     timings.push(TimingEntry {
                         filename: fname.to_string(),
@@ -925,7 +985,7 @@ fn main() {
                                 _ => {}
                             }
                         }
-                    }
+                    },
                     _ => {}
                 }
             }
@@ -1024,7 +1084,9 @@ fn main() {
         if using_mpv {
             let rctx = mpv_shared.render_ctx.load(Ordering::Acquire);
             if !rctx.is_null() {
-                unsafe { libmpv2_sys::mpv_render_context_report_swap(rctx); }
+                unsafe {
+                    libmpv2_sys::mpv_render_context_report_swap(rctx);
+                }
             }
         }
 
@@ -1119,23 +1181,17 @@ fn schedule_preload(
 ) {
     let start = cursor.saturating_sub(10);
     let end = (cursor + 11).min(files.len());
-    for i in start..end {
+    for (i, file) in files.iter().enumerate().take(end).skip(start) {
         if i == cursor {
             continue;
         }
-        let path = &files[i].path;
-        if is_image(path) && !cache.has(path) && !preloader.is_pending(path) {
-            preloader.schedule(path.clone());
+        if is_image(&file.path) && !cache.has(&file.path) && !preloader.is_pending(&file.path) {
+            preloader.schedule(file.path.clone());
         }
     }
 }
 
-fn update_title(
-    window: &sdl2::video::Window,
-    files: &[FileEntry],
-    cursor: usize,
-    dir: &str,
-) {
+fn update_title(window: &sdl2::video::Window, files: &[FileEntry], cursor: usize, dir: &str) {
     if let Some(file) = files.get(cursor) {
         let like = if file.liked { " ♥" } else { "" };
         let dir_short = dir.rsplit('/').next().unwrap_or(dir);
@@ -1207,7 +1263,12 @@ fn print_report(timings: &[TimingEntry]) {
             let (min, max, avg, med) = stats(v);
             eprintln!(
                 "│ {:<12} │ {:>5} │ {:>7.2} │ {:>7.2} │ {:>7.2} │ {:>6.2} │",
-                name, v.len(), min, avg, med, max,
+                name,
+                v.len(),
+                min,
+                avg,
+                med,
+                max,
             );
         }
     }

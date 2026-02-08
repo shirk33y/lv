@@ -471,13 +471,16 @@ pub fn draw_stats_section(
         };
         ui.text_colored(
             DIM,
-            format!(
-                "{} files  {} dirs",
-                cs.total_files, cs.total_dirs
-            ),
+            format!("{} files  {} dirs", cs.total_files, cs.total_dirs),
         );
-        ui.text_colored(DIM, format!("# {}/{}  {}%", cs.hashed, cs.total_files, pct_hash));
-        ui.text_colored(DIM, format!("E {}/{}  {}%", cs.with_exif, cs.total_files, pct_exif));
+        ui.text_colored(
+            DIM,
+            format!("# {}/{}  {}%", cs.hashed, cs.total_files, pct_hash),
+        );
+        ui.text_colored(
+            DIM,
+            format!("E {}/{}  {}%", cs.with_exif, cs.total_files, pct_exif),
+        );
 
         ui.spacing();
 
@@ -487,7 +490,10 @@ pub fn draw_stats_section(
         ui.separator();
         ui.text_colored(
             DIM,
-            format!("{}/min  ok:{}  err:{}  run:{}", rpm_str, done, failed, active),
+            format!(
+                "{}/min  ok:{}  err:{}  run:{}",
+                rpm_str, done, failed, active
+            ),
         );
         if cs.failed > 0 {
             ui.text_colored([1.0, 0.4, 0.4, 1.0], format!("fails: {}", cs.failed));

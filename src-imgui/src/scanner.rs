@@ -74,7 +74,10 @@ pub fn discover(db: &Db, root: &Path) -> usize {
             continue;
         }
 
-        if db.file_insert(&path_str, &dir, &filename, size, mtime_ref).is_some() {
+        if db
+            .file_insert(&path_str, &dir, &filename, size, mtime_ref)
+            .is_some()
+        {
             count += 1;
         }
     }
@@ -103,7 +106,16 @@ fn iso_lite(epoch_secs: u64) -> String {
     let months = [
         31,
         if is_leap(y) { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut mo = 1;
     for &ml in &months {

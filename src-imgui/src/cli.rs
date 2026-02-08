@@ -54,14 +54,8 @@ pub fn status(db: &Db) {
     println!("lv status");
     println!("=========");
     println!("files:   {} ({} dirs)", stats.total_files, stats.total_dirs);
-    println!(
-        "hashed:  {}/{}",
-        stats.hashed, stats.total_files
-    );
-    println!(
-        "exif:    {}/{}",
-        stats.with_exif, stats.total_files
-    );
+    println!("hashed:  {}/{}", stats.hashed, stats.total_files);
+    println!("exif:    {}/{}", stats.with_exif, stats.total_files);
     println!("failed:  {}", stats.failed);
     println!("watched: {}", watched.len());
     for p in &watched {

@@ -73,7 +73,10 @@ impl JobStats {
     }
 
     pub fn last_error(&self) -> String {
-        self.last_error.lock().map(|e| e.clone()).unwrap_or_default()
+        self.last_error
+            .lock()
+            .map(|e| e.clone())
+            .unwrap_or_default()
     }
 
     /// Call periodically (~every 5s) to update jobs_per_min.
@@ -112,7 +115,7 @@ impl JobEngine {
             .unwrap_or(4);
 
         // Spawn worker threads (1 base + extras that activate in turbo)
-        let num_workers = (ncpus / 2).max(1).min(4);
+        let num_workers = (ncpus / 2).clamp(1, 4);
         let mut handles = Vec::new();
 
         for worker_id in 0..num_workers {
@@ -312,14 +315,7 @@ fn xattr_get(path: &str, name: &str) -> Result<Option<Vec<u8>>, ()> {
     let c_name = CString::new(name).map_err(|_| ())?;
 
     // First call to get size
-    let size = unsafe {
-        libc::getxattr(
-            c_path.as_ptr(),
-            c_name.as_ptr(),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let size = unsafe { libc::getxattr(c_path.as_ptr(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
     if size < 0 {
         return Ok(None);
     }
@@ -359,11 +355,7 @@ fn xattr_set(path: &str, name: &str, value: &[u8]) {
 
 fn process_exif(db: &Db, file_id: i64, path: &str) -> Result<(), String> {
     let dims = image::image_dimensions(path).map_err(|e| e.to_string())?;
-    let ext = path
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     let format = match ext.as_str() {
         "jpg" | "jpeg" => "JPEG",
         "png" => "PNG",
