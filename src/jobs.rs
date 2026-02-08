@@ -137,7 +137,7 @@ impl JobEngine {
                 .name("job-rate".into())
                 .spawn(move || {
                     while !quit.load(Ordering::Relaxed) {
-                        thread::sleep(Duration::from_secs(5));
+                        interruptible_sleep(Duration::from_secs(5), &quit);
                         stats.update_rate();
                     }
                 })
@@ -170,6 +170,17 @@ impl Drop for JobEngine {
 
 // ── Worker loop ─────────────────────────────────────────────────────────
 
+/// Sleep that checks quit flag every 100ms so threads exit promptly.
+fn interruptible_sleep(dur: Duration, quit: &AtomicBool) {
+    let start = Instant::now();
+    while start.elapsed() < dur {
+        if quit.load(Ordering::Relaxed) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: usize) {
     // Worker 0 always runs. Workers 1+ only run in turbo mode.
     loop {
@@ -181,7 +192,7 @@ fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: u
 
         // Non-primary workers sleep in lazy mode
         if worker_id > 0 && !turbo {
-            thread::sleep(Duration::from_secs(2));
+            interruptible_sleep(Duration::from_secs(2), &quit);
             continue;
         }
 
@@ -210,7 +221,7 @@ fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: u
             // Turbo: ~80% CPU → sleep ~0.25x job time
             let factor = if turbo { 0.25 } else { 2.3 };
             let sleep = Duration::from_secs_f64(elapsed.as_secs_f64() * factor);
-            thread::sleep(sleep.min(Duration::from_secs(5)));
+            interruptible_sleep(sleep.min(Duration::from_secs(5)), &quit);
         } else {
             // No work available, idle
             let idle = if turbo {
@@ -218,7 +229,7 @@ fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: u
             } else {
                 Duration::from_secs(10)
             };
-            thread::sleep(idle);
+            interruptible_sleep(idle, &quit);
         }
     }
 }
