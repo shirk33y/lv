@@ -17,7 +17,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-imgui -> target
           cache-all-crates: "true"
 
       - name: Install system dependencies
@@ -26,19 +25,15 @@ jobs:
           sudo apt-get install -y libsdl2-dev libmpv-dev
 
       - name: Cargo test
-        working-directory: src-imgui
         run: cargo test
 
       - name: Cargo clippy
-        working-directory: src-imgui
         run: cargo clippy -- -D warnings
 
       - name: Cargo fmt
-        working-directory: src-imgui
         run: cargo fmt -- --check
 
       - name: Cargo check (release)
-        working-directory: src-imgui
         run: cargo check --release
 
   build:
@@ -70,7 +65,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-imgui -> target
           cache-all-crates: "true"
 
       # ── Linux build ──────────────────────────────────────────────────
@@ -82,12 +76,10 @@ jobs:
 
       - name: Build (Linux)
         if: matrix.os == 'linux'
-        working-directory: src-imgui
         run: cargo build --release
 
       - name: Package AppImage (Linux)
         if: matrix.os == 'linux'
-        working-directory: src-imgui
         run: bash pkg/appimage.sh ${{ matrix.arch }}
 
       - name: Upload AppImage (Linux)
@@ -95,14 +87,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lv-linux-${{ matrix.arch }}-appimage
-          path: src-imgui/lv-${{ matrix.arch }}.AppImage
+          path: lv-${{ matrix.arch }}.AppImage
 
       - name: Upload binary (Linux)
         if: matrix.os == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: lv-linux-${{ matrix.arch }}
-          path: src-imgui/target/release/lv-imgui
+          path: target/release/lv-imgui
 
       # ── Windows cross-compile ────────────────────────────────────────
       - name: Cache cargo-xwin binary
@@ -129,12 +121,10 @@ jobs:
 
       - name: Build (Windows)
         if: matrix.os == 'windows'
-        working-directory: src-imgui
         run: cargo xwin build --release --target x86_64-pc-windows-msvc
 
       - name: Package installer (Windows)
         if: matrix.os == 'windows'
-        working-directory: src-imgui
         run: |
           mkdir -p build-installer
           cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/
@@ -149,11 +139,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lv-windows-x86_64-installer
-          path: src-imgui/build-installer/lv-setup.exe
+          path: build-installer/lv-setup.exe
 
       - name: Upload binary (Windows)
         if: matrix.os == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: lv-windows-x86_64
-          path: src-imgui/target/x86_64-pc-windows-msvc/release/lv-imgui.exe
+          path: target/x86_64-pc-windows-msvc/release/lv-imgui.exe

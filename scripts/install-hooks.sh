@@ -8,10 +8,10 @@ HOOK="$(git -C "$(dirname "$0")/.." rev-parse --git-dir)/hooks/pre-commit"
 cat > "$HOOK" << 'EOF'
 #!/bin/bash
 # pre-commit hook — runs cargo test + clippy + fmt check
-# Installed by: bash src-imgui/scripts/install-hooks.sh
+# Installed by: bash scripts/install-hooks.sh
 set -eo pipefail
 
-cd "$(git rev-parse --show-toplevel)/src-imgui"
+cd "$(git rev-parse --show-toplevel)"
 
 echo "pre-commit: running checks..."
 

@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities for lv","local":true,"windows":["main"],"permissions":["core:default","core:window:default","core:window:allow-set-fullscreen","core:window:allow-is-fullscreen","core:app:default"]}}

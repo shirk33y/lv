@@ -1,6 +1,2 @@
-node_modules/
-dist/
-target/
-*.db
-*.db-journal
-*.db-wal
+/target/
+build-installer/

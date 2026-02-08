@@ -1,45 +1,53 @@
-# lv — stupid media tracker
+# src-imgui — mpv + Dear ImGui frontend for lv
 
-Keyboard-driven media library. CLI + GUI. Tauri 2 + Preact.
+Native media viewer frontend replacing the Tauri/Preact webview.
 
-## Usage
-
-```
-lv [PATH]*          # open GUI on path(s)
-lv add PATH         # add directory to library
-lv -s [PATH]        # scan watched dirs
-lv -s-a             # full re-scan all
-lv -w PATH          # watch directory
-lv -u PATH          # unwatch directory
-lv worker           # headless hash + thumbnail jobs
-```
-
-## Keys
-
-| Key | Action              |
-|-----|---------------------|
-| j/k | next / prev file   |
-| h/l | prev / next dir    |
-| u   | random file        |
-| n   | newest file        |
-| y   | toggle favorite    |
-| m   | random favorite    |
-| b   | latest favorite    |
-| f   | fullscreen         |
-| i   | file info          |
-| ?   | help               |
-
-## Stack
-
-- **Backend**: Rust — SQLite (WAL), job queue, SHA-512 dedup, WebP thumbnails
-- **Frontend**: Preact + Vite — virtualized sidebar, image preloader, custom protocols
-- **Storage**: single `lv.db` — files, metadata, thumbnails, history, jobs
-- **Worker**: prioritizes current view context, background hash + thumb generation
-
-## Dev
+## Architecture
 
 ```
-npm install
-npm run check       # typecheck + test + build + clippy + cargo test
-cargo tauri dev     # run app
+winit (window + events)
+  └─ glow (OpenGL context)
+       ├─ libmpv render API → texture (video/image playback)
+       └─ imgui-rs overlay (sidebar, thumbnails, status bar)
 ```
+
+## Dependencies
+
+- **lv-core** — shared backend (SQLite, scanner, worker, thumbs)
+- **libmpv2** — Rust bindings to libmpv (render-to-texture)
+- **imgui + imgui-glow-renderer** — Dear ImGui with OpenGL backend
+- **winit + glutin** — window management + GL context
+- **glow** — OpenGL bindings
+
+## What stays the same
+
+All backend logic lives in `src-core/` (to be extracted from `src-tauri/`):
+`data.rs`, `db.rs`, `scanner.rs`, `worker.rs`, `thumbs.rs`, `cli.rs`, `debug.rs`
+
+## What this replaces
+
+- `src/` (Preact frontend) — sidebar, viewer, keybinds, status bar
+- `src-tauri/src/ipc.rs` — Tauri invoke handlers (direct Rust calls instead)
+- `src-tauri/src/protocol.rs` — thumb:// and lv-file:// URI schemes (GL textures instead)
+
+## Planned structure
+
+```
+src-imgui/
+├── Cargo.toml
+└── src/
+    ├── main.rs          # winit event loop, GL context, imgui init
+    ├── mpv.rs           # libmpv render API → GL texture
+    ├── thumb_cache.rs   # SQLite WebP blobs → GL textures, LRU
+    ├── keys.rs          # keybind dispatch
+    └── ui/
+        ├── mod.rs
+        ├── sidebar.rs   # thumbnail grid
+        ├── viewer.rs    # main media display
+        └── status.rs    # status bar, log overlay
+```
+
+## Runtime requirements
+
+- `libmpv.so.2` (Linux), `libmpv-2.dll` (Windows), or `libmpv.dylib` (macOS)
+- System install or bundled alongside the binary
