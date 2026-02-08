@@ -174,8 +174,10 @@ pub fn doctor(db: &Db) {
     if retried > 0 || skipped > 0 {
         println!("  retried:  {} failed jobs reset to pending", retried);
         if skipped > 0 {
-            println!("  skipped:  {} systematic failures (same error >{}×)",
-                     skipped, SYSTEMATIC_THRESHOLD);
+            println!(
+                "  skipped:  {} systematic failures (same error >{}×)",
+                skipped, SYSTEMATIC_THRESHOLD
+            );
         }
     }
 
@@ -186,7 +188,10 @@ pub fn doctor(db: &Db) {
         println!("  enqueued: {} hash jobs for unhashed files", enqueued_hash);
     }
     if enqueued_thumb > 0 {
-        println!("  enqueued: {} thumb jobs for missing thumbnails", enqueued_thumb);
+        println!(
+            "  enqueued: {} thumb jobs for missing thumbnails",
+            enqueued_thumb
+        );
     }
 
     // 5d. Clean done jobs

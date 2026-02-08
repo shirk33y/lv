@@ -610,11 +610,8 @@ impl Db {
         let db = self.conn();
         db.execute("DELETE FROM thumbs WHERE meta_id = ?1", [meta_id])
             .ok();
-        db.execute(
-            "UPDATE meta SET thumb_ready = 0 WHERE id = ?1",
-            [meta_id],
-        )
-        .ok();
+        db.execute("UPDATE meta SET thumb_ready = 0 WHERE id = ?1", [meta_id])
+            .ok();
         // Only enqueue if no pending/running job exists
         let has_job: bool = db
             .query_row(
@@ -767,29 +764,39 @@ impl Db {
 
         // Count systematic failures
         let skipped: i64 = {
-            let placeholders: Vec<String> =
-                systematic.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+            let placeholders: Vec<String> = systematic
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
             let sql = format!(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'failed' AND error IN ({})",
                 placeholders.join(",")
             );
-            let params: Vec<&dyn rusqlite::types::ToSql> =
-                systematic.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+            let params: Vec<&dyn rusqlite::types::ToSql> = systematic
+                .iter()
+                .map(|s| s as &dyn rusqlite::types::ToSql)
+                .collect();
             db.query_row(&sql, params.as_slice(), |r| r.get(0))
                 .unwrap_or(0)
         };
 
         // Retry non-systematic
         {
-            let placeholders: Vec<String> =
-                systematic.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+            let placeholders: Vec<String> = systematic
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
             let sql = format!(
                 "UPDATE jobs SET status = 'pending', error = NULL, updated_at = datetime('now')
                  WHERE status = 'failed' AND (error IS NULL OR error NOT IN ({}))",
                 placeholders.join(",")
             );
-            let params: Vec<&dyn rusqlite::types::ToSql> =
-                systematic.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+            let params: Vec<&dyn rusqlite::types::ToSql> = systematic
+                .iter()
+                .map(|s| s as &dyn rusqlite::types::ToSql)
+                .collect();
             db.execute(&sql, params.as_slice()).ok();
         }
 
@@ -2240,7 +2247,9 @@ mod tests {
     #[test]
     fn doctor_jobs_by_type_status_groups_correctly() {
         let db = test_db();
-        let fid = db.file_insert("/a/f.jpg", "/a", "f.jpg", None, None).unwrap();
+        let fid = db
+            .file_insert("/a/f.jpg", "/a", "f.jpg", None, None)
+            .unwrap();
         let mid = db.meta_upsert("h1").unwrap();
         db.jobs_enqueue_hash(fid);
         db.jobs_enqueue_thumb(mid, 0);
@@ -2250,21 +2259,35 @@ mod tests {
 
         let rows = db.jobs_by_type_status();
         // Should have (hash, failed, 1) and (thumbnail, pending, 1)
-        assert!(rows.iter().any(|(t, s, c)| t == "hash" && s == "failed" && *c == 1));
-        assert!(rows.iter().any(|(t, s, c)| t == "thumbnail" && s == "pending" && *c == 1));
+        assert!(rows
+            .iter()
+            .any(|(t, s, c)| t == "hash" && s == "failed" && *c == 1));
+        assert!(rows
+            .iter()
+            .any(|(t, s, c)| t == "thumbnail" && s == "pending" && *c == 1));
     }
 
     #[test]
     fn doctor_top_errors_returns_grouped() {
         let db = test_db();
         for i in 1..=5 {
-            let fid = db.file_insert(&format!("/a/f{}.jpg", i), "/a", &format!("f{}.jpg", i), None, None).unwrap();
+            let fid = db
+                .file_insert(
+                    &format!("/a/f{}.jpg", i),
+                    "/a",
+                    &format!("f{}.jpg", i),
+                    None,
+                    None,
+                )
+                .unwrap();
             db.jobs_enqueue_hash(fid);
             let j = db.jobs_claim_next("hash").unwrap();
             db.jobs_mark_failed(j.id, "file not found");
         }
         // One different error
-        let fid = db.file_insert("/a/other.jpg", "/a", "other.jpg", None, None).unwrap();
+        let fid = db
+            .file_insert("/a/other.jpg", "/a", "other.jpg", None, None)
+            .unwrap();
         db.jobs_enqueue_hash(fid);
         let j = db.jobs_claim_next("hash").unwrap();
         db.jobs_mark_failed(j.id, "permission denied");
@@ -2292,7 +2315,9 @@ mod tests {
     #[test]
     fn doctor_orphan_hash_excludes_hashed_files() {
         let db = test_db();
-        let fid = db.file_insert("/a/f1.jpg", "/a", "f1.jpg", None, None).unwrap();
+        let fid = db
+            .file_insert("/a/f1.jpg", "/a", "f1.jpg", None, None)
+            .unwrap();
         let mid = db.meta_upsert("somehash").unwrap();
         db.file_set_hash(fid, "somehash", mid);
         // File has hash → not an orphan
@@ -2329,7 +2354,7 @@ mod tests {
 
         let n = db.jobs_enqueue_missing_hashes();
         assert_eq!(n, 1); // only f2
-        // Now none are orphans
+                          // Now none are orphans
         assert_eq!(db.jobs_orphan_hash_count(), 0);
     }
 
@@ -2353,7 +2378,15 @@ mod tests {
     fn doctor_retry_failed_all_below_threshold() {
         let db = test_db();
         for i in 1..=3 {
-            let fid = db.file_insert(&format!("/a/f{}.jpg", i), "/a", &format!("f{}.jpg", i), None, None).unwrap();
+            let fid = db
+                .file_insert(
+                    &format!("/a/f{}.jpg", i),
+                    "/a",
+                    &format!("f{}.jpg", i),
+                    None,
+                    None,
+                )
+                .unwrap();
             db.jobs_enqueue_hash(fid);
             let j = db.jobs_claim_next("hash").unwrap();
             db.jobs_mark_failed(j.id, "transient error");
@@ -2370,21 +2403,37 @@ mod tests {
         let db = test_db();
         // 15 jobs with the same error → systematic (>10 threshold)
         for i in 1..=15 {
-            let fid = db.file_insert(&format!("/a/f{}.jpg", i), "/a", &format!("f{}.jpg", i), None, None).unwrap();
+            let fid = db
+                .file_insert(
+                    &format!("/a/f{}.jpg", i),
+                    "/a",
+                    &format!("f{}.jpg", i),
+                    None,
+                    None,
+                )
+                .unwrap();
             db.jobs_enqueue_hash(fid);
             let j = db.jobs_claim_next("hash").unwrap();
             db.jobs_mark_failed(j.id, "codec not supported");
         }
         // 2 jobs with a different (rare) error
         for i in 16..=17 {
-            let fid = db.file_insert(&format!("/a/f{}.jpg", i), "/a", &format!("f{}.jpg", i), None, None).unwrap();
+            let fid = db
+                .file_insert(
+                    &format!("/a/f{}.jpg", i),
+                    "/a",
+                    &format!("f{}.jpg", i),
+                    None,
+                    None,
+                )
+                .unwrap();
             db.jobs_enqueue_hash(fid);
             let j = db.jobs_claim_next("hash").unwrap();
             db.jobs_mark_failed(j.id, "timeout");
         }
 
         let (retried, skipped) = db.jobs_retry_failed(10);
-        assert_eq!(retried, 2);  // only "timeout" errors
+        assert_eq!(retried, 2); // only "timeout" errors
         assert_eq!(skipped, 15); // "codec not supported" skipped
     }
 
@@ -2399,7 +2448,9 @@ mod tests {
     #[test]
     fn doctor_clean_done() {
         let db = test_db();
-        let fid = db.file_insert("/a/f.jpg", "/a", "f.jpg", None, None).unwrap();
+        let fid = db
+            .file_insert("/a/f.jpg", "/a", "f.jpg", None, None)
+            .unwrap();
         db.jobs_enqueue_hash(fid);
         let j = db.jobs_claim_next("hash").unwrap();
         db.jobs_mark_done(j.id);
@@ -2413,8 +2464,12 @@ mod tests {
     #[test]
     fn doctor_clean_done_preserves_other_states() {
         let db = test_db();
-        let f1 = db.file_insert("/a/f1.jpg", "/a", "f1.jpg", None, None).unwrap();
-        let f2 = db.file_insert("/a/f2.jpg", "/a", "f2.jpg", None, None).unwrap();
+        let f1 = db
+            .file_insert("/a/f1.jpg", "/a", "f1.jpg", None, None)
+            .unwrap();
+        let f2 = db
+            .file_insert("/a/f2.jpg", "/a", "f2.jpg", None, None)
+            .unwrap();
         db.jobs_enqueue_hash(f1);
         db.jobs_enqueue_hash(f2);
         let j1 = db.jobs_claim_next("hash").unwrap();
@@ -2469,7 +2524,8 @@ mod tests {
 
         // Should still only have 1 pending thumb job
         let rows = db.jobs_by_type_status();
-        let thumb_pending: i64 = rows.iter()
+        let thumb_pending: i64 = rows
+            .iter()
             .filter(|(t, s, _)| t == "thumbnail" && s == "pending")
             .map(|(_, _, c)| c)
             .sum();
@@ -2487,7 +2543,8 @@ mod tests {
 
         // Should not enqueue another job while one is running
         let rows = db.jobs_by_type_status();
-        let thumb_total: i64 = rows.iter()
+        let thumb_total: i64 = rows
+            .iter()
             .filter(|(t, _, _)| t == "thumbnail")
             .map(|(_, _, c)| c)
             .sum();
