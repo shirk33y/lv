@@ -1,55 +1,56 @@
-# src-imgui — mpv + Dear ImGui frontend for lv
+# lv
 
-Native media viewer frontend replacing the Tauri/Preact webview.
+Fast keyboard-driven media viewer. Single Rust binary, SQLite library database, GPU-rendered UI.
 
 ![screenshot](screenshot01.jpg)
+
+## Features
+
+- **Image + video** playback via libmpv render API
+- **Dear ImGui** overlay — file info, AI metadata, library stats
+- **Keyboard-first** — j/k navigate, h/l switch dirs, y like, u random, n newest
+- **Background workers** — SHA-512 hashing, EXIF extraction, AI prompt & settings parsing
+- **File watcher** — live directory monitoring with notify
+- **Drag & drop** — drop files or folders to browse instantly
+- **CLI** — `track`, `untrack`, `watch`, `unwatch`, `scan`, `worker`
 
 ## Architecture
 
 ```
-winit (window + events)
-  └─ glow (OpenGL context)
-       ├─ libmpv render API → texture (video/image playback)
-       └─ imgui-rs overlay (sidebar, thumbnails, status bar)
+SDL2 (window + events)
+  └─ OpenGL (glow)
+       ├─ libmpv render API → texture
+       ├─ image crate decode → GL texture (LRU preload cache)
+       └─ imgui-rs overlay (status bar, metadata sidebar)
 ```
 
-## Dependencies
-
-- **lv-core** — shared backend (SQLite, scanner, worker, thumbs)
-- **libmpv2** — Rust bindings to libmpv (render-to-texture)
-- **imgui + imgui-glow-renderer** — Dear ImGui with OpenGL backend
-- **winit + glutin** — window management + GL context
-- **glow** — OpenGL bindings
-
-## What stays the same
-
-All backend logic lives in `src-core/` (to be extracted from `src-tauri/`):
-`data.rs`, `db.rs`, `scanner.rs`, `worker.rs`, `thumbs.rs`, `cli.rs`, `debug.rs`
-
-## What this replaces
-
-- `src/` (Preact frontend) — sidebar, viewer, keybinds, status bar
-- `src-tauri/src/ipc.rs` — Tauri invoke handlers (direct Rust calls instead)
-- `src-tauri/src/protocol.rs` — thumb:// and lv-file:// URI schemes (GL textures instead)
-
-## Planned structure
+## Structure
 
 ```
-src-imgui/
-├── Cargo.toml
-└── src/
-    ├── main.rs          # winit event loop, GL context, imgui init
-    ├── mpv.rs           # libmpv render API → GL texture
-    ├── thumb_cache.rs   # SQLite WebP blobs → GL textures, LRU
-    ├── keys.rs          # keybind dispatch
-    └── ui/
-        ├── mod.rs
-        ├── sidebar.rs   # thumbnail grid
-        ├── viewer.rs    # main media display
-        └── status.rs    # status bar, log overlay
+src/
+├── main.rs       # SDL2 event loop, GL context, imgui, keybinds
+├── db.rs         # SQLite: files, meta, history, directories, jobs
+├── scanner.rs    # recursive media discovery + rescan/prune
+├── watcher.rs    # notify-based filesystem watcher
+├── jobs.rs       # background worker pipeline (hash, exif, ai)
+├── aimeta.rs     # AI metadata extraction (pnginfo, ComfyUI)
+├── preload.rs    # LRU image preload cache
+├── quad.rs       # fullscreen quad rendering
+├── statusbar.rs  # imgui status bar + metadata panel
+└── cli.rs        # CLI subcommands
+```
+
+## Build & run
+
+```sh
+cargo run --release           # GUI
+cargo run -- track ~/Photos   # add directory
+cargo run -- scan             # rescan all tracked dirs
+cargo run -- worker           # headless hash/exif/ai worker
+make ci                       # test + clippy + fmt
 ```
 
 ## Runtime requirements
 
-- `libmpv.so.2` (Linux), `libmpv-2.dll` (Windows), or `libmpv.dylib` (macOS)
-- System install or bundled alongside the binary
+- **libmpv** — `libmpv.so.2` (Linux), `libmpv-2.dll` (Windows)
+- **SDL2** — `libSDL2.so` (Linux), `SDL2.dll` (Windows)
