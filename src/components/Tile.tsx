@@ -1,10 +1,11 @@
 import { useSignal } from "@preact/signals";
+import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "../store";
 import { cursorIndex, indexOfId } from "../store";
 
 const IS_WINDOWS = navigator.userAgent.includes("Windows");
 
-function thumbUrl(metaId: number): string {
+export function thumbUrl(metaId: number): string {
   return IS_WINDOWS
     ? `http://thumb.localhost/${metaId}`
     : `thumb://localhost/${metaId}`;
@@ -29,6 +30,13 @@ export function Tile({ file, active }: Props) {
     if (idx >= 0) cursorIndex.value = idx;
   }
 
+  function onThumbError() {
+    errored.value = true;
+    if (file.meta_id != null) {
+      invoke("report_broken_thumb", { metaId: file.meta_id }).catch(() => {});
+    }
+  }
+
   return (
     <div class={`tile${active ? " active" : ""}`} onClick={onClick}>
       {showShadow ? (
@@ -41,12 +49,12 @@ export function Tile({ file, active }: Props) {
           alt={file.filename}
           loading="lazy"
           onLoad={() => { loaded.value = true; }}
-          onError={() => { errored.value = true; }}
+          onError={onThumbError}
         />
       ) : null}
       {showPlaceholder ? (
         <div class="tile-placeholder">
-          <span class="tile-placeholder-icon">{errored.value ? "⚠" : "◻"}</span>
+          <span class="tile-placeholder-icon">{errored.value ? "?" : "◻"}</span>
         </div>
       ) : null}
       {file.liked ? <span class="tile-heart">♥</span> : null}

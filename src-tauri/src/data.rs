@@ -604,6 +604,34 @@ impl Db {
             .ok();
     }
 
+    /// Report a broken thumbnail: delete existing thumb data, reset thumb_ready,
+    /// and re-enqueue thumbnail job if none active.
+    pub fn report_broken_thumb(&self, meta_id: i64) {
+        let db = self.conn();
+        db.execute("DELETE FROM thumbs WHERE meta_id = ?1", [meta_id])
+            .ok();
+        db.execute(
+            "UPDATE meta SET thumb_ready = 0 WHERE id = ?1",
+            [meta_id],
+        )
+        .ok();
+        // Only enqueue if no pending/running job exists
+        let has_job: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE meta_id = ?1 AND job_type = 'thumbnail' AND status IN ('pending','running'))",
+                [meta_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(true);
+        if !has_job {
+            db.execute(
+                "INSERT INTO jobs (job_type, meta_id, priority) VALUES ('thumbnail', ?1, 5)",
+                [meta_id],
+            )
+            .ok();
+        }
+    }
+
     // -- Doctor helpers ------------------------------------------------------
 
     /// Job counts grouped by (job_type, status).
@@ -2399,6 +2427,71 @@ mod tests {
         let rows = db.jobs_by_type_status();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, "pending");
+    }
+
+    // -- report_broken_thumb tests ---------------------------------------------
+
+    #[test]
+    fn report_broken_thumb_deletes_thumb_and_resets_ready() {
+        let db = test_db();
+        let mid = db.meta_upsert("h1").unwrap();
+        db.meta_set_dimensions(mid, 100, 100, "jpg");
+        db.thumb_save(mid, "default", &[1, 2, 3]);
+        // thumb_ready should be 1 now
+        let s = db.status();
+        assert_eq!(s.thumbs, 1);
+
+        db.report_broken_thumb(mid);
+
+        // thumb_ready reset to 0, thumb data deleted
+        let s2 = db.status();
+        assert_eq!(s2.thumbs, 0);
+        assert!(db.thumb_get(mid, "default").is_none());
+    }
+
+    #[test]
+    fn report_broken_thumb_enqueues_job() {
+        let db = test_db();
+        let mid = db.meta_upsert("h1").unwrap();
+        db.report_broken_thumb(mid);
+
+        let j = db.jobs_claim_next("thumbnail").unwrap();
+        assert_eq!(j.meta_id, Some(mid));
+    }
+
+    #[test]
+    fn report_broken_thumb_no_duplicate_job() {
+        let db = test_db();
+        let mid = db.meta_upsert("h1").unwrap();
+        db.jobs_enqueue_thumb(mid, 0);
+
+        db.report_broken_thumb(mid);
+
+        // Should still only have 1 pending thumb job
+        let rows = db.jobs_by_type_status();
+        let thumb_pending: i64 = rows.iter()
+            .filter(|(t, s, _)| t == "thumbnail" && s == "pending")
+            .map(|(_, _, c)| c)
+            .sum();
+        assert_eq!(thumb_pending, 1);
+    }
+
+    #[test]
+    fn report_broken_thumb_no_duplicate_when_running() {
+        let db = test_db();
+        let mid = db.meta_upsert("h1").unwrap();
+        db.jobs_enqueue_thumb(mid, 0);
+        let _j = db.jobs_claim_next("thumbnail").unwrap(); // now running
+
+        db.report_broken_thumb(mid);
+
+        // Should not enqueue another job while one is running
+        let rows = db.jobs_by_type_status();
+        let thumb_total: i64 = rows.iter()
+            .filter(|(t, _, _)| t == "thumbnail")
+            .map(|(_, _, c)| c)
+            .sum();
+        assert_eq!(thumb_total, 1); // just the running one
     }
 
     #[test]

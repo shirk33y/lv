@@ -112,6 +112,7 @@ pub fn run() {
             ipc::boost_jobs,
             ipc::get_first_dir,
             ipc::get_cwd,
+            ipc::report_broken_thumb,
         ])
         .setup(move |app| {
             match cli_args.command {

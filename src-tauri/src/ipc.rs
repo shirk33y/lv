@@ -134,6 +134,12 @@ pub fn get_cwd() -> CmdResult<String> {
 }
 
 #[tauri::command]
+pub fn report_broken_thumb(state: tauri::State<'_, AppState>, meta_id: i64) -> CmdResult {
+    state.db.report_broken_thumb(meta_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn toggle_fullscreen(window: tauri::WebviewWindow) -> CmdResult {
     let cur = window.is_fullscreen().unwrap_or(false);
     window.set_fullscreen(!cur).map_err(|e| e.to_string())?;

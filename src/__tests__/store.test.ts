@@ -15,7 +15,10 @@ import {
   idIndex,
   updateFileAt,
   filterSupported,
+  sidebarItems,
+  fileToSidebarIdx,
   type FileEntry,
+  type SidebarItem,
 } from "../store";
 
 const mockInvoke = vi.mocked(invoke);
@@ -515,5 +518,115 @@ describe("performance at scale", () => {
 
   afterAll(() => {
     resetStore(); // cleanup
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sidebarItems — folder headers interleaved with file tiles
+// ---------------------------------------------------------------------------
+
+describe("sidebarItems", () => {
+  it("empty when no files", () => {
+    resetStore([]);
+    expect(sidebarItems.value).toEqual([]);
+  });
+
+  it("single dir: 1 folder header + N file items", () => {
+    const items = [makeFile(1, "/a"), makeFile(2, "/a"), makeFile(3, "/a")];
+    resetStore(items);
+    const si = sidebarItems.value;
+    expect(si.length).toBe(4); // 1 folder + 3 files
+    expect(si[0].type).toBe("folder");
+    expect((si[0] as any).dir).toBe("/a");
+    expect((si[0] as any).dirFiles.length).toBe(3);
+    expect(si[1].type).toBe("file");
+    expect((si[1] as any).fileIndex).toBe(0);
+    expect(si[3].type).toBe("file");
+    expect((si[3] as any).fileIndex).toBe(2);
+  });
+
+  it("multiple dirs: folder headers partition files", () => {
+    const items = [
+      makeFile(1, "/a"), makeFile(2, "/a"),
+      makeFile(3, "/b"), makeFile(4, "/b"), makeFile(5, "/b"),
+    ];
+    resetStore(items);
+    const si = sidebarItems.value;
+    // /a: 1 folder + 2 files = 3, /b: 1 folder + 3 files = 4 → total 7
+    expect(si.length).toBe(7);
+    expect(si[0].type).toBe("folder");
+    expect((si[0] as any).dir).toBe("/a");
+    expect(si[1].type).toBe("file");
+    expect(si[2].type).toBe("file");
+    expect(si[3].type).toBe("folder");
+    expect((si[3] as any).dir).toBe("/b");
+    expect((si[3] as any).dirFiles.length).toBe(3);
+    expect(si[4].type).toBe("file");
+    expect((si[4] as any).fileIndex).toBe(2); // index in files array
+    expect(si[6].type).toBe("file");
+    expect((si[6] as any).fileIndex).toBe(4);
+  });
+
+  it("folder dirFiles contains all files for that dir", () => {
+    const items = [makeFile(1, "/x"), makeFile(2, "/x"), makeFile(3, "/y")];
+    resetStore(items);
+    const si = sidebarItems.value;
+    const folderX = si[0] as Extract<SidebarItem, { type: "folder" }>;
+    expect(folderX.dirFiles.map(f => f.id)).toEqual([1, 2]);
+    const folderY = si[3] as Extract<SidebarItem, { type: "folder" }>;
+    expect(folderY.dirFiles.map(f => f.id)).toEqual([3]);
+  });
+
+  it("single file: 1 folder + 1 file", () => {
+    resetStore([makeFile(1, "/z")]);
+    const si = sidebarItems.value;
+    expect(si.length).toBe(2);
+    expect(si[0].type).toBe("folder");
+    expect(si[1].type).toBe("file");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fileToSidebarIdx — maps file index to sidebar item index
+// ---------------------------------------------------------------------------
+
+describe("fileToSidebarIdx", () => {
+  it("empty when no files", () => {
+    resetStore([]);
+    expect(fileToSidebarIdx.value.size).toBe(0);
+  });
+
+  it("maps file indices correctly with single dir", () => {
+    resetStore([makeFile(1, "/a"), makeFile(2, "/a"), makeFile(3, "/a")]);
+    const map = fileToSidebarIdx.value;
+    // sidebar: [folder@0, file0@1, file1@2, file2@3]
+    expect(map.get(0)).toBe(1);
+    expect(map.get(1)).toBe(2);
+    expect(map.get(2)).toBe(3);
+  });
+
+  it("maps file indices correctly with multiple dirs", () => {
+    resetStore([
+      makeFile(1, "/a"), makeFile(2, "/a"),
+      makeFile(3, "/b"),
+    ]);
+    const map = fileToSidebarIdx.value;
+    // sidebar: [folder-a@0, file0@1, file1@2, folder-b@3, file2@4]
+    expect(map.get(0)).toBe(1);
+    expect(map.get(1)).toBe(2);
+    expect(map.get(2)).toBe(4);
+  });
+
+  it("every file index is mapped", () => {
+    const items = [
+      makeFile(1, "/a"), makeFile(2, "/a"),
+      makeFile(3, "/b"), makeFile(4, "/b"), makeFile(5, "/b"),
+    ];
+    resetStore(items);
+    const map = fileToSidebarIdx.value;
+    expect(map.size).toBe(5);
+    for (let i = 0; i < 5; i++) {
+      expect(map.has(i)).toBe(true);
+    }
   });
 });

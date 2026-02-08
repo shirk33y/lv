@@ -50,6 +50,54 @@ export const lastDir = signal("");
 export const currentFile = computed(() => files.value[cursorIndex.value] ?? null);
 export const totalFiles = computed(() => files.value.length);
 
+// -- Sidebar items (folder headers interleaved with file tiles) ---------------
+
+export type SidebarItem =
+  | { type: "folder"; dir: string; dirFiles: FileEntry[] }
+  | { type: "file"; file: FileEntry; fileIndex: number };
+
+export const sidebarItems = computed((): SidebarItem[] => {
+  const list = files.value;
+  if (list.length === 0) return [];
+
+  const items: SidebarItem[] = [];
+  let curDir = "";
+  let dirFiles: FileEntry[] = [];
+  let dirStart = 0;
+
+  function flush() {
+    if (dirFiles.length === 0) return;
+    items.push({ type: "folder", dir: curDir, dirFiles });
+    for (let j = 0; j < dirFiles.length; j++) {
+      items.push({ type: "file", file: dirFiles[j], fileIndex: dirStart + j });
+    }
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].dir !== curDir) {
+      flush();
+      curDir = list[i].dir;
+      dirFiles = [];
+      dirStart = i;
+    }
+    dirFiles.push(list[i]);
+  }
+  flush();
+
+  return items;
+});
+
+/** Map file index → sidebar item index (O(1) lookup) */
+export const fileToSidebarIdx = computed(() => {
+  const map = new Map<number, number>();
+  const items = sidebarItems.value;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.type === "file") map.set(item.fileIndex, i);
+  }
+  return map;
+});
+
 // O(1) id → index lookup for 500k+ item lists
 export const idIndex = computed(() => {
   const map = new Map<number, number>();

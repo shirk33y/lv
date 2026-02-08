@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/preact";
+import { render, fireEvent } from "@testing-library/preact";
 import { invoke } from "@tauri-apps/api/core";
 import { files, cursorIndex, jobStatus, showInfo, showLogs, showHelp, cwd, logEntries, loadFiles, addLog, type FileEntry, type JobStatus } from "../store";
 import { Viewer } from "../components/Viewer";
@@ -8,6 +8,7 @@ import { Tile } from "../components/Tile";
 import { Sidebar, scrollTop } from "../components/Sidebar";
 import { InfoPanel } from "../components/MetadataOverlay";
 import { LogPanel } from "../components/LogPanel";
+import { FolderTile } from "../components/FolderTile";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -430,20 +431,23 @@ describe("Sidebar", () => {
     resetStore([makeFile(1), makeFile(2), makeFile(3)], 1);
     const { container } = render(<Sidebar />);
     const slots = container.querySelectorAll(".sidebar-slot");
-    expect(slots.length).toBe(3);
+    // 1 folder header + 3 file tiles = 4 slots
+    expect(slots.length).toBe(4);
     slots.forEach((slot) => {
       expect((slot as HTMLElement).style.position).toBe("absolute");
-      expect(slot.querySelector(".tile")).toBeTruthy();
+      // Each slot has either a .tile or a .folder-tile
+      const hasTile = slot.querySelector(".tile") || slot.querySelector(".folder-tile");
+      expect(hasTile).toBeTruthy();
     });
   });
 
-  it("sidebar-track height equals items * tileH", () => {
+  it("sidebar-track height equals sidebarItems * tileH (files + folder headers)", () => {
     const items = Array.from({ length: 10 }, (_, i) => makeFile(i + 1));
     resetStore(items, 0);
     const { container } = render(<Sidebar />);
     const track = container.querySelector(".sidebar-track") as HTMLElement;
-    // tileH fallback = 48 in jsdom (clientWidth is 0)
-    expect(parseInt(track.style.height)).toBe(10 * 48);
+    // 10 files in 1 dir → 11 sidebar items (1 folder + 10 files), tileH=48
+    expect(parseInt(track.style.height)).toBe(11 * 48);
   });
 
   it("slot top positions are sequential multiples of tileH", () => {
@@ -452,7 +456,8 @@ describe("Sidebar", () => {
     const { container } = render(<Sidebar />);
     const slots = container.querySelectorAll(".sidebar-slot") as NodeListOf<HTMLElement>;
     const tops = Array.from(slots).map((s) => parseInt(s.style.top));
-    expect(tops).toEqual([0, 48, 96, 144, 192]);
+    // 1 folder header + 5 files = 6 slots: 0, 48, 96, 144, 192, 240
+    expect(tops).toEqual([0, 48, 96, 144, 192, 240]);
   });
 
   // --- Active tile correctness ---
@@ -512,7 +517,8 @@ describe("Sidebar", () => {
     resetStore(items, 0);
     const { container } = render(<Sidebar />);
     const track = container.querySelector(".sidebar-track") as HTMLElement;
-    expect(parseInt(track.style.height)).toBe(500 * 48);
+    // 500 files in 1 dir → 501 sidebar items
+    expect(parseInt(track.style.height)).toBe(501 * 48);
   });
 
   it("active slot has correct top for its cursor index", () => {
@@ -521,7 +527,8 @@ describe("Sidebar", () => {
     const { container } = render(<Sidebar />);
     const activeSlot = container.querySelector(".sidebar-slot:has(.tile.active)") as HTMLElement;
     expect(activeSlot).toBeTruthy();
-    expect(parseInt(activeSlot.style.top)).toBe(7 * 48);
+    // file index 7 → sidebar index 8 (folder header at 0), top = 8*48
+    expect(parseInt(activeSlot.style.top)).toBe(8 * 48);
   });
 
   // --- Edge cases ---
@@ -539,7 +546,8 @@ describe("Sidebar", () => {
     expect(active).toBeTruthy();
     const slots = container.querySelectorAll(".sidebar-slot");
     const activeSlot = Array.from(slots).find((s) => s.querySelector(".tile.active"));
-    expect(parseInt((activeSlot as HTMLElement).style.top)).toBe(48);
+    // folder@0, file0@48, file1(active)@96
+    expect(parseInt((activeSlot as HTMLElement).style.top)).toBe(96);
   });
 });
 
@@ -731,5 +739,156 @@ describe("Tile shadow", () => {
     expect(container.querySelector(".tile-shadow")).toBeTruthy();
     expect(container.querySelector(".tile-thumb")).toBeTruthy();
     expect(container.querySelector(".tile-thumb.loaded")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tile error handling — IPC report + ? indicator
+// ---------------------------------------------------------------------------
+
+describe("Tile error handling", () => {
+  it("shows ? when thumb errors and meta_id present", () => {
+    const file: FileEntry = { id: 1, path: "/a/f.jpg", dir: "/a", filename: "f.jpg", meta_id: 5, thumb_ready: true, shadow: null, liked: false };
+    const { container } = render(<Tile file={file} active={false} />);
+    const img = container.querySelector(".tile-thumb") as HTMLImageElement;
+    expect(img).toBeTruthy();
+    // Simulate error via testing-library (triggers Preact onError)
+    fireEvent.error(img);
+    // After error: placeholder with ? should appear
+    const icon = container.querySelector(".tile-placeholder-icon");
+    expect(icon).toBeTruthy();
+    expect(icon!.textContent).toBe("?");
+  });
+
+  it("calls report_broken_thumb IPC on thumb error", () => {
+    const file: FileEntry = { id: 1, path: "/a/f.jpg", dir: "/a", filename: "f.jpg", meta_id: 42, thumb_ready: true, shadow: null, liked: false };
+    mockInvoke.mockResolvedValue(undefined);
+    const { container } = render(<Tile file={file} active={false} />);
+    const img = container.querySelector(".tile-thumb") as HTMLImageElement;
+    fireEvent.error(img);
+    expect(mockInvoke).toHaveBeenCalledWith("report_broken_thumb", { metaId: 42 });
+  });
+
+  it("does not call IPC when meta_id is null", () => {
+    const file: FileEntry = { id: 1, path: "/a/f.jpg", dir: "/a", filename: "f.jpg", meta_id: null, thumb_ready: false, shadow: null, liked: false };
+    const { container } = render(<Tile file={file} active={false} />);
+    // No thumb rendered (meta_id null), so no error possible via img
+    expect(container.querySelector(".tile-thumb")).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("report_broken_thumb", expect.anything());
+  });
+
+  it("shows placeholder ◻ when no thumb and no error", () => {
+    const file: FileEntry = { id: 1, path: "/a/f.jpg", dir: "/a", filename: "f.jpg", meta_id: null, thumb_ready: false, shadow: null, liked: false };
+    const { container } = render(<Tile file={file} active={false} />);
+    const icon = container.querySelector(".tile-placeholder-icon");
+    expect(icon).toBeTruthy();
+    expect(icon!.textContent).toBe("◻");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FolderTile
+// ---------------------------------------------------------------------------
+
+describe("FolderTile", () => {
+  it("renders folder-tile with 2x2 grid", () => {
+    const dirFiles = [makeFile(1), makeFile(2), makeFile(3), makeFile(4)];
+    const { container } = render(<FolderTile dir="/photos" dirFiles={dirFiles} />);
+    expect(container.querySelector(".folder-tile")).toBeTruthy();
+    expect(container.querySelector(".folder-tile-grid")).toBeTruthy();
+  });
+
+  it("renders 4 mini thumb images for ≥4 files", () => {
+    const dirFiles = Array.from({ length: 10 }, (_, i) => makeFile(i + 1));
+    const { container } = render(<FolderTile dir="/pics" dirFiles={dirFiles} />);
+    const imgs = container.querySelectorAll(".folder-tile-img");
+    expect(imgs.length).toBe(4);
+  });
+
+  it("renders empty slots for <4 files", () => {
+    const dirFiles = [makeFile(1)];
+    const { container } = render(<FolderTile dir="/one" dirFiles={dirFiles} />);
+    const imgs = container.querySelectorAll(".folder-tile-img");
+    const empties = container.querySelectorAll(".folder-tile-empty");
+    expect(imgs.length).toBe(1);
+    expect(empties.length).toBe(3);
+  });
+
+  it("renders 2 images + 2 empties for 2 files", () => {
+    const dirFiles = [makeFile(1), makeFile(2)];
+    const { container } = render(<FolderTile dir="/two" dirFiles={dirFiles} />);
+    expect(container.querySelectorAll(".folder-tile-img").length).toBe(2);
+    expect(container.querySelectorAll(".folder-tile-empty").length).toBe(2);
+  });
+
+  it("renders 3 images + 1 empty for 3 files", () => {
+    const dirFiles = [makeFile(1), makeFile(2), makeFile(3)];
+    const { container } = render(<FolderTile dir="/three" dirFiles={dirFiles} />);
+    expect(container.querySelectorAll(".folder-tile-img").length).toBe(3);
+    expect(container.querySelectorAll(".folder-tile-empty").length).toBe(1);
+  });
+
+  it("shows folder label from last path segment", () => {
+    const dirFiles = [makeFile(1)];
+    const { container } = render(<FolderTile dir="/home/user/photos" dirFiles={dirFiles} />);
+    const label = container.querySelector(".folder-tile-label");
+    expect(label).toBeTruthy();
+    expect(label!.textContent).toBe("photos");
+  });
+
+  it("handles Windows paths", () => {
+    const dirFiles = [makeFile(1)];
+    const { container } = render(<FolderTile dir="C:\\Users\\me\\pics" dirFiles={dirFiles} />);
+    expect(container.querySelector(".folder-tile-label")!.textContent).toBe("pics");
+  });
+
+  it("shows empty slots for files without thumb_ready", () => {
+    const file: FileEntry = { id: 1, path: "/a/f.jpg", dir: "/a", filename: "f.jpg", meta_id: null, thumb_ready: false, shadow: null, liked: false };
+    const { container } = render(<FolderTile dir="/a" dirFiles={[file]} />);
+    expect(container.querySelectorAll(".folder-tile-empty").length).toBe(4);
+    expect(container.querySelectorAll(".folder-tile-img").length).toBe(0);
+  });
+
+  it("renders 0 files: all 4 slots empty", () => {
+    const { container } = render(<FolderTile dir="/empty" dirFiles={[]} />);
+    expect(container.querySelectorAll(".folder-tile-empty").length).toBe(4);
+  });
+
+  it("has title attribute with full dir path", () => {
+    const { container } = render(<FolderTile dir="/full/path/here" dirFiles={[makeFile(1)]} />);
+    expect(container.querySelector(".folder-tile")!.getAttribute("title")).toBe("/full/path/here");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sidebar — folder tiles + centered cursor
+// ---------------------------------------------------------------------------
+
+describe("Sidebar with folders", () => {
+  it("renders folder tile for single-dir file list", () => {
+    resetStore([makeFile(1, "/a"), makeFile(2, "/a")]);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelector(".folder-tile")).toBeTruthy();
+  });
+
+  it("renders both folder and file tiles", () => {
+    resetStore([makeFile(1, "/a"), makeFile(2, "/a")]);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelector(".folder-tile")).toBeTruthy();
+    expect(container.querySelectorAll(".tile").length).toBe(2);
+  });
+
+  it("renders multiple folder tiles for multiple dirs", () => {
+    resetStore([makeFile(1, "/a"), makeFile(2, "/b")]);
+    const { container } = render(<Sidebar />);
+    const folders = container.querySelectorAll(".folder-tile");
+    expect(folders.length).toBe(2);
+  });
+
+  it("active tile has .active class", () => {
+    resetStore([makeFile(1, "/a"), makeFile(2, "/a")], 1);
+    const { container } = render(<Sidebar />);
+    const activeTiles = container.querySelectorAll(".tile.active");
+    expect(activeTiles.length).toBe(1);
   });
 });
