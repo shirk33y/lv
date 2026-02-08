@@ -23,23 +23,33 @@ pub enum FsEvent {
     Removed(String),
 }
 
+/// Commands sent from the main thread to the watcher thread.
+pub enum WatchCmd {
+    /// Watch a directory (non-recursively) for changes.
+    Watch(String),
+    /// Stop watching a directory.
+    Unwatch(String),
+}
+
 /// Handle to the running watcher. Drop to stop.
 pub struct FsWatcher {
     quit: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    cmd_tx: mpsc::Sender<WatchCmd>,
 }
 
 impl FsWatcher {
     /// Start the filesystem watcher. Returns the handle and a receiver for events.
     pub fn start(db: Db) -> (Self, mpsc::Receiver<FsEvent>) {
         let (tx, rx) = mpsc::channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
         let quit = Arc::new(AtomicBool::new(false));
         let quit2 = quit.clone();
 
         let thread = std::thread::Builder::new()
             .name("fs-watcher".into())
             .spawn(move || {
-                run_watcher(db, tx, quit2);
+                run_watcher(db, tx, quit2, cmd_rx);
             })
             .expect("failed to spawn fs-watcher thread");
 
@@ -47,9 +57,20 @@ impl FsWatcher {
             FsWatcher {
                 quit,
                 thread: Some(thread),
+                cmd_tx,
             },
             rx,
         )
+    }
+
+    /// Dynamically watch a directory (non-recursive).
+    pub fn watch_dir(&self, dir: &str) {
+        self.cmd_tx.send(WatchCmd::Watch(dir.to_string())).ok();
+    }
+
+    /// Dynamically unwatch a directory.
+    pub fn unwatch_dir(&self, dir: &str) {
+        self.cmd_tx.send(WatchCmd::Unwatch(dir.to_string())).ok();
     }
 
     pub fn stop(&mut self) {
@@ -78,7 +99,12 @@ fn is_media(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn run_watcher(db: Db, tx: mpsc::Sender<FsEvent>, quit: Arc<AtomicBool>) {
+fn run_watcher(
+    db: Db,
+    tx: mpsc::Sender<FsEvent>,
+    quit: Arc<AtomicBool>,
+    cmd_rx: mpsc::Receiver<WatchCmd>,
+) {
     // Channel for notify events
     let (ntx, nrx) = mpsc::channel();
 
@@ -96,33 +122,47 @@ fn run_watcher(db: Db, tx: mpsc::Sender<FsEvent>, quit: Arc<AtomicBool>) {
 
     // Watch all dirs marked as watched in DB, with nested dedup
     let watched = db.watched_dirs();
-    if watched.is_empty() {
-        eprintln!("watcher: no watched directories, exiting");
-        return;
-    }
-
-    let effective = dedup_nested(&watched);
-    for (dir, recursive) in &effective {
-        let mode = if *recursive {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
-        match watcher.watch(Path::new(dir), mode) {
-            Ok(()) => eprintln!("watcher: watching {} (recursive={})", dir, recursive),
-            Err(e) => eprintln!("watcher: failed to watch {}: {}", dir, e),
+    if !watched.is_empty() {
+        let effective = dedup_nested(&watched);
+        for (dir, recursive) in &effective {
+            let mode = if *recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            match watcher.watch(Path::new(dir), mode) {
+                Ok(()) => eprintln!("watcher: watching {} (recursive={})", dir, recursive),
+                Err(e) => eprintln!("watcher: failed to watch {}: {}", dir, e),
+            }
+        }
+        if effective.len() < watched.len() {
+            eprintln!(
+                "watcher: deduped {} → {} watches (nested dirs skipped)",
+                watched.len(),
+                effective.len()
+            );
         }
     }
-    if effective.len() < watched.len() {
-        eprintln!(
-            "watcher: deduped {} → {} watches (nested dirs skipped)",
-            watched.len(),
-            effective.len()
-        );
-    }
 
-    // Process events until quit
+    // Process events + commands until quit
     while !quit.load(Ordering::Relaxed) {
+        // Process any pending commands (watch/unwatch)
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                WatchCmd::Watch(dir) => {
+                    match watcher.watch(Path::new(&dir), RecursiveMode::NonRecursive) {
+                        Ok(()) => eprintln!("watcher: +watch {}", dir),
+                        Err(e) => eprintln!("watcher: failed to watch {}: {}", dir, e),
+                    }
+                }
+                WatchCmd::Unwatch(dir) => match watcher.unwatch(Path::new(&dir)) {
+                    Ok(()) => eprintln!("watcher: -watch {}", dir),
+                    Err(e) => eprintln!("watcher: failed to unwatch {}: {}", dir, e),
+                },
+            }
+        }
+
+        // Process notify events
         match nrx.recv_timeout(Duration::from_millis(200)) {
             Ok(event) => {
                 handle_event(&db, &tx, event);

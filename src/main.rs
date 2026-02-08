@@ -457,7 +457,7 @@ fn main() {
     let mut job_engine = jobs::JobEngine::start(lv_db.clone());
 
     // ── Filesystem watcher ──────────────────────────────────────────────
-    let (_fs_watcher, fs_rx) = watcher::FsWatcher::start(lv_db.clone());
+    let (fs_watcher, fs_rx) = watcher::FsWatcher::start(lv_db.clone());
 
     // Load initial file list
     let mut collection_mode: Option<u8> = None;
@@ -515,6 +515,10 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!("dir: {} ({} files)", current_dir, files.len());
+
+    // Auto-watch the initial current directory
+    let mut watched_dir = current_dir.clone();
+    fs_watcher.watch_dir(&watched_dir);
 
     // ── SDL2 + OpenGL ───────────────────────────────────────────────────
     let sdl = sdl2::init().expect("SDL2 init failed");
@@ -640,7 +644,6 @@ fn main() {
     let mut video_duration: f64 = 0.0;
     let mut video_paused: bool = false;
     let mut video_has_frame: bool = false;
-    let mut nav_forward: bool = true;
     let mut pending_cold_load: Option<String> = None; // async cold decode in progress
     let mut show_info = false;
     let mut cached_meta: Option<db::FileMeta> = None;
@@ -653,6 +656,17 @@ fn main() {
     // Debounce video loading: defer mpv loadfile until user stops navigating
     const VIDEO_DEBOUNCE_MS: u128 = 150;
     let mut pending_video: Option<(String, Instant)> = None;
+    let mut error_message: Option<(String, String)> = None; // (error, filename)
+
+    // Slow frame tracking: aggregate stats over 10s windows
+    #[cfg(debug_assertions)]
+    let mut slow_frame_count: u32 = 0;
+    #[cfg(debug_assertions)]
+    let mut slow_frame_worst_ms: f64 = 0.0;
+    #[cfg(debug_assertions)]
+    let mut slow_frame_sum_ms: f64 = 0.0;
+    #[cfg(debug_assertions)]
+    let mut slow_frame_window_start = Instant::now();
 
     // ── Main loop ───────────────────────────────────────────────────────
     let mut event_pump = sdl.event_pump().expect("Failed to create event pump");
@@ -795,7 +809,6 @@ fn main() {
 
                         // ── j/k: next/prev in current dir ───────────────
                         Keycode::J => {
-                            nav_forward = true;
                             if cursor + 1 < files.len() {
                                 cursor += 1;
                                 needs_display = true;
@@ -815,7 +828,6 @@ fn main() {
                             }
                         }
                         Keycode::K => {
-                            nav_forward = false;
                             if cursor > 0 {
                                 cursor -= 1;
                                 needs_display = true;
@@ -1083,16 +1095,15 @@ fn main() {
                 tex_cache.upload(cold_path, decoded);
                 pending_cold_load = None;
             } else if !preloader.is_pending(cold_path) {
-                // Decode failed — skip in navigation direction
-                eprintln!("SKIP (async decode fail): {}", cold_path);
+                // Decode failed — show error overlay
+                eprintln!("DECODE FAIL: {}", cold_path);
                 pending_cold_load = None;
-                if nav_forward && cursor + 1 < files.len() {
-                    cursor += 1;
-                    needs_display = true;
-                } else if !nav_forward && cursor > 0 {
-                    cursor -= 1;
-                    needs_display = true;
-                }
+                let fname = cold_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(cold_path)
+                    .to_string();
+                error_message = Some(("Failed to decode image".into(), fname));
             }
         }
 
@@ -1104,7 +1115,13 @@ fn main() {
                 let _t0 = Instant::now();
                 let path = &file.path;
 
-                if is_image(path) {
+                // Check if file still exists on disk
+                if !std::path::Path::new(path).exists() {
+                    error_message = Some(("File not found".into(), file.filename.clone()));
+                    update_title(&window, &files, cursor, &current_dir);
+                    lv_db.record_view(file.id);
+                } else if is_image(path) {
+                    error_message = None;
                     pending_video = None;
                     pending_cold_load = None; // cancel any prior async decode
                     if using_mpv {
@@ -1158,6 +1175,7 @@ fn main() {
 
                     schedule_preload(&preloader, &tex_cache, &files, cursor);
                 } else if is_video(path) {
+                    error_message = None;
                     // Stop current mpv playback (async) so we don't
                     // show stale video while debouncing
                     if using_mpv {
@@ -1176,15 +1194,9 @@ fn main() {
                     // Defer actual loadfile — debounce rapid navigation
                     pending_video = Some((path.clone(), Instant::now()));
                 } else {
-                    // Unknown extension — skip in navigation direction
-                    eprintln!("SKIP (unknown ext): {}", file.filename);
-                    if nav_forward && cursor + 1 < files.len() {
-                        cursor += 1;
-                        needs_display = true;
-                    } else if !nav_forward && cursor > 0 {
-                        cursor -= 1;
-                        needs_display = true;
-                    }
+                    // Unknown extension — show error overlay
+                    eprintln!("UNSUPPORTED: {}", file.filename);
+                    error_message = Some(("Unsupported file type".into(), file.filename.clone()));
                 }
 
                 update_title(&window, &files, cursor, &current_dir);
@@ -1192,6 +1204,13 @@ fn main() {
                 // Deferred: record view after display work is done
                 lv_db.record_view(file.id);
             }
+        }
+
+        // Re-watch if current_dir changed
+        if current_dir != watched_dir {
+            fs_watcher.unwatch_dir(&watched_dir);
+            fs_watcher.watch_dir(&current_dir);
+            watched_dir = current_dir.clone();
         }
 
         let _t_display = _t2.elapsed();
@@ -1365,7 +1384,9 @@ fn main() {
             }
         }
 
-        if (using_mpv && !video_has_frame) || pending_cold_load.is_some() {
+        if let Some((ref err, ref fname)) = error_message {
+            statusbar::draw_error_overlay(ui, err, fname, w as f32, h as f32);
+        } else if (using_mpv && !video_has_frame) || pending_cold_load.is_some() {
             statusbar::draw_spinner(ui, w as f32, h as f32, start_time.elapsed().as_secs_f32());
         }
         let draw_data = imgui_ctx.render();
@@ -1390,21 +1411,28 @@ fn main() {
         let _frame_total = _frame_t0.elapsed();
 
         #[cfg(debug_assertions)]
-        if _frame_total.as_millis() > 8 {
-            eprintln!(
-                "SLOW FRAME {:.1}ms (delta={:.1}ms) | pump={:.1} events={:.1} display={:.1} debounce={:.1} drain={:.1} query={:.1} render={:.1} imgui={:.1} swap={:.1}",
-                _frame_total.as_secs_f64() * 1000.0,
-                _frame_delta.as_secs_f64() * 1000.0,
-                _t_pump.as_secs_f64() * 1000.0,
-                _t_events.as_secs_f64() * 1000.0,
-                _t_display.as_secs_f64() * 1000.0,
-                _t_debounce.as_secs_f64() * 1000.0,
-                _t_drain.as_secs_f64() * 1000.0,
-                _t_query.as_secs_f64() * 1000.0,
-                _t_render.as_secs_f64() * 1000.0,
-                _t_imgui.as_secs_f64() * 1000.0,
-                _t_swap.as_secs_f64() * 1000.0,
-            );
+        {
+            let frame_ms = _frame_total.as_secs_f64() * 1000.0;
+            if frame_ms > 8.0 {
+                slow_frame_count += 1;
+                slow_frame_sum_ms += frame_ms;
+                if frame_ms > slow_frame_worst_ms {
+                    slow_frame_worst_ms = frame_ms;
+                }
+            }
+            if slow_frame_window_start.elapsed().as_secs() >= 10 {
+                if slow_frame_count > 0 {
+                    let avg = slow_frame_sum_ms / slow_frame_count as f64;
+                    eprintln!(
+                        "SLOW FRAMES: {} in last 10s (worst={:.1}ms avg={:.1}ms)",
+                        slow_frame_count, slow_frame_worst_ms, avg,
+                    );
+                }
+                slow_frame_count = 0;
+                slow_frame_worst_ms = 0.0;
+                slow_frame_sum_ms = 0.0;
+                slow_frame_window_start = Instant::now();
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(2));

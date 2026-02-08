@@ -257,6 +257,62 @@ pub fn draw_spinner(ui: &imgui::Ui, display_w: f32, display_h: f32, time_secs: f
     }
 }
 
+// ── Error overlay ────────────────────────────────────────────────────────
+
+const ERROR_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
+    .union(WindowFlags::NO_RESIZE)
+    .union(WindowFlags::NO_MOVE)
+    .union(WindowFlags::NO_SCROLLBAR)
+    .union(WindowFlags::NO_SCROLL_WITH_MOUSE)
+    .union(WindowFlags::NO_COLLAPSE)
+    .union(WindowFlags::NO_SAVED_SETTINGS)
+    .union(WindowFlags::NO_FOCUS_ON_APPEARING)
+    .union(WindowFlags::NO_NAV)
+    .union(WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS);
+
+const ERROR_COL: [f32; 4] = [0.90, 0.33, 0.33, 1.0]; // #e55
+const ERROR_DIM: [f32; 4] = [0.53, 0.53, 0.53, 1.0]; // #888
+
+/// Draw a centered error overlay (like a 4xx/5xx page).
+/// Shows a warning icon, the error message, and the filename below.
+pub fn draw_error_overlay(
+    ui: &imgui::Ui,
+    error: &str,
+    filename: &str,
+    display_w: f32,
+    display_h: f32,
+) {
+    if let Some(_win) = ui
+        .window("##error_overlay")
+        .position([0.0, 0.0], Condition::Always)
+        .size([display_w, display_h], Condition::Always)
+        .bg_alpha(0.85)
+        .flags(ERROR_FLAGS)
+        .begin()
+    {
+        // Center vertically: icon + error + filename ≈ 3 lines
+        let line_h = ui.text_line_height_with_spacing();
+        let block_h = line_h * 3.0;
+        let start_y = (display_h - block_h) / 2.0;
+
+        // Warning icon
+        let icon = "\u{26A0}"; // ⚠
+        let icon_w = ui.calc_text_size(icon)[0];
+        ui.set_cursor_pos([(display_w - icon_w) / 2.0, start_y]);
+        ui.text_colored(ERROR_COL, icon);
+
+        // Error message
+        let err_w = ui.calc_text_size(error)[0];
+        ui.set_cursor_pos([(display_w - err_w) / 2.0, start_y + line_h]);
+        ui.text_colored(ERROR_COL, error);
+
+        // Filename
+        let fname_w = ui.calc_text_size(filename)[0];
+        ui.set_cursor_pos([(display_w - fname_w) / 2.0, start_y + line_h * 2.0]);
+        ui.text_colored(ERROR_DIM, filename);
+    }
+}
+
 // ── Info sidebar ─────────────────────────────────────────────────────────
 
 const INFO_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
