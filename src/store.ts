@@ -50,6 +50,15 @@ export const lastDir = signal("");
 export const currentFile = computed(() => files.value[cursorIndex.value] ?? null);
 export const totalFiles = computed(() => files.value.length);
 
+/** Cursor position in sidebarItems[] — can point to folder or file */
+export const sidebarCursor = signal(0);
+
+/** Sync sidebarCursor from cursorIndex (call after direct cursorIndex writes) */
+export function syncSidebarCursor() {
+  const si = fileToSidebarIdx.value.get(cursorIndex.value);
+  if (si != null) sidebarCursor.value = si;
+}
+
 // -- Sidebar items (folder headers interleaved with file tiles) ---------------
 
 export type SidebarItem =
@@ -98,6 +107,15 @@ export const fileToSidebarIdx = computed(() => {
   return map;
 });
 
+/** The folder item under the sidebar cursor, or null if cursor is on a file */
+export const selectedFolder = computed((): { dir: string; dirFiles: FileEntry[] } | null => {
+  const items = sidebarItems.value;
+  const idx = sidebarCursor.value;
+  if (idx < 0 || idx >= items.length) return null;
+  const item = items[idx];
+  return item.type === "folder" ? item : null;
+});
+
 // O(1) id → index lookup for 500k+ item lists
 export const idIndex = computed(() => {
   const map = new Map<number, number>();
@@ -119,17 +137,22 @@ export function updateFileAt(idx: number, patch: Partial<FileEntry>) {
 }
 
 export function moveCursor(delta: number): boolean {
-  const next = cursorIndex.value + delta;
-  if (next >= 0 && next < files.value.length) {
-    cursorIndex.value = next;
-    return true;
+  const items = sidebarItems.value;
+  const next = sidebarCursor.value + delta;
+  if (next < 0 || next >= items.length) return false;
+  sidebarCursor.value = next;
+  const item = items[next];
+  if (item.type === "file") {
+    cursorIndex.value = item.fileIndex;
   }
-  return false;
+  return true;
 }
 
 export function setCursor(index: number) {
   if (index >= 0 && index < files.value.length) {
     cursorIndex.value = index;
+    const si = fileToSidebarIdx.value.get(index);
+    if (si != null) sidebarCursor.value = si;
   }
 }
 
@@ -137,6 +160,8 @@ export function setCursorToFile(file: FileEntry) {
   const idx = indexOfId(file.id);
   if (idx >= 0) {
     cursorIndex.value = idx;
+    const si = fileToSidebarIdx.value.get(idx);
+    if (si != null) sidebarCursor.value = si;
   }
 }
 
@@ -166,6 +191,7 @@ export async function loadFiles(dir?: string) {
     if (cursorIndex.value >= result.length) {
       cursorIndex.value = Math.max(0, result.length - 1);
     }
+    syncSidebarCursor();
     addLog("info", `loaded ${result.length} files${raw.length !== result.length ? ` (${raw.length - result.length} unsupported filtered)` : ""}`);
   } catch (e) {
     addLog("error", `loadFiles failed: ${e}`);
@@ -185,12 +211,14 @@ export async function jumpToFile(cmd: string, favMode = false) {
         await loadFiles("♥");
         const newIdx = indexOfId(file.id);
         cursorIndex.value = newIdx >= 0 ? newIdx : 0;
+        syncSidebarCursor();
         return;
       }
 
       const idx = indexOfId(file.id);
       if (idx >= 0) {
         cursorIndex.value = idx;
+        syncSidebarCursor();
         return;
       }
 
@@ -198,6 +226,7 @@ export async function jumpToFile(cmd: string, favMode = false) {
       if (files.value.length > 0) {
         const newIdx = indexOfId(file.id);
         cursorIndex.value = newIdx >= 0 ? newIdx : 0;
+        syncSidebarCursor();
         return;
       }
       // Dir had no supported files — retry with another random result

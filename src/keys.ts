@@ -7,6 +7,7 @@ import {
   lastDir,
   files,
   cursorIndex,
+  syncSidebarCursor,
   updateFileAt,
   filterSupported,
   showInfo,
@@ -36,6 +37,7 @@ async function navigateDir(delta: number, cursorAt: "first" | "last" = "first") 
       if (filtered.length > 0) {
         files.value = filtered;
         cursorIndex.value = cursorAt === "last" ? filtered.length - 1 : 0;
+        syncSidebarCursor();
         navigating = false;
         return;
       }

@@ -38,8 +38,8 @@ function computeDesired(): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
 
-  function add(f: FileEntry) {
-    if (!isImage(f)) return;
+  function add(f: FileEntry | undefined) {
+    if (!f || !isImage(f)) return;
     const url = fileSrc(f.path);
     if (!seen.has(url)) {
       seen.add(url);

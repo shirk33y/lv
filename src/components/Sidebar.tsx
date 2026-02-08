@@ -1,6 +1,6 @@
 import { signal } from "@preact/signals";
 import { useRef, useEffect } from "preact/hooks";
-import { cursorIndex, moveCursor, sidebarItems, fileToSidebarIdx } from "../store";
+import { sidebarCursor, moveCursor, sidebarItems } from "../store";
 import { Tile } from "./Tile";
 import { FolderTile } from "./FolderTile";
 
@@ -11,30 +11,27 @@ const BUFFER = 5;
 
 export function Sidebar() {
   const items = sidebarItems.value;
-  const cursor = cursorIndex.value;
+  const sCursor = sidebarCursor.value;
   const containerRef = useRef<HTMLDivElement>(null);
 
   const tileH = containerRef.current?.clientWidth || 48;
   const viewH = containerRef.current?.clientHeight || 600;
   const viewCount = Math.max(1, Math.floor(viewH / tileH));
 
-  // Find the sidebar index of the current cursor file
-  const cursorSIdx = fileToSidebarIdx.value.get(cursor) ?? 0;
-
-  // Render window centered on cursor's sidebar position
+  // Render window centered on sidebarCursor
   const half = Math.floor(viewCount / 2) + BUFFER;
-  const start = Math.max(0, cursorSIdx - half);
-  const end = Math.min(items.length, cursorSIdx + half + 1);
+  const start = Math.max(0, sCursor - half);
+  const end = Math.min(items.length, sCursor + half + 1);
 
   // Always center cursor tile in viewport
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const h = el.clientWidth || 48;
-    const target = cursorSIdx * h - el.clientHeight / 2 + h / 2;
+    const target = sCursor * h - el.clientHeight / 2 + h / 2;
     el.scrollTop = Math.max(0, target);
     scrollTop.value = el.scrollTop;
-  }, [cursorSIdx]);
+  }, [sCursor]);
 
   function onWheel(e: WheelEvent) {
     e.preventDefault();
@@ -49,6 +46,7 @@ export function Sidebar() {
       <div class="sidebar-track" style={{ height: totalH, position: "relative" }}>
         {items.slice(start, end).map((item, i) => {
           const idx = start + i;
+          const isActive = idx === sCursor;
           if (item.type === "folder") {
             return (
               <div
@@ -56,7 +54,7 @@ export function Sidebar() {
                 class="sidebar-slot"
                 style={{ position: "absolute", top: idx * tileH, width: "100%", height: tileH }}
               >
-                <FolderTile dir={item.dir} dirFiles={item.dirFiles} />
+                <FolderTile dir={item.dir} dirFiles={item.dirFiles} active={isActive} />
               </div>
             );
           }
@@ -66,7 +64,7 @@ export function Sidebar() {
               class="sidebar-slot"
               style={{ position: "absolute", top: idx * tileH, width: "100%", height: tileH }}
             >
-              <Tile file={item.file} active={item.fileIndex === cursor} />
+              <Tile file={item.file} active={isActive} />
             </div>
           );
         })}

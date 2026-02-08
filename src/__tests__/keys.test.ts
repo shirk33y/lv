@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { files, cursorIndex, showInfo, showLogs, showHelp, type FileEntry } from "../store";
+import { files, cursorIndex, syncSidebarCursor, showInfo, showLogs, showHelp, type FileEntry } from "../store";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -11,6 +11,7 @@ function makeFile(id: number, dir = "/a", filename = `f${id}.jpg`): FileEntry {
 function resetStore(items: FileEntry[] = [], cursor = 0) {
   files.value = items;
   cursorIndex.value = cursor;
+  syncSidebarCursor();
   showInfo.value = false;
   showLogs.value = false;
   showHelp.value = false;

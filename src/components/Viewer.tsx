@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { currentFile } from "../store";
+import { currentFile, selectedFolder } from "../store";
+import { FolderGrid } from "./FolderGrid";
 
 const VIDEO_EXTS = new Set(["mp4", "webm"]);
 
@@ -79,6 +80,15 @@ function VideoViewer({ file }: { file: { path: string; filename: string; meta_id
 }
 
 export function Viewer() {
+  const folder = selectedFolder.value;
+  if (folder) {
+    return (
+      <div class="viewer">
+        <FolderGrid dir={folder.dir} dirFiles={folder.dirFiles} />
+      </div>
+    );
+  }
+
   const file = currentFile.value;
   if (!file) {
     return <div class="viewer" />;

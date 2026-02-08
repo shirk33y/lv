@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent } from "@testing-library/preact";
 import { invoke } from "@tauri-apps/api/core";
-import { files, cursorIndex, jobStatus, showInfo, showLogs, showHelp, cwd, logEntries, loadFiles, addLog, type FileEntry, type JobStatus } from "../store";
+import { files, cursorIndex, sidebarCursor, syncSidebarCursor, jobStatus, showInfo, showLogs, showHelp, cwd, logEntries, loadFiles, addLog, type FileEntry, type JobStatus } from "../store";
 import { Viewer } from "../components/Viewer";
 import { StatusBar } from "../components/StatusBar";
 import { Tile } from "../components/Tile";
@@ -19,6 +19,7 @@ function makeFile(id: number, dir = "/a", filename = `f${id}.jpg`): FileEntry {
 function resetStore(items: FileEntry[] = [], cursor = 0) {
   files.value = items;
   cursorIndex.value = cursor;
+  syncSidebarCursor();
   jobStatus.value = null;
   showInfo.value = false;
   showLogs.value = false;

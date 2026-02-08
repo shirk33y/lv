@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   files,
   cursorIndex,
+  sidebarCursor,
+  syncSidebarCursor,
   loading,
   currentFile,
   totalFiles,
@@ -31,6 +33,7 @@ function resetStore(items: FileEntry[] = [], cursor = 0) {
   files.value = items;
   cursorIndex.value = cursor;
   loading.value = false;
+  syncSidebarCursor();
 }
 
 beforeEach(() => {
@@ -487,24 +490,28 @@ describe("performance at scale", () => {
   it("moveCursor is O(1) with 500k files", () => {
     files.value = bigList;
     cursorIndex.value = 0;
+    syncSidebarCursor();
+    const startSC = sidebarCursor.value;
     const t0 = performance.now();
     for (let i = 0; i < 10_000; i++) {
       moveCursor(1);
     }
     const elapsed = performance.now() - t0;
-    expect(cursorIndex.value).toBe(10_000);
+    // sidebarCursor advances exactly 10000 (some land on folder headers)
+    expect(sidebarCursor.value).toBe(startSC + 10_000);
     expect(elapsed).toBeLessThan(50);
   });
 
   it("setCursorToFile is O(1) via idIndex", () => {
     files.value = bigList;
     idIndex.value; // ensure built
+    fileToSidebarIdx.value; // ensure built
     const target = bigList[N - 1]; // last file
     const t0 = performance.now();
     setCursorToFile(target);
     const elapsed = performance.now() - t0;
     expect(cursorIndex.value).toBe(N - 1);
-    expect(elapsed).toBeLessThan(5);
+    expect(elapsed).toBeLessThan(50); // now also syncs sidebarCursor
   });
 
   it("updateFileAt is O(n) but completes in < 500ms for 500k", () => {

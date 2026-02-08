@@ -43,14 +43,15 @@ function MiniThumb({ file }: { file: FileEntry | null }) {
 interface Props {
   dir: string;
   dirFiles: FileEntry[];
+  active?: boolean;
 }
 
-export function FolderTile({ dir, dirFiles }: Props) {
+export function FolderTile({ dir, dirFiles, active }: Props) {
   const [first, rand1, rand2, last] = pickFour(dirFiles);
   const label = dir.split(/[/\\]/).filter(Boolean).pop() || dir;
 
   return (
-    <div class="folder-tile" title={dir}>
+    <div class={`folder-tile${active ? " active" : ""}`} title={dir}>
       <div class="folder-tile-grid">
         <MiniThumb file={first} />
         <MiniThumb file={rand1} />
