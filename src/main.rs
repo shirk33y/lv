@@ -2896,6 +2896,448 @@ mod tests {
         assert!(files.get(cursor).is_none());
     }
 
+    // ── clean_path edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn clean_path_no_prefix() {
+        assert_eq!(clean_path("C:\\Users\\test"), "C:\\Users\\test");
+        assert_eq!(clean_path("/home/user/file.jpg"), "/home/user/file.jpg");
+    }
+
+    #[test]
+    fn clean_path_with_prefix() {
+        assert_eq!(clean_path(r"\\?\C:\Users\test"), r"C:\Users\test");
+    }
+
+    #[test]
+    fn clean_path_empty_string() {
+        assert_eq!(clean_path(""), "");
+    }
+
+    #[test]
+    fn clean_path_just_prefix() {
+        assert_eq!(clean_path(r"\\?\"), "");
+    }
+
+    #[test]
+    fn clean_path_double_prefix() {
+        // Only the first prefix should be stripped
+        assert_eq!(clean_path(r"\\?\\\?\C:\x"), r"\\?\C:\x");
+    }
+
+    // ── ext_of / is_image / is_video edge cases ─────────────────────────
+
+    #[test]
+    fn ext_of_normal() {
+        assert_eq!(ext_of("photo.jpg"), "jpg");
+        assert_eq!(ext_of("clip.MP4"), "mp4");
+    }
+
+    #[test]
+    fn ext_of_no_extension() {
+        assert_eq!(ext_of("noext"), "noext"); // rsplit('.') returns whole string
+    }
+
+    #[test]
+    fn ext_of_hidden_file() {
+        assert_eq!(ext_of(".gitignore"), "gitignore");
+    }
+
+    #[test]
+    fn ext_of_double_dot() {
+        assert_eq!(ext_of("photo.backup.jpg"), "jpg");
+    }
+
+    #[test]
+    fn ext_of_empty() {
+        assert_eq!(ext_of(""), "");
+    }
+
+    #[test]
+    fn ext_of_trailing_dot_edge() {
+        assert_eq!(ext_of("photo."), "");
+    }
+
+    #[test]
+    fn is_image_all_exts() {
+        for ext in IMAGE_EXTS {
+            assert!(
+                is_image(&format!("test.{}", ext)),
+                "should recognize .{}",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn is_video_all_exts() {
+        for ext in VIDEO_EXTS {
+            assert!(
+                is_video(&format!("test.{}", ext)),
+                "should recognize .{}",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn is_image_case_insensitive() {
+        assert!(is_image("PHOTO.JPG"));
+        assert!(is_image("photo.Png"));
+        assert!(is_image("photo.WEBP"));
+    }
+
+    #[test]
+    fn is_video_case_insensitive() {
+        assert!(is_video("CLIP.MP4"));
+        assert!(is_video("clip.Mkv"));
+    }
+
+    #[test]
+    fn image_and_video_no_overlap() {
+        // No extension should be both image and video
+        for ext in IMAGE_EXTS {
+            assert!(
+                !is_video(&format!("test.{}", ext)),
+                ".{} should not be both image and video",
+                ext
+            );
+        }
+        for ext in VIDEO_EXTS {
+            assert!(
+                !is_image(&format!("test.{}", ext)),
+                ".{} should not be both image and video",
+                ext
+            );
+        }
+    }
+
+    // ── switch_dir tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn switch_dir_first() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 99usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let dir_str = current_dir.clone();
+
+        // switch_dir with "first" should set cursor to 0
+        cursor = 2;
+        switch_dir(
+            &db,
+            &dir_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn switch_dir_last() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let dir_str = current_dir.clone();
+
+        switch_dir(
+            &db,
+            &dir_str,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "last",
+        );
+        assert_eq!(cursor, files.len() - 1);
+    }
+
+    #[test]
+    fn switch_dir_empty_dir_noop() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let mut files = vec![];
+        let mut current_dir = "/original".to_string();
+        let mut cursor = 0usize;
+
+        // Switching to a dir with no files should be a no-op
+        switch_dir(
+            &db,
+            "/empty/dir",
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            "first",
+        );
+        assert_eq!(current_dir, "/original", "should not change dir");
+    }
+
+    // ── jump_to tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn jump_to_same_dir() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg", "c.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Jump to c.jpg (same dir) — construct a FileEntry for the target
+        let target_idx = files.iter().position(|f| f.filename == "c.jpg").unwrap();
+        let target = FileEntry {
+            id: files[target_idx].id,
+            path: files[target_idx].path.clone(),
+            dir: files[target_idx].dir.clone(),
+            filename: files[target_idx].filename.clone(),
+            meta_id: files[target_idx].meta_id,
+            liked: files[target_idx].liked,
+            temporary: files[target_idx].temporary,
+        };
+        jump_to(&db, target, &mut files, &mut current_dir, &mut cursor);
+        assert_eq!(files[cursor].filename, "c.jpg");
+    }
+
+    #[test]
+    fn jump_to_different_dir() {
+        let (db, dir_a) = setup_drop_dir(&["a.jpg"]);
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("b.png"), b"fake").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir_a.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let dir_a_str = current_dir.clone();
+
+        // Scan dir_b into DB
+        handle_drop(
+            &db,
+            dir_b.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Now switch back to dir_a
+        handle_drop(
+            &db,
+            dir_a.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        // Jump to b.png (in dir_b)
+        let dir_b_str = clean_path(&dir_b.path().to_string_lossy());
+        let b_files = db.files_by_dir(&dir_b_str);
+        let target = FileEntry {
+            id: b_files[0].id,
+            path: b_files[0].path.clone(),
+            dir: b_files[0].dir.clone(),
+            filename: b_files[0].filename.clone(),
+            meta_id: b_files[0].meta_id,
+            liked: b_files[0].liked,
+            temporary: b_files[0].temporary,
+        };
+        jump_to(&db, target, &mut files, &mut current_dir, &mut cursor);
+
+        assert_ne!(current_dir, dir_a_str, "should have switched dirs");
+        assert_eq!(files[cursor].filename, "b.png");
+    }
+
+    // ── handle_drop edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn handle_drop_nonexistent_path() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            std::path::Path::new("/nonexistent/path/photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok, "nonexistent path should return false");
+    }
+
+    #[test]
+    fn handle_drop_empty_dir_no_media() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Create only non-media files
+        std::fs::write(dir.path().join("readme.txt"), b"hello").unwrap();
+        std::fs::write(dir.path().join("data.json"), b"{}").unwrap();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        // Dropping a dir with no media should still succeed (it scans the dir)
+        // but files list will be empty
+        if ok {
+            assert!(
+                files.is_empty() || files.iter().all(|f| is_image(&f.path) || is_video(&f.path))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_drop_symlink() {
+        let (db, dir) = setup_drop_dir(&["real.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        // Create a symlink to the real file
+        let link_path = dir.path().join("link.jpg");
+        std::os::unix::fs::symlink(dir.path().join("real.jpg"), &link_path).unwrap();
+
+        let ok = handle_drop(
+            &db,
+            &link_path,
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok, "symlink to media file should be handled");
+        assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn handle_drop_dir_with_mixed_files() {
+        // Dir with both media and non-media — only media should appear
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("photo.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), b"text").unwrap();
+        std::fs::write(dir.path().join("clip.mp4"), b"vid").unwrap();
+        std::fs::write(dir.path().join("data.json"), b"{}").unwrap();
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+
+        assert_eq!(files.len(), 2, "only media files should be in list");
+        for f in &files {
+            assert!(
+                is_image(&f.path) || is_video(&f.path),
+                "non-media file in list: {}",
+                f.filename
+            );
+        }
+    }
+
+    #[test]
+    fn handle_drop_same_dir_twice_no_duplicates() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        let count1 = files.len();
+
+        // Drop same dir again
+        handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert_eq!(
+            files.len(),
+            count1,
+            "dropping same dir twice should not create duplicates"
+        );
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner

@@ -792,4 +792,98 @@ mod tests {
         assert!(ERROR_COL[1] < 0.5); // weak green
         assert!(ERROR_COL[2] < 0.5); // weak blue
     }
+
+    // ── format_size (info panel variant) ─────────────────────────────────
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1048576), "1.0 MB");
+        assert_eq!(format_size(10485760), "10.0 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1073741824), "1.00 GB");
+        assert_eq!(format_size(2684354560), "2.50 GB");
+    }
+
+    // ── format_duration ──────────────────────────────────────────────────
+
+    #[test]
+    fn format_duration_zero() {
+        assert_eq!(format_duration(0), "0:00");
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(5000), "0:05");
+        assert_eq!(format_duration(59000), "0:59");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(format_duration(60000), "1:00");
+        assert_eq!(format_duration(90000), "1:30");
+        assert_eq!(format_duration(3599000), "59:59");
+    }
+
+    #[test]
+    fn format_duration_hours() {
+        assert_eq!(format_duration(3600000), "1:00:00");
+        assert_eq!(format_duration(7261000), "2:01:01");
+    }
+
+    // ── fmt_time edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn fmt_time_large() {
+        // 24 hours
+        assert_eq!(fmt_time(86400.0), "24:00:00");
+    }
+
+    #[test]
+    fn fmt_time_just_under_hour() {
+        assert_eq!(fmt_time(3599.0), "59:59");
+    }
+
+    #[test]
+    fn fmt_time_exactly_one_hour() {
+        assert_eq!(fmt_time(3600.0), "1:00:00");
+    }
+
+    // ── fmt_size edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn fmt_size_negative() {
+        // Negative sizes shouldn't happen but should not panic
+        let result = fmt_size(-1);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn fmt_size_exact_boundaries() {
+        assert_eq!(fmt_size(1024), "1 KB");
+        assert_eq!(fmt_size(1048576), "1.0 MB");
+        assert_eq!(fmt_size(1073741824), "1.0 GB");
+    }
+
+    #[test]
+    fn fmt_size_large() {
+        // 100 GB
+        let result = fmt_size(107374182400);
+        assert!(result.contains("GB"));
+    }
 }

@@ -858,4 +858,194 @@ mod tests {
             "should not send event for non-media create"
         );
     }
+
+    #[test]
+    fn handle_event_modify_updates_existing() {
+        // Modify event for an existing media file should update meta in DB
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        let file_path = dir.path().join("photo.jpg");
+        std::fs::write(&file_path, b"original").unwrap();
+
+        db.dir_track(&dir_str, false);
+        // Insert with old size
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        db.file_insert(&canonical_str, &dir_str, "photo.jpg", Some(1), None);
+
+        // Modify the file
+        std::fs::write(&file_path, b"modified content that is longer").unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            vec![file_path],
+        );
+        handle_event(&db, &tx, event);
+
+        // Should have sent Changed
+        let ev = rx.try_recv().expect("should receive FsEvent::Changed");
+        match ev {
+            FsEvent::Changed(_) => {}
+            _ => panic!("expected Changed"),
+        }
+        // Size should be updated
+        let (_, size, _) = db.file_lookup(&canonical_str).unwrap();
+        assert!(size.unwrap() > 1, "size should be updated after modify");
+    }
+
+    #[test]
+    fn handle_event_multiple_paths_in_one_event() {
+        // A single notify event can contain multiple paths
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let f1 = dir.path().join("a.jpg");
+        let f2 = dir.path().join("b.png");
+        std::fs::write(&f1, b"img1").unwrap();
+        std::fs::write(&f2, b"img2").unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![f1.clone(), f2.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        // Should receive two Changed events (one per path)
+        let ev1 = rx.try_recv();
+        let ev2 = rx.try_recv();
+        assert!(ev1.is_ok(), "should get event for first path");
+        assert!(ev2.is_ok(), "should get event for second path");
+    }
+
+    #[test]
+    fn handle_event_directory_path_skipped() {
+        // If notify sends a directory path, it should be skipped
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::Folder),
+            vec![dir.path().to_path_buf()],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(rx.try_recv().is_err(), "directory events should be skipped");
+    }
+
+    #[test]
+    fn handle_event_other_kind_ignored() {
+        // EventKind::Other or Access should not produce events
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Other,
+            vec![std::path::PathBuf::from("/some/photo.jpg")],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(rx.try_recv().is_err(), "Other event kind should be ignored");
+    }
+
+    #[test]
+    fn handle_event_empty_paths() {
+        // Event with no paths should be a no-op
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(EventKind::Create(notify::event::CreateKind::File), vec![]);
+        handle_event(&db, &tx, event);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "empty paths should produce no events"
+        );
+    }
+
+    // ── has_media_ext edge cases ────────────────────────────────────────
+
+    #[test]
+    fn has_media_ext_double_dot() {
+        assert!(has_media_ext("/a/photo.backup.jpg"));
+        assert!(!has_media_ext("/a/photo.jpg.bak"));
+    }
+
+    #[test]
+    fn has_media_ext_hidden_file() {
+        assert!(has_media_ext("/a/.hidden.jpg"));
+        assert!(!has_media_ext("/a/.hidden"));
+    }
+
+    #[test]
+    fn has_media_ext_empty_string() {
+        assert!(!has_media_ext(""));
+    }
+
+    #[test]
+    fn has_media_ext_dots_only() {
+        assert!(!has_media_ext("..."));
+        assert!(!has_media_ext("."));
+    }
+
+    #[test]
+    fn has_media_ext_trailing_dot() {
+        assert!(!has_media_ext("photo."));
+    }
+
+    #[test]
+    fn has_media_ext_case_insensitive() {
+        assert!(has_media_ext("PHOTO.JPG"));
+        assert!(has_media_ext("clip.MkV"));
+        assert!(has_media_ext("image.Png"));
+    }
+
+    // ── str_parent edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn str_parent_trailing_separator() {
+        assert_eq!(str_parent("/a/b/"), "/a/b");
+        assert_eq!(str_parent(r"C:\Users\"), r"C:\Users");
+    }
+
+    #[test]
+    fn str_parent_root() {
+        assert_eq!(str_parent("/"), "");
+        assert_eq!(str_parent(r"\"), "");
+    }
+
+    #[test]
+    fn str_parent_empty() {
+        assert_eq!(str_parent(""), "");
+    }
+
+    #[test]
+    fn str_parent_double_separator() {
+        assert_eq!(str_parent("/a//b.jpg"), "/a/");
+        assert_eq!(str_parent(r"C:\\dir\\file.jpg"), r"C:\\dir\");
+    }
 }
