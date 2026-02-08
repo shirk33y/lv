@@ -74,6 +74,7 @@ pub struct StatusInfo<'a> {
     pub video_pos: f64,
     pub video_duration: f64,
     pub volume: i64,
+    pub turbo: bool,
 }
 
 /// Truncate a string with middle ellipsis to fit within `max_w` pixels.
@@ -134,8 +135,9 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
         // Save initial Y so all elements stay on the same line
         let y = ui.cursor_pos()[1];
 
-        // Build right side: [index/total] + video info
-        let index_text = format!("[{}/{}]", info.index, info.total);
+        // Build right side: [T] [index/total] + video info
+        let turbo_prefix = if info.turbo { "[T] " } else { "" };
+        let index_text = format!("{}[{}/{}]", turbo_prefix, info.index, info.total);
         let right_text = if info.is_video {
             let icon = if info.paused { "||" } else { ">" };
             format!(
@@ -269,23 +271,29 @@ const VALUE_COL: [f32; 4] = [0.92, 0.92, 0.92, 1.0];
 const HEADER_COL: [f32; 4] = [0.70, 0.80, 1.0, 1.0];
 
 /// Draw the right info sidebar. Returns the panel width (for viewport offset).
+/// `scroll_req`: if Some, set scroll to that value.
 pub fn draw_info_panel(
     ui: &imgui::Ui,
     meta: &crate::db::FileMeta,
     display_w: f32,
     display_h: f32,
+    scroll_req: Option<f32>,
 ) -> f32 {
     let panel_w = 320.0_f32.min(display_w * 0.35);
     let bar_h = 24.0;
+    let stats_h = 130.0;
 
     if let Some(_win) = ui
         .window("##infopanel")
         .position([display_w - panel_w, 0.0], Condition::Always)
-        .size([panel_w, display_h - bar_h], Condition::Always)
+        .size([panel_w, display_h - bar_h - stats_h], Condition::Always)
         .bg_alpha(0.88)
         .flags(INFO_FLAGS)
         .begin()
     {
+        if let Some(sy) = scroll_req {
+            ui.set_scroll_y(sy);
+        }
         ui.text_colored(HEADER_COL, "Info");
         ui.separator();
         ui.spacing();
@@ -360,6 +368,15 @@ pub fn draw_info_panel(
             }
         }
 
+        // AI metadata
+        if let Some(ref info) = meta.pnginfo {
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+            ui.text_colored(HEADER_COL, "AI");
+            ui.text_wrapped(info);
+        }
+
         // Path at very bottom
         ui.spacing();
         ui.separator();
@@ -391,6 +408,94 @@ fn format_duration(ms: i64) -> String {
         format!("{}:{:02}:{:02}", h, m % 60, s % 60)
     } else {
         format!("{}:{:02}", m, s % 60)
+    }
+}
+
+/// Draw job/collection stats at bottom of the info sidebar.
+pub fn draw_stats_section(
+    ui: &imgui::Ui,
+    stats: &crate::jobs::JobStats,
+    db: &crate::db::Db,
+    display_w: f32,
+    display_h: f32,
+) {
+    use std::sync::atomic::Ordering;
+
+    let panel_w = 320.0_f32.min(display_w * 0.35);
+    let bar_h = 24.0;
+    let panel_h = 130.0;
+
+    let stats_flags = WindowFlags::NO_TITLE_BAR
+        .union(WindowFlags::NO_RESIZE)
+        .union(WindowFlags::NO_MOVE)
+        .union(WindowFlags::NO_COLLAPSE)
+        .union(WindowFlags::NO_SAVED_SETTINGS)
+        .union(WindowFlags::NO_FOCUS_ON_APPEARING)
+        .union(WindowFlags::NO_NAV);
+
+    if let Some(_win) = ui
+        .window("##stats")
+        .position(
+            [display_w - panel_w, display_h - bar_h - panel_h],
+            Condition::Always,
+        )
+        .size([panel_w, panel_h], Condition::Always)
+        .bg_alpha(0.88)
+        .flags(stats_flags)
+        .begin()
+    {
+        let cs = db.collection_stats();
+        let done = stats.done.load(Ordering::Relaxed);
+        let failed = stats.failed.load(Ordering::Relaxed);
+        let active = stats.active.load(Ordering::Relaxed);
+        let turbo = stats.turbo.load(Ordering::Relaxed);
+        let rpm = stats.jobs_per_min.load(Ordering::Relaxed);
+        let rpm_str = if rpm >= 10 {
+            format!("{}", rpm / 10)
+        } else {
+            format!("{}.{}", rpm / 10, rpm % 10)
+        };
+
+        // Collection
+        ui.text_colored(HEADER_COL, "Collection");
+        ui.separator();
+        let pct_hash = if cs.total_files > 0 {
+            cs.hashed * 100 / cs.total_files
+        } else {
+            0
+        };
+        let pct_exif = if cs.total_files > 0 {
+            cs.with_exif * 100 / cs.total_files
+        } else {
+            0
+        };
+        ui.text_colored(
+            DIM,
+            format!(
+                "{} files  {} dirs",
+                cs.total_files, cs.total_dirs
+            ),
+        );
+        ui.text_colored(DIM, format!("# {}/{}  {}%", cs.hashed, cs.total_files, pct_hash));
+        ui.text_colored(DIM, format!("E {}/{}  {}%", cs.with_exif, cs.total_files, pct_exif));
+
+        ui.spacing();
+
+        // Jobs
+        let mode = if turbo { "Turbo" } else { "Lazy" };
+        ui.text_colored(HEADER_COL, format!("Jobs [{}]", mode));
+        ui.separator();
+        ui.text_colored(
+            DIM,
+            format!("{}/min  ok:{}  err:{}  run:{}", rpm_str, done, failed, active),
+        );
+        if cs.failed > 0 {
+            ui.text_colored([1.0, 0.4, 0.4, 1.0], format!("fails: {}", cs.failed));
+        }
+        let last_err = stats.last_error();
+        if !last_err.is_empty() {
+            ui.text_colored([0.7, 0.4, 0.4, 1.0], &last_err[..last_err.len().min(40)]);
+        }
     }
 }
 

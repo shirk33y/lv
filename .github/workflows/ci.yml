@@ -65,8 +65,36 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+  test-imgui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-imgui -> target
+          cache-all-crates: "true"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl2-dev \
+            libmpv-dev
+
+      - name: Cargo test
+        working-directory: src-imgui
+        run: cargo test
+
+      - name: Cargo check (release)
+        working-directory: src-imgui
+        run: cargo check --release
+
   build:
-    needs: test
+    needs: [test, test-imgui]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

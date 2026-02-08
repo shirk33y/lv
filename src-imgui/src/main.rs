@@ -7,7 +7,9 @@
 //!
 //! Usage: cargo run --release [-- <dir_override>]
 
+mod aimeta;
 mod db;
+mod jobs;
 mod preload;
 mod quad;
 mod statusbar;
@@ -298,6 +300,9 @@ fn main() {
     let total_dirs = lv_db.dir_count();
     eprintln!("lv.db: {} files in {} dirs", total_files, total_dirs);
 
+    // ── Background job engine ────────────────────────────────────────────
+    let mut job_engine = jobs::JobEngine::start(lv_db.clone());
+
     // Load initial directory
     let initial_dir = if let Some(dir) = args.first() {
         dir.clone()
@@ -432,6 +437,8 @@ fn main() {
     let mut show_info = false;
     let mut cached_meta: Option<db::FileMeta> = None;
     let mut cached_meta_file_id: i64 = -1;
+    let mut info_scroll: Option<f32> = None;
+    let mut info_scroll_y: f32 = 0.0;
     let mut last_mouse_move = Instant::now();
     let mut cursor_visible = true;
     let start_time = Instant::now();
@@ -585,9 +592,57 @@ fn main() {
                     Keycode::I => {
                         show_info = !show_info;
                         if show_info {
-                            // Force metadata refresh
                             cached_meta_file_id = -1;
+                            info_scroll_y = 0.0;
                         }
+                    }
+
+                    // ── info panel scrolling ─────────────────────
+                    Keycode::PageUp => {
+                        if show_info {
+                            info_scroll_y = (info_scroll_y - 200.0).max(0.0);
+                            info_scroll = Some(info_scroll_y);
+                        }
+                    }
+                    Keycode::PageDown => {
+                        if show_info {
+                            info_scroll_y += 200.0;
+                            info_scroll = Some(info_scroll_y);
+                        }
+                    }
+                    Keycode::Home => {
+                        if show_info {
+                            info_scroll_y = 0.0;
+                            info_scroll = Some(0.0);
+                        }
+                    }
+                    Keycode::End => {
+                        if show_info {
+                            info_scroll_y = f32::MAX;
+                            info_scroll = Some(f32::MAX);
+                        }
+                    }
+
+                    // ── -: toggle turbo mode ─────────────────────
+                    Keycode::Minus => {
+                        let stats = &job_engine.stats;
+                        let was = stats.turbo.load(Ordering::Relaxed);
+                        stats.turbo.store(!was, Ordering::Relaxed);
+                        eprintln!("jobs: {} mode", if !was { "TURBO" } else { "lazy" });
+                    }
+
+                    // ── r: refresh current directory ───────────────
+                    Keycode::R => {
+                        let old_id = files.get(cursor).map(|f| f.id);
+                        files = lv_db.files_by_dir(&current_dir);
+                        if files.is_empty() {
+                            cursor = 0;
+                        } else if let Some(oid) = old_id {
+                            cursor = files.iter().position(|f| f.id == oid).unwrap_or(0);
+                        }
+                        needs_display = true;
+                        cached_meta_file_id = -1;
+                        eprintln!("refresh: {} ({} files)", current_dir, files.len());
                     }
 
                     // ── c: copy path to clipboard ───────────────────
@@ -884,6 +939,7 @@ fn main() {
         let ui = imgui_ctx.new_frame();
 
         if let Some(file) = files.get(cursor) {
+            let is_turbo = job_engine.stats.turbo.load(Ordering::Relaxed);
             let info = statusbar::StatusInfo {
                 index: cursor + 1,
                 total: files.len(),
@@ -894,6 +950,7 @@ fn main() {
                 video_pos,
                 video_duration,
                 volume,
+                turbo: is_turbo,
             };
             statusbar::draw_status_bar(ui, &info, w as f32, h as f32);
 
@@ -904,8 +961,9 @@ fn main() {
                     cached_meta_file_id = file.id;
                 }
                 if let Some(ref meta) = cached_meta {
-                    statusbar::draw_info_panel(ui, meta, w as f32, h as f32);
+                    statusbar::draw_info_panel(ui, meta, w as f32, h as f32, info_scroll.take());
                 }
+                statusbar::draw_stats_section(ui, &job_engine.stats, &lv_db, w as f32, h as f32);
             }
         }
 
@@ -952,7 +1010,8 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
-    // ── Shutdown: stop render thread before dropping mpv ─────────────
+    // ── Shutdown ──────────────────────────────────────────────────────
+    job_engine.stop();
     mpv_shared.quit.store(true, Ordering::Release);
     render_thread.join().ok();
 

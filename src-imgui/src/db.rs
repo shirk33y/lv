@@ -18,6 +18,15 @@ pub struct FileEntry {
     pub liked: bool,
 }
 
+/// Aggregate stats for the info sidebar.
+pub struct CollectionStats {
+    pub total_files: i64,
+    pub total_dirs: i64,
+    pub hashed: i64,
+    pub with_exif: i64,
+    pub failed: i64,
+}
+
 /// Extended metadata for the info sidebar.
 pub struct FileMeta {
     pub filename: String,
@@ -33,6 +42,7 @@ pub struct FileMeta {
     pub bitrate: Option<i64>,
     pub codecs: Option<String>,
     pub tags: Vec<String>,
+    pub pnginfo: Option<String>,
 }
 
 impl Db {
@@ -222,7 +232,7 @@ impl Db {
         db.query_row(
             "SELECT f.filename, f.path, f.dir, f.size, f.modified_at, f.hash_sha512,
                     m.width, m.height, m.format, m.duration_ms, m.bitrate, m.codecs,
-                    COALESCE(m.tags, '[]')
+                    COALESCE(m.tags, '[]'), m.pnginfo
              FROM files f LEFT JOIN meta m ON f.meta_id = m.id
              WHERE f.id = ?1",
             [file_id],
@@ -243,6 +253,7 @@ impl Db {
                     bitrate: row.get(10)?,
                     codecs: row.get(11)?,
                     tags,
+                    pnginfo: row.get(13)?,
                 })
             },
         )
@@ -261,6 +272,168 @@ impl Db {
         self.conn()
             .query_row("SELECT COUNT(DISTINCT dir) FROM files", [], |r| r.get(0))
             .unwrap_or(0)
+    }
+
+    // ── Jobs / Layers ───────────────────────────────────────────────────
+
+    pub fn ensure_jobs_schema(&self) {
+        self.conn()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS job_fails (
+                    file_id INTEGER NOT NULL,
+                    layer TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (file_id, layer)
+                );",
+            )
+            .ok();
+    }
+
+    pub fn next_missing_hash(&self) -> Option<(i64, String)> {
+        self.conn()
+            .query_row(
+                "SELECT f.id, f.path FROM files f
+                 WHERE f.hash_sha512 IS NULL
+                 AND f.id NOT IN (SELECT file_id FROM job_fails WHERE layer = 'hash')
+                 ORDER BY RANDOM() LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    pub fn next_missing_exif(&self) -> Option<(i64, String)> {
+        self.conn()
+            .query_row(
+                "SELECT f.id, f.path FROM files f
+                 JOIN meta m ON f.meta_id = m.id
+                 WHERE m.width IS NULL
+                 AND f.id NOT IN (SELECT file_id FROM job_fails WHERE layer = 'exif')
+                 AND (LOWER(f.path) LIKE '%.jpg' OR LOWER(f.path) LIKE '%.jpeg'
+                   OR LOWER(f.path) LIKE '%.png' OR LOWER(f.path) LIKE '%.webp'
+                   OR LOWER(f.path) LIKE '%.gif' OR LOWER(f.path) LIKE '%.bmp'
+                   OR LOWER(f.path) LIKE '%.tiff')
+                 ORDER BY RANDOM() LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    pub fn file_set_hash_meta(&self, file_id: i64, hash: &str) {
+        let db = self.conn();
+        db.execute(
+            "INSERT OR IGNORE INTO meta (hash_sha512) VALUES (?1)",
+            [hash],
+        )
+        .ok();
+        if let Ok(meta_id) = db.query_row(
+            "SELECT id FROM meta WHERE hash_sha512 = ?1",
+            [hash],
+            |r| r.get::<_, i64>(0),
+        ) {
+            db.execute(
+                "UPDATE files SET hash_sha512 = ?1, meta_id = ?2 WHERE id = ?3",
+                rusqlite::params![hash, meta_id, file_id],
+            )
+            .ok();
+        }
+    }
+
+    pub fn meta_set_dimensions(&self, file_id: i64, w: u32, h: u32, format: &str) {
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        if let Some(mid) = meta_id {
+            db.execute(
+                "UPDATE meta SET width = ?1, height = ?2, format = ?3 WHERE id = ?4",
+                rusqlite::params![w, h, format, mid],
+            )
+            .ok();
+        }
+    }
+
+    pub fn meta_set_pnginfo(&self, file_id: i64, pnginfo: &str) {
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        if let Some(mid) = meta_id {
+            db.execute(
+                "UPDATE meta SET pnginfo = ?1 WHERE id = ?2",
+                rusqlite::params![pnginfo, mid],
+            )
+            .ok();
+        }
+    }
+
+    pub fn next_missing_pnginfo(&self) -> Option<(i64, String)> {
+        self.conn()
+            .query_row(
+                "SELECT f.id, f.path FROM files f
+                 JOIN meta m ON f.meta_id = m.id
+                 WHERE m.pnginfo IS NULL
+                 AND f.id NOT IN (SELECT file_id FROM job_fails WHERE layer = 'ai_basic')
+                 AND LOWER(f.path) LIKE '%.png'
+                 ORDER BY RANDOM() LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    pub fn record_job_fail(&self, file_id: i64, layer: &str, error: &str) {
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO job_fails (file_id, layer, error) VALUES (?1, ?2, ?3)",
+                rusqlite::params![file_id, layer, error],
+            )
+            .ok();
+    }
+
+    pub fn collection_stats(&self) -> CollectionStats {
+        let db = self.conn();
+        CollectionStats {
+            total_files: db
+                .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+                .unwrap_or(0),
+            total_dirs: db
+                .query_row("SELECT COUNT(DISTINCT dir) FROM files", [], |r| r.get(0))
+                .unwrap_or(0),
+            hashed: db
+                .query_row(
+                    "SELECT COUNT(*) FROM files WHERE hash_sha512 IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            with_exif: db
+                .query_row(
+                    "SELECT COUNT(*) FROM files f JOIN meta m ON f.meta_id = m.id WHERE m.width IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            failed: db
+                .query_row("SELECT COUNT(*) FROM job_fails", [], |r| r.get(0))
+                .unwrap_or(0),
+        }
+    }
+
+    pub fn file_path_by_id(&self, file_id: i64) -> Option<String> {
+        self.conn()
+            .query_row("SELECT path FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
     }
 }
 
