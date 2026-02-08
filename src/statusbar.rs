@@ -746,4 +746,50 @@ mod tests {
         assert_eq!(collection_name(Some(10)), "Collection");
         assert_eq!(collection_name(Some(255)), "Collection");
     }
+
+    // ── error overlay constants ─────────────────────────────────────────
+
+    #[test]
+    fn error_col_is_reddish() {
+        // R channel should dominate (red error text)
+        assert!(ERROR_COL[0] > ERROR_COL[1]);
+        assert!(ERROR_COL[0] > ERROR_COL[2]);
+        assert_eq!(ERROR_COL[3], 1.0); // fully opaque
+    }
+
+    #[test]
+    fn error_dim_is_gray() {
+        // All RGB channels should be equal (gray)
+        assert!((ERROR_DIM[0] - ERROR_DIM[1]).abs() < 0.01);
+        assert!((ERROR_DIM[1] - ERROR_DIM[2]).abs() < 0.01);
+        assert_eq!(ERROR_DIM[3], 1.0);
+    }
+
+    #[test]
+    fn error_flags_include_essential_flags() {
+        // Error overlay must not be interactive or movable
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_TITLE_BAR));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_RESIZE));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_MOVE));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_SCROLLBAR));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_COLLAPSE));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_SAVED_SETTINGS));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_NAV));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_FOCUS_ON_APPEARING));
+        assert!(ERROR_FLAGS.contains(WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS));
+    }
+
+    #[test]
+    fn error_dim_darker_than_bright() {
+        // DIM should be darker than BRIGHT for visual hierarchy
+        assert!(ERROR_DIM[0] < BRIGHT[0]);
+    }
+
+    #[test]
+    fn error_col_matches_accent_family() {
+        // Error color should be in the red family like ACCENT
+        assert!(ERROR_COL[0] > 0.8); // strong red
+        assert!(ERROR_COL[1] < 0.5); // weak green
+        assert!(ERROR_COL[2] < 0.5); // weak blue
+    }
 }

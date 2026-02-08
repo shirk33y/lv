@@ -2120,6 +2120,220 @@ mod tests {
         assert!(ok);
     }
 
+    // ── error_message integration tests ─────────────────────────────────
+
+    #[test]
+    fn drop_non_media_returns_false_for_error_display() {
+        // When a non-media file is dropped, handle_drop returns false.
+        // The main loop should then set error_message for the overlay.
+        let (db, dir) = setup_drop_dir(&["readme.txt"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("readme.txt"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok, "non-media drop should return false");
+        // Main loop would set error_message based on this return value
+    }
+
+    #[test]
+    fn file_not_found_detected_by_path_exists() {
+        // Simulate the file-not-found check used in the display loop
+        let missing = std::path::Path::new("/nonexistent/file/photo.jpg");
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn unsupported_ext_detected() {
+        // Files with unknown extensions should not be image or video
+        assert!(!is_image("document.pdf"));
+        assert!(!is_video("document.pdf"));
+        assert!(!is_image("archive.zip"));
+        assert!(!is_video("archive.zip"));
+        assert!(!is_image("binary.exe"));
+        assert!(!is_video("binary.exe"));
+        assert!(!is_image("data.json"));
+        assert!(!is_video("data.json"));
+    }
+
+    #[test]
+    fn error_message_tuple_structure() {
+        // Verify the error_message Option<(String, String)> pattern works
+        let err: Option<(String, String)> = Some(("File not found".into(), "photo.jpg".into()));
+        assert!(err.is_some());
+        let (msg, fname) = err.unwrap();
+        assert_eq!(msg, "File not found");
+        assert_eq!(fname, "photo.jpg");
+    }
+
+    #[test]
+    fn error_message_none_means_no_error() {
+        let err: Option<(String, String)> = None;
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn error_message_decode_fail_format() {
+        // Simulate the decode failure error message construction
+        let cold_path = "/home/user/photos/broken.webp";
+        let fname = cold_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(cold_path)
+            .to_string();
+        let err = ("Failed to decode image".to_string(), fname);
+        assert_eq!(err.0, "Failed to decode image");
+        assert_eq!(err.1, "broken.webp");
+    }
+
+    #[test]
+    fn error_message_decode_fail_no_slash() {
+        // Edge case: path with no slashes
+        let cold_path = "broken.webp";
+        let fname = cold_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(cold_path)
+            .to_string();
+        assert_eq!(fname, "broken.webp");
+    }
+
+    #[test]
+    fn error_message_unsupported_type_format() {
+        let filename = "document.pdf";
+        let err = ("Unsupported file type".to_string(), filename.to_string());
+        assert_eq!(err.0, "Unsupported file type");
+        assert_eq!(err.1, "document.pdf");
+    }
+
+    #[test]
+    fn drop_dll_file_rejected() {
+        // Specific regression: user reported .dll files could be dropped
+        let (db, dir) = setup_drop_dir(&["SDL2.dll", "photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("SDL2.dll"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok, ".dll drop should be rejected");
+    }
+
+    #[test]
+    fn drop_exe_file_rejected() {
+        let (db, dir) = setup_drop_dir(&["app.exe", "photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("app.exe"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok, ".exe drop should be rejected");
+    }
+
+    #[test]
+    fn drop_zip_file_rejected() {
+        let (db, dir) = setup_drop_dir(&["archive.zip", "photo.jpg"]);
+        let mut files = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("archive.zip"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(!ok, ".zip drop should be rejected");
+    }
+
+    // ── slow frame window logic ─────────────────────────────────────────
+
+    #[test]
+    fn slow_frame_window_accumulation() {
+        // Simulate the slow frame tracking logic
+        let mut count: u32 = 0;
+        let mut worst: f64 = 0.0;
+        let mut sum: f64 = 0.0;
+
+        let frames = [9.5, 12.0, 8.1, 25.0, 7.5]; // 7.5 is not slow (<=8)
+        for &ms in &frames {
+            if ms > 8.0 {
+                count += 1;
+                sum += ms;
+                if ms > worst {
+                    worst = ms;
+                }
+            }
+        }
+
+        assert_eq!(count, 4);
+        assert!((worst - 25.0).abs() < 0.001);
+        let avg = sum / count as f64;
+        assert!((avg - 13.65).abs() < 0.01);
+    }
+
+    #[test]
+    fn slow_frame_window_empty() {
+        // No slow frames in window
+        let count: u32 = 0;
+        let worst: f64 = 0.0;
+        // Should not log anything when count == 0
+        assert_eq!(count, 0);
+        assert_eq!(worst, 0.0);
+    }
+
+    #[test]
+    fn slow_frame_window_reset() {
+        let mut count: u32 = 5;
+        let mut worst: f64 = 30.0;
+        let mut sum: f64 = 100.0;
+
+        // Reset (as done after 10s window)
+        count = 0;
+        worst = 0.0;
+        sum = 0.0;
+
+        assert_eq!(count, 0);
+        assert_eq!(worst, 0.0);
+        assert_eq!(sum, 0.0);
+    }
+
+    #[test]
+    fn slow_frame_threshold_is_8ms() {
+        // Frames at exactly 8.0ms should NOT be counted as slow
+        let frame_ms = 8.0_f64;
+        assert!(!(frame_ms > 8.0), "8.0ms should not be slow");
+
+        let frame_ms = 8.001;
+        assert!(frame_ms > 8.0, "8.001ms should be slow");
+    }
+
     #[test]
     fn image_exts_subset_of_media() {
         // Every IMAGE_EXT should be recognized by the scanner

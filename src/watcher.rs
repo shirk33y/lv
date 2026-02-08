@@ -377,4 +377,226 @@ mod tests {
         let result = dedup_nested(&dirs);
         assert_eq!(result.len(), 1);
     }
+
+    // ── WatchCmd / FsWatcher dynamic watch ──────────────────────────────
+
+    #[test]
+    fn watch_cmd_watch_variant() {
+        let cmd = WatchCmd::Watch("/tmp/test".into());
+        match cmd {
+            WatchCmd::Watch(dir) => assert_eq!(dir, "/tmp/test"),
+            _ => panic!("expected Watch variant"),
+        }
+    }
+
+    #[test]
+    fn watch_cmd_unwatch_variant() {
+        let cmd = WatchCmd::Unwatch("/tmp/test".into());
+        match cmd {
+            WatchCmd::Unwatch(dir) => assert_eq!(dir, "/tmp/test"),
+            _ => panic!("expected Unwatch variant"),
+        }
+    }
+
+    #[test]
+    fn fs_event_changed_variant() {
+        let ev = FsEvent::Changed("/photos".into());
+        match ev {
+            FsEvent::Changed(dir) => assert_eq!(dir, "/photos"),
+            _ => panic!("expected Changed"),
+        }
+    }
+
+    #[test]
+    fn fs_event_removed_variant() {
+        let ev = FsEvent::Removed("/photos".into());
+        match ev {
+            FsEvent::Removed(dir) => assert_eq!(dir, "/photos"),
+            _ => panic!("expected Removed"),
+        }
+    }
+
+    #[test]
+    fn fs_event_debug_impl() {
+        let ev = FsEvent::Changed("/a".into());
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("Changed"));
+        assert!(dbg.contains("/a"));
+    }
+
+    #[test]
+    fn dynamic_watch_detects_new_file() {
+        use crate::db::Db;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+
+        // Set up DB with the dir tracked
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.dir_track(&dir_str, false);
+
+        let (watcher, rx) = FsWatcher::start(db);
+
+        // Dynamically watch the directory
+        watcher.watch_dir(&dir_str);
+
+        // Give watcher thread time to register the watch
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Create a media file
+        std::fs::write(dir.path().join("new_photo.jpg"), b"fake").unwrap();
+
+        // Wait for the event (up to 2s)
+        let mut got_event = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                match ev {
+                    FsEvent::Changed(d) if d == dir_str => {
+                        got_event = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(got_event, "should receive Changed event for new media file");
+        drop(watcher);
+    }
+
+    #[test]
+    fn dynamic_watch_ignores_non_media() {
+        use crate::db::Db;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.dir_track(&dir_str, false);
+
+        let (watcher, rx) = FsWatcher::start(db);
+        watcher.watch_dir(&dir_str);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Create a non-media file
+        std::fs::write(dir.path().join("readme.txt"), b"hello").unwrap();
+
+        // Should NOT receive an event for non-media
+        std::thread::sleep(Duration::from_millis(500));
+        let got = rx.try_recv().is_ok();
+        assert!(!got, "should not receive event for non-media file");
+        drop(watcher);
+    }
+
+    #[test]
+    fn dynamic_watch_detects_removal() {
+        use crate::db::Db;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+
+        // Pre-create a file so we can remove it
+        let file_path = dir.path().join("old.jpg");
+        std::fs::write(&file_path, b"fake").unwrap();
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.dir_track(&dir_str, false);
+        crate::scanner::discover(&db, dir.path());
+
+        let (watcher, rx) = FsWatcher::start(db);
+        watcher.watch_dir(&dir_str);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Remove the file
+        std::fs::remove_file(&file_path).unwrap();
+
+        // Wait for Removed event
+        let mut got_removed = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                match ev {
+                    FsEvent::Removed(_) => {
+                        got_removed = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(got_removed, "should receive Removed event");
+        drop(watcher);
+    }
+
+    #[test]
+    fn dynamic_unwatch_stops_events() {
+        use crate::db::Db;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.dir_track(&dir_str, false);
+
+        let (watcher, rx) = FsWatcher::start(db);
+        watcher.watch_dir(&dir_str);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Unwatch
+        watcher.unwatch_dir(&dir_str);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Create a media file — should NOT trigger event
+        std::fs::write(dir.path().join("after_unwatch.jpg"), b"fake").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let got = rx.try_recv().is_ok();
+        assert!(!got, "should not receive events after unwatch");
+        drop(watcher);
+    }
+
+    #[test]
+    fn watcher_stop_is_clean() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (mut watcher, _rx) = FsWatcher::start(db);
+        // Should not hang or panic
+        watcher.stop();
+    }
+
+    #[test]
+    fn watcher_drop_is_clean() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (watcher, _rx) = FsWatcher::start(db);
+        drop(watcher); // should not hang
+    }
+
+    #[test]
+    fn watch_dir_sends_command() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (watcher, _rx) = FsWatcher::start(db);
+        // Should not panic even with nonexistent dir
+        watcher.watch_dir("/nonexistent/path/12345");
+        watcher.unwatch_dir("/nonexistent/path/12345");
+        drop(watcher);
+    }
 }
