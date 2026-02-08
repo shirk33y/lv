@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! lv-imgui POC: full viewer with database, dual-path rendering, preloading.
 //!
 //! - Images: `image` crate decode → GL texture (feh-speed), LRU preload cache
@@ -1301,6 +1302,8 @@ fn main() {
 
     // ── Shutdown ──────────────────────────────────────────────────────
     job_engine.stop();
+    // Stop mpv playback first so the render thread isn't blocked waiting for frames
+    unsafe { mpv_stop_async(mpv_handle); }
     mpv_shared.quit.store(true, Ordering::Release);
     render_thread.join().ok();
 
@@ -1376,10 +1379,16 @@ fn schedule_preload(
     }
 }
 
+/// Strip Windows extended-length path prefix (`\\?\`) if present.
+fn strip_win_prefix(p: &str) -> &str {
+    p.strip_prefix(r"\\?\").unwrap_or(p)
+}
+
 fn update_title(window: &sdl2::video::Window, files: &[FileEntry], cursor: usize, dir: &str) {
     if let Some(file) = files.get(cursor) {
         let like = if file.liked { " ♥" } else { "" };
-        let dir_short = dir.rsplit('/').next().unwrap_or(dir);
+        let clean_dir = strip_win_prefix(dir);
+        let dir_short = clean_dir.rsplit(['/', '\\']).next().unwrap_or(clean_dir);
         let title = format!(
             "[{}/{}] {}{} — {} — lv",
             cursor + 1,
