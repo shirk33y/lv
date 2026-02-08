@@ -27,13 +27,11 @@ if [[ ${#cmds[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# ── Derive short labels ──────────────────────────────────────────────
+# ── Derive short labels (for log prefix) ─────────────────────────────
 labels=()
 for cmd in "${cmds[@]}"; do
-  # Use last word of first two tokens as label, e.g. "cargo test" → "test"
-  label=$(echo "$cmd" | awk '{print $NF}' | head -1)
-  # Strip leading dashes
-  label="${label#--}"
+  label=$(echo "$cmd" | awk '{print $2}')
+  [[ -z "$label" ]] && label=$(echo "$cmd" | awk '{print $1}')
   labels+=("$label")
 done
 
@@ -82,14 +80,29 @@ done
 
 # ── Report ───────────────────────────────────────────────────────────
 echo
+DIM="\033[2m"
 # Failed first
 for i in "${!cmds[@]}"; do
   [[ "${results[$i]}" == "ok" ]] && continue
-  echo -e "  ${RED}✘${RST} ${labels[$i]}  (${cmds[$i]})"
+  cmd="${cmds[$i]}"
+  if [[ "$cmd" == *" -- "* ]]; then
+    main="${cmd%% -- *}"
+    args="${cmd#* -- }"
+    echo -e "  ${RED}✘${RST} ${main} ${DIM}-- ${args}${RST}"
+  else
+    echo -e "  ${RED}✘${RST} ${cmd}"
+  fi
 done
 for i in "${!cmds[@]}"; do
   [[ "${results[$i]}" != "ok" ]] && continue
-  echo -e "  ${GRN}✓${RST} ${labels[$i]}"
+  cmd="${cmds[$i]}"
+  if [[ "$cmd" == *" -- "* ]]; then
+    main="${cmd%% -- *}"
+    args="${cmd#* -- }"
+    echo -e "  ${GRN}✓${RST} ${main} ${DIM}-- ${args}${RST}"
+  else
+    echo -e "  ${GRN}✓${RST} ${cmd}"
+  fi
 done
 
 echo
