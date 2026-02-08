@@ -354,19 +354,52 @@ fn main() {
     // ── Background job engine ────────────────────────────────────────────
     let mut job_engine = jobs::JobEngine::start(lv_db.clone());
 
-    // Load initial directory
-    let initial_dir = if let Some(p) = args.paths.first() {
-        p.to_string_lossy().to_string()
+    // Load initial file list
+    let mut collection_mode: Option<u8> = None;
+    let (mut files, mut current_dir, cursor_init) = if let Some(p) = args.paths.first() {
+        let path = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        if path.is_file() {
+            // External file open → track parent non-recursively, mark temporary
+            let parent = path.parent().unwrap_or(&path);
+            let parent_str = parent.to_string_lossy();
+            lv_db.dir_track(&parent_str, false);
+            let count = scanner::discover(&lv_db, parent);
+            eprintln!(
+                "external open: {} ({} files in {})",
+                path.display(),
+                count,
+                parent_str
+            );
+            // Mark all files in this dir as temporary
+            for f in &lv_db.files_by_dir(&parent_str) {
+                lv_db.set_temporary(f.id, true);
+            }
+            // Switch to collection 1
+            collection_mode = Some(1);
+            let all = lv_db.files_by_collection(1);
+            let idx = all
+                .iter()
+                .position(|f| f.path == path.to_string_lossy().as_ref())
+                .unwrap_or(0);
+            (all, parent_str.to_string(), idx)
+        } else if path.is_dir() {
+            let dir_str = path.to_string_lossy().to_string();
+            let f = lv_db.files_by_dir(&dir_str);
+            (f, dir_str, 0)
+        } else {
+            let dir = p.to_string_lossy().to_string();
+            let f = lv_db.files_by_dir(&dir);
+            (f, dir, 0)
+        }
     } else {
-        lv_db.first_dir().unwrap_or_default()
+        let dir = lv_db.first_dir().unwrap_or_default();
+        let f = lv_db.files_by_dir(&dir);
+        (f, dir, 0)
     };
-
-    let mut files = lv_db.files_by_dir(&initial_dir);
     if files.is_empty() {
-        eprintln!("No files in dir: {}", initial_dir);
+        eprintln!("No files in dir: {}", current_dir);
         std::process::exit(1);
     }
-    let mut current_dir = initial_dir;
     eprintln!("dir: {} ({} files)", current_dir, files.len());
 
     // ── SDL2 + OpenGL ───────────────────────────────────────────────────
@@ -483,7 +516,7 @@ fn main() {
     let _mpv_gl_ctx = mpv_gl_ctx;
 
     // ── State ───────────────────────────────────────────────────────
-    let mut cursor: usize = 0;
+    let mut cursor: usize = cursor_init;
     let mut using_mpv = false;
     #[cfg(debug_assertions)]
     let mut timings: Vec<TimingEntry> = Vec::new();
@@ -503,8 +536,6 @@ fn main() {
     let mut last_mouse_move = Instant::now();
     let mut cursor_visible = true;
     let start_time = Instant::now();
-    let mut collection_mode: Option<u8> = None; // None = dir-based, Some(n) = collection view
-
     // Debounce video loading: defer mpv loadfile until user stops navigating
     const VIDEO_DEBOUNCE_MS: u128 = 150;
     let mut pending_video: Option<(String, Instant)> = None;
