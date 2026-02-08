@@ -191,6 +191,25 @@ impl Db {
             .ok();
     }
 
+    /// Return all watched directories as (path, recursive).
+    pub fn watched_dirs(&self) -> Vec<(String, bool)> {
+        let db = self.conn();
+        let mut stmt = db
+            .prepare("SELECT path, recursive FROM directories WHERE tracked = 1 AND watched = 1 ORDER BY path")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i32>(1)? != 0)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Remove files from DB whose path starts with `dir` (+ optional recursion).
+    pub fn remove_file_by_path(&self, path: &str) {
+        self.conn()
+            .execute("DELETE FROM files WHERE path = ?1", [path])
+            .ok();
+    }
+
     pub fn dir_unwatch(&self, path: &str) {
         self.conn()
             .execute("UPDATE directories SET watched = 0 WHERE path = ?1", [path])

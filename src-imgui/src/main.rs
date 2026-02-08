@@ -15,6 +15,7 @@ mod preload;
 mod quad;
 mod scanner;
 mod statusbar;
+mod watcher;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
@@ -354,6 +355,9 @@ fn main() {
     // ── Background job engine ────────────────────────────────────────────
     let mut job_engine = jobs::JobEngine::start(lv_db.clone());
 
+    // ── Filesystem watcher ──────────────────────────────────────────────
+    let (_fs_watcher, fs_rx) = watcher::FsWatcher::start(lv_db.clone());
+
     // Load initial file list
     let mut collection_mode: Option<u8> = None;
     let (mut files, mut current_dir, cursor_init) = if let Some(p) = args.paths.first() {
@@ -564,6 +568,31 @@ fn main() {
         _last_frame_start = _frame_t0;
 
         tex_cache.pump_uploads();
+
+        // ── Drain filesystem watcher events ─────────────────────────────
+        while let Ok(ev) = fs_rx.try_recv() {
+            match ev {
+                watcher::FsEvent::Changed(dir) | watcher::FsEvent::Removed(dir) => {
+                    if let Some(c) = collection_mode {
+                        let new_files = lv_db.files_by_collection(c);
+                        let cur_id = files.get(cursor).map(|f| f.id);
+                        files = new_files;
+                        cursor = cur_id
+                            .and_then(|id| files.iter().position(|f| f.id == id))
+                            .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+                    } else if dir == current_dir {
+                        // In dir mode, refresh if the changed dir is the current one
+                        let new_files = lv_db.files_by_dir(&current_dir);
+                        let cur_id = files.get(cursor).map(|f| f.id);
+                        files = new_files;
+                        cursor = cur_id
+                            .and_then(|id| files.iter().position(|f| f.id == id))
+                            .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+                    }
+                    needs_display = true;
+                }
+            }
+        }
 
         let _t_pump = _frame_t0.elapsed();
         let _t1 = Instant::now();
