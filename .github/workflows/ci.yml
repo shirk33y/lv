@@ -139,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lv-windows-x86_64-installer
-          path: build-installer/lv-setup.exe
+          path: build-installer/lv-setup-*.exe
 
       - name: Upload binary (Windows)
         if: matrix.os == 'windows'

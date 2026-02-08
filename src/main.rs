@@ -683,23 +683,46 @@ fn main() {
         // ── Drain filesystem watcher events ─────────────────────────────
         while let Ok(ev) = fs_rx.try_recv() {
             match ev {
-                watcher::FsEvent::Changed(dir) | watcher::FsEvent::Removed(dir) => {
+                watcher::FsEvent::Changed(ref dir) | watcher::FsEvent::Removed(ref dir) => {
+                    let ev_kind = match &ev {
+                        watcher::FsEvent::Changed(_) => "Changed",
+                        watcher::FsEvent::Removed(_) => "Removed",
+                    };
+                    eprintln!(
+                        "main: FsEvent::{} dir={} current_dir={} collection={:?}",
+                        ev_kind, dir, current_dir, collection_mode
+                    );
                     let old_id = files.get(cursor).map(|f| f.id);
+                    let old_len = files.len();
                     if let Some(c) = collection_mode {
                         let new_files = lv_db.files_by_collection(c);
                         files = new_files;
                         cursor = old_id
                             .and_then(|id| files.iter().position(|f| f.id == id))
                             .unwrap_or(cursor.min(files.len().saturating_sub(1)));
-                    } else if dir == current_dir {
+                    } else if dir == &current_dir {
                         // In dir mode, refresh if the changed dir is the current one
                         let new_files = lv_db.files_by_dir(&current_dir);
                         files = new_files;
                         cursor = old_id
                             .and_then(|id| files.iter().position(|f| f.id == id))
                             .unwrap_or(cursor.min(files.len().saturating_sub(1)));
+                    } else {
+                        eprintln!(
+                            "main:   SKIP — event dir != current_dir ({} != {})",
+                            dir, current_dir
+                        );
                     }
                     let new_id = files.get(cursor).map(|f| f.id);
+                    let new_len = files.len();
+                    eprintln!(
+                        "main:   files {} → {}, cursor id {:?} → {:?}, needs_display={}",
+                        old_len,
+                        new_len,
+                        old_id,
+                        new_id,
+                        new_id != old_id
+                    );
                     // Only re-display if the current file changed (e.g. it was
                     // the one removed). Otherwise we'd re-run the existence
                     // check on the new cursor target and potentially show
@@ -1125,6 +1148,13 @@ fn main() {
 
                 // Check if file still exists on disk
                 if !std::path::Path::new(path).exists() {
+                    eprintln!(
+                        "main: FILE NOT FOUND path={} cursor={}/{} current_dir={}",
+                        path,
+                        cursor,
+                        files.len(),
+                        current_dir
+                    );
                     error_message = Some(("File not found".into(), file.filename.clone()));
                     update_title(&window, &files, cursor, &current_dir);
                     lv_db.record_view(file.id);

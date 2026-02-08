@@ -205,6 +205,11 @@ fn run_watcher(
 
 pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
     let is_remove = matches!(event.kind, EventKind::Remove(_));
+    eprintln!(
+        "watcher: event {:?} paths={}",
+        event.kind,
+        event.paths.len()
+    );
 
     for path in &event.paths {
         // Normalize: strip Windows \\?\ prefix early so all paths match the DB.
@@ -215,16 +220,23 @@ pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::E
 
         // Skip directories (we only care about files)
         if path.is_dir() {
+            eprintln!("watcher:   skip dir {}", path_str);
             continue;
         }
         // For removes the file no longer exists on disk, so is_file() is false.
         // Use string-level extension check for all filtering.
         if !is_remove && path.is_file() && !has_media_ext(&path_str) {
+            eprintln!("watcher:   skip non-media {}", path_str);
             continue;
         }
         if is_remove && !has_media_ext(&path_str) {
+            eprintln!("watcher:   skip non-media remove {}", path_str);
             continue;
         }
+        eprintln!(
+            "watcher:   processing {} (is_remove={})",
+            path_str, is_remove
+        );
 
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
@@ -274,8 +286,10 @@ pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::E
                 if db.file_lookup(&path_str).is_some() {
                     db.remove_file_by_path(&path_str);
                     let dir = str_parent(&path_str).to_string();
-                    eprintln!("watcher: removed {}", path_str);
+                    eprintln!("watcher: removed {} (dir={})", path_str, dir);
                     tx.send(FsEvent::Removed(dir)).ok();
+                } else {
+                    eprintln!("watcher: remove miss — not in DB: {}", path_str);
                 }
             }
             _ => {}
