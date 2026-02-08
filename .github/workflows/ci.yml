@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, master]
 
+# Cache keys for apt packages (bump suffix to invalidate)
+env:
+  APT_CACHE_VER: v1
+  APT_DEPS_TEST: libsdl2-dev libmpv-dev
+  APT_DEPS_XWIN: llvm clang libsdl2-dev libmpv-dev nsis
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,10 +26,21 @@ jobs:
           workspaces: src-imgui -> target
           cache-all-crates: "true"
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-test-${{ env.APT_CACHE_VER }}
+
       - name: Install system dependencies
         run: |
+          if [ -d ~/apt-cache/archives ]; then
+            sudo cp ~/apt-cache/archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+          sudo apt-get install -y ${{ env.APT_DEPS_TEST }}
+          mkdir -p ~/apt-cache/archives
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/archives/ 2>/dev/null || true
 
       - name: Cargo test
         working-directory: src-imgui
@@ -74,11 +91,23 @@ jobs:
           cache-all-crates: "true"
 
       # ── Linux build ──────────────────────────────────────────────────
+      - name: Cache apt packages (Linux)
+        if: matrix.os == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-linux-${{ env.APT_CACHE_VER }}
+
       - name: Install system dependencies (Linux)
         if: matrix.os == 'linux'
         run: |
+          if [ -d ~/apt-cache/archives ]; then
+            sudo cp ~/apt-cache/archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+          sudo apt-get install -y ${{ env.APT_DEPS_TEST }}
+          mkdir -p ~/apt-cache/archives
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/archives/ 2>/dev/null || true
 
       - name: Build (Linux)
         if: matrix.os == 'linux'
@@ -105,12 +134,20 @@ jobs:
           path: src-imgui/target/release/lv-imgui
 
       # ── Windows cross-compile ────────────────────────────────────────
-      - name: Install cross-compile tools (Windows via xwin)
+      - name: Cache apt packages (Windows)
         if: matrix.os == 'windows'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
-          cargo install cargo-xwin --locked
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-xwin-${{ env.APT_CACHE_VER }}
+
+      - name: Cache cargo-xwin binary
+        if: matrix.os == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-xwin-${{ runner.os }}-
 
       - name: Cache xwin MSVC CRT/SDK
         if: matrix.os == 'windows'
@@ -118,6 +155,18 @@ jobs:
         with:
           path: ~/.cache/cargo-xwin
           key: xwin-msvc-sdk
+
+      - name: Install cross-compile tools (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          if [ -d ~/apt-cache/archives ]; then
+            sudo cp ~/apt-cache/archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.APT_DEPS_XWIN }}
+          mkdir -p ~/apt-cache/archives
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/archives/ 2>/dev/null || true
+          which cargo-xwin || cargo install cargo-xwin --locked
 
       - name: Build (Windows)
         if: matrix.os == 'windows'
