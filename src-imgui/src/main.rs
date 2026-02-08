@@ -990,7 +990,7 @@ fn main() {
             needs_display = false;
 
             if let Some(file) = files.get(cursor) {
-                let t0 = Instant::now();
+                let _t0 = Instant::now();
                 let path = &file.path;
 
                 if is_image(path) {
@@ -1027,7 +1027,7 @@ fn main() {
 
                     #[cfg(debug_assertions)]
                     {
-                        let total = t0.elapsed().as_secs_f64() * 1000.0;
+                        let total = _t0.elapsed().as_secs_f64() * 1000.0;
                         eprintln!(
                             "[{:>4}/{}] {:<14} {:>7.2}ms  {}",
                             cursor + 1,
@@ -1090,12 +1090,12 @@ fn main() {
         if let Some((ref vpath, ref stamp)) = pending_video {
             if stamp.elapsed().as_millis() >= VIDEO_DEBOUNCE_MS {
                 let vpath = vpath.clone();
-                let t0 = Instant::now();
+                let _t0 = Instant::now();
                 unsafe {
                     mpv_loadfile_async(mpv_handle, &vpath);
                 }
-                let total = t0.elapsed().as_secs_f64() * 1000.0;
-                let fname = vpath.rsplit('/').next().unwrap_or(&vpath);
+                let _total = _t0.elapsed().as_secs_f64() * 1000.0;
+                let _fname = vpath.rsplit('/').next().unwrap_or(&vpath);
                 #[cfg(debug_assertions)]
                 {
                     eprintln!(
@@ -1103,13 +1103,13 @@ fn main() {
                         cursor + 1,
                         files.len(),
                         "mpv",
-                        total,
-                        fname,
+                        _total,
+                        _fname,
                     );
                     timings.push(TimingEntry {
-                        filename: fname.to_string(),
+                        filename: _fname.to_string(),
                         method: "mpv",
-                        total_ms: total,
+                        total_ms: _total,
                         decode_ms: None,
                         upload_ms: None,
                     });
