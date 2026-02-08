@@ -14,6 +14,41 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::db::Db;
 
+/// Extract the parent directory from a path string, handling both `/` and `\` separators.
+/// Needed because `std::path::Path::parent()` doesn't understand `\` on Linux.
+fn str_parent(p: &str) -> &str {
+    let last_fwd = p.rfind('/');
+    let last_back = p.rfind('\\');
+    let last_sep = match (last_fwd, last_back) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    match last_sep {
+        Some(i) => &p[..i],
+        None => "",
+    }
+}
+
+/// Check if a path string has a media extension, handling both `/` and `\` separators.
+/// Unlike `is_media()` which uses `Path::extension()` (platform-dependent), this works
+/// cross-platform by parsing the extension from the string directly.
+fn has_media_ext(p: &str) -> bool {
+    let last_sep = p
+        .rfind('/')
+        .or_else(|| p.rfind('\\'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let filename = &p[last_sep..];
+    if let Some(dot) = filename.rfind('.') {
+        let ext = &filename[dot + 1..];
+        MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+    } else {
+        false
+    }
+}
+
 /// Events sent from the watcher thread to the main loop.
 #[derive(Debug)]
 pub enum FsEvent {
@@ -92,13 +127,6 @@ const MEDIA_EXTENSIONS: &[&str] = &[
     "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
 ];
 
-fn is_media(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| MEDIA_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
 fn run_watcher(
     db: Db,
     tx: mpsc::Sender<FsEvent>,
@@ -175,24 +203,28 @@ fn run_watcher(
     eprintln!("watcher: stopped");
 }
 
-fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
+pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
     let is_remove = matches!(event.kind, EventKind::Remove(_));
 
     for path in &event.paths {
+        // Normalize: strip Windows \\?\ prefix early so all paths match the DB.
+        // Use string-level helpers (str_parent, has_media_ext) because
+        // std::path::Path on Linux doesn't parse Windows `\` as separators.
+        let raw_str = path.to_string_lossy().to_string();
+        let path_str = crate::clean_path(&raw_str);
+
         // Skip directories (we only care about files)
         if path.is_dir() {
             continue;
         }
         // For removes the file no longer exists on disk, so is_file() is false.
-        // Filter by extension instead.
-        if !is_remove && path.is_file() && !is_media(path) {
+        // Use string-level extension check for all filtering.
+        if !is_remove && path.is_file() && !has_media_ext(&path_str) {
             continue;
         }
-        if is_remove && !is_media(path) {
+        if is_remove && !has_media_ext(&path_str) {
             continue;
         }
-
-        let path_str = path.to_string_lossy().to_string();
 
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
@@ -201,22 +233,19 @@ fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
                     Ok(p) => p,
                     Err(_) => path.clone(),
                 };
-                let dir = abs
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_string_lossy()
-                    .to_string();
+                let abs_str = crate::clean_path(&abs.to_string_lossy());
+
+                if !has_media_ext(&abs_str) {
+                    continue;
+                }
+
+                let dir = str_parent(&abs_str).to_string();
                 let filename = abs
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
 
-                if !is_media(&abs) {
-                    continue;
-                }
-
-                let abs_str = abs.to_string_lossy().to_string();
                 let meta = std::fs::metadata(&abs).ok();
                 let size = meta.as_ref().map(|m| m.len() as i64);
                 let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| {
@@ -241,23 +270,12 @@ fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::Event) {
             }
             EventKind::Remove(_) => {
                 // File no longer exists so we can't canonicalize.
-                // Try both raw and clean_path forms to match the DB.
-                let clean = crate::clean_path(&path_str);
-                let found = db.file_lookup(&clean).or_else(|| db.file_lookup(&path_str));
-                if found.is_some() {
-                    let matched = if db.file_lookup(&clean).is_some() {
-                        &clean
-                    } else {
-                        &path_str
-                    };
-                    db.remove_file_by_path(matched);
-                    let dir = path
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .to_string_lossy()
-                        .to_string();
-                    eprintln!("watcher: removed {}", matched);
-                    tx.send(FsEvent::Removed(crate::clean_path(&dir))).ok();
+                // path_str is already clean_path'd above.
+                if db.file_lookup(&path_str).is_some() {
+                    db.remove_file_by_path(&path_str);
+                    let dir = str_parent(&path_str).to_string();
+                    eprintln!("watcher: removed {}", path_str);
+                    tx.send(FsEvent::Removed(dir)).ok();
                 }
             }
             _ => {}
@@ -292,29 +310,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_media_recognizes_images() {
-        assert!(is_media(Path::new("/a/photo.jpg")));
-        assert!(is_media(Path::new("/a/photo.PNG")));
-        assert!(is_media(Path::new("/a/photo.webp")));
+    fn has_media_ext_recognizes_images() {
+        assert!(has_media_ext("/a/photo.jpg"));
+        assert!(has_media_ext("/a/photo.PNG"));
+        assert!(has_media_ext("/a/photo.webp"));
     }
 
     #[test]
-    fn is_media_recognizes_videos() {
-        assert!(is_media(Path::new("/a/clip.mp4")));
-        assert!(is_media(Path::new("/a/clip.MKV")));
+    fn has_media_ext_recognizes_videos() {
+        assert!(has_media_ext("/a/clip.mp4"));
+        assert!(has_media_ext("/a/clip.MKV"));
     }
 
     #[test]
-    fn is_media_rejects_non_media() {
-        assert!(!is_media(Path::new("/a/readme.txt")));
-        assert!(!is_media(Path::new("/a/script.rs")));
-        assert!(!is_media(Path::new("/a/.gitignore")));
+    fn has_media_ext_rejects_non_media() {
+        assert!(!has_media_ext("/a/readme.txt"));
+        assert!(!has_media_ext("/a/script.rs"));
+        assert!(!has_media_ext("/a/.gitignore"));
     }
 
     #[test]
-    fn is_media_no_extension() {
-        assert!(!is_media(Path::new("/a/noext")));
-        assert!(!is_media(Path::new("/a/")));
+    fn has_media_ext_no_extension() {
+        assert!(!has_media_ext("/a/noext"));
+        assert!(!has_media_ext("/a/"));
+    }
+
+    #[test]
+    fn has_media_ext_windows_backslash() {
+        assert!(has_media_ext(r"C:\Users\test\photo.jpg"));
+        assert!(has_media_ext(r"C:\Users\test\clip.mp4"));
+        assert!(!has_media_ext(r"C:\Users\test\readme.txt"));
+    }
+
+    #[test]
+    fn has_media_ext_win_prefixed() {
+        assert!(has_media_ext(r"\\?\C:\Users\test\photo.jpg"));
+        assert!(!has_media_ext(r"\\?\C:\Users\test\readme.txt"));
+    }
+
+    // ── str_parent ──────────────────────────────────────────────────────
+
+    #[test]
+    fn str_parent_unix() {
+        assert_eq!(str_parent("/a/b/c.jpg"), "/a/b");
+        assert_eq!(str_parent("/photo.jpg"), "");
+    }
+
+    #[test]
+    fn str_parent_windows() {
+        assert_eq!(str_parent(r"C:\Users\test\photo.jpg"), r"C:\Users\test");
+        assert_eq!(str_parent(r"C:\photo.jpg"), "C:");
+    }
+
+    #[test]
+    fn str_parent_no_separator() {
+        assert_eq!(str_parent("photo.jpg"), "");
+    }
+
+    #[test]
+    fn str_parent_mixed_separators() {
+        // Picks whichever separator type appears last
+        assert_eq!(
+            str_parent(r"/mnt/c\Users\test\photo.jpg"),
+            r"/mnt/c\Users\test"
+        );
+        assert_eq!(str_parent(r"C:\Users/test/photo.jpg"), r"C:\Users/test");
     }
 
     // ── dedup_nested ────────────────────────────────────────────────────
@@ -611,5 +671,191 @@ mod tests {
         watcher.watch_dir("/nonexistent/path/12345");
         watcher.unwatch_dir("/nonexistent/path/12345");
         drop(watcher);
+    }
+
+    // ── handle_event unit tests ─────────────────────────────────────────
+
+    /// Helper: build a notify::Event with given kind and paths.
+    fn make_event(kind: EventKind, paths: Vec<std::path::PathBuf>) -> notify::Event {
+        notify::Event {
+            kind,
+            paths,
+            attrs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn handle_event_remove_with_win_prefix_mismatch() {
+        // Simulate Windows: DB stores "C:\Users\test\photo.jpg" (clean_path),
+        // but notify sends "\\?\C:\Users\test\photo.jpg" (prefixed).
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let clean = r"C:\Users\test\photo.jpg";
+        let dir = r"C:\Users\test";
+        db.dir_track(dir, false);
+        db.file_insert(clean, dir, "photo.jpg", Some(100), None);
+        assert!(db.file_lookup(clean).is_some());
+
+        let (tx, rx) = mpsc::channel();
+
+        // Notify gives the \\?\ prefixed path
+        let prefixed = format!(r"\\?\{}", clean);
+        let event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![std::path::PathBuf::from(&prefixed)],
+        );
+        handle_event(&db, &tx, event);
+
+        // File should be removed from DB
+        assert!(
+            db.file_lookup(clean).is_none(),
+            "file should be removed from DB despite \\\\?\\ prefix mismatch"
+        );
+        // Should have sent a Removed event
+        let ev = rx.try_recv().expect("should receive FsEvent::Removed");
+        match ev {
+            FsEvent::Removed(d) => assert_eq!(d, dir),
+            _ => panic!("expected Removed, got {:?}", ev),
+        }
+    }
+
+    #[test]
+    fn handle_event_remove_without_prefix() {
+        // Remove where path matches DB exactly (no prefix mismatch)
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        let file_path = dir.path().join("photo.jpg");
+        let path_str = file_path.to_string_lossy().to_string();
+
+        db.dir_track(&dir_str, false);
+        db.file_insert(&path_str, &dir_str, "photo.jpg", Some(100), None);
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(
+            db.file_lookup(&path_str).is_none(),
+            "file should be removed from DB"
+        );
+        let ev = rx.try_recv().expect("should receive FsEvent::Removed");
+        match ev {
+            FsEvent::Removed(_) => {}
+            _ => panic!("expected Removed"),
+        }
+    }
+
+    #[test]
+    fn handle_event_remove_nonexistent_file_no_event() {
+        // Remove for a file not in DB should not send an event
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![std::path::PathBuf::from("/nonexistent/photo.jpg")],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "should not send event for unknown file"
+        );
+    }
+
+    #[test]
+    fn handle_event_remove_non_media_ignored() {
+        // Remove for a non-media file should be ignored
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Remove(notify::event::RemoveKind::File),
+            vec![std::path::PathBuf::from("/some/dir/readme.txt")],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "should not send event for non-media remove"
+        );
+    }
+
+    #[test]
+    fn handle_event_create_adds_to_db() {
+        // Create event for a real media file should add it to DB
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("new.jpg");
+        std::fs::write(&file_path, b"fake image data").unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        // File should now be in DB
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        assert!(
+            db.file_lookup(&canonical_str).is_some(),
+            "created file should be in DB"
+        );
+        let ev = rx.try_recv().expect("should receive FsEvent::Changed");
+        match ev {
+            FsEvent::Changed(_) => {}
+            _ => panic!("expected Changed"),
+        }
+    }
+
+    #[test]
+    fn handle_event_create_non_media_ignored() {
+        // Create event for non-media file should be ignored
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("readme.txt");
+        std::fs::write(&file_path, b"hello").unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![file_path],
+        );
+        handle_event(&db, &tx, event);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "should not send event for non-media create"
+        );
     }
 }
