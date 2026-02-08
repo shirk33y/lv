@@ -210,16 +210,29 @@ impl Db {
             .collect()
     }
 
-    /// Remove a single file from DB by exact path.
+    /// Remove a single file from DB by exact path (cascades to history/job_fails).
     pub fn remove_file_by_path(&self, path: &str) {
-        self.conn()
-            .execute("DELETE FROM files WHERE path = ?1", [path])
-            .ok();
+        let db = self.conn();
+        // Look up the id first so we can clean FK references
+        if let Ok(file_id) = db.query_row("SELECT id FROM files WHERE path = ?1", [path], |r| {
+            r.get::<_, i64>(0)
+        }) {
+            db.execute("DELETE FROM history WHERE file_id = ?1", [file_id])
+                .ok();
+            db.execute("DELETE FROM job_fails WHERE file_id = ?1", [file_id])
+                .ok();
+            db.execute("DELETE FROM files WHERE id = ?1", [file_id])
+                .ok();
+        }
     }
 
-    /// Remove a single file from DB by id.
+    /// Remove a single file from DB by id (cascades to history/job_fails).
     pub fn remove_file_by_id(&self, file_id: i64) {
         let db = self.conn();
+        db.execute("DELETE FROM history WHERE file_id = ?1", [file_id])
+            .ok();
+        db.execute("DELETE FROM job_fails WHERE file_id = ?1", [file_id])
+            .ok();
         match db.execute("DELETE FROM files WHERE id = ?1", [file_id]) {
             Ok(n) => {
                 if n == 0 {
