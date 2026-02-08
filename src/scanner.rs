@@ -5,10 +5,7 @@ use walkdir::WalkDir;
 
 use crate::db::Db;
 
-/// Strip Windows extended-length path prefix (`\\?\`) if present.
-fn clean_path(s: &str) -> String {
-    s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
-}
+use crate::clean_path;
 
 const MEDIA_EXTENSIONS: &[&str] = &[
     // images
@@ -268,6 +265,62 @@ mod tests {
     #[test]
     fn empty_ext_rejected() {
         assert!(!is_media_ext(""));
+    }
+
+    // ── Regression: paths stored in DB must never have \\?\ prefix ──────
+
+    #[test]
+    fn discover_no_win_prefix_in_db_paths() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+
+        discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 1);
+        // No file path or dir should contain the Windows extended-length prefix
+        for f in &files {
+            assert!(
+                !f.path.starts_with(r"\\?\"),
+                "path has \\\\?\\ prefix: {}",
+                f.path
+            );
+            assert!(
+                !f.dir.starts_with(r"\\?\"),
+                "dir has \\\\?\\ prefix: {}",
+                f.dir
+            );
+        }
+    }
+
+    #[test]
+    fn rescan_no_win_prefix_in_db_paths() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.png"), b"img").unwrap();
+
+        let (updated, _pruned) = rescan(&db, dir.path());
+        assert_eq!(updated, 1);
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        for f in &db.files_by_dir(&dir_str) {
+            assert!(
+                !f.path.starts_with(r"\\?\"),
+                "path has \\\\?\\ prefix: {}",
+                f.path
+            );
+            assert!(
+                !f.dir.starts_with(r"\\?\"),
+                "dir has \\\\?\\ prefix: {}",
+                f.dir
+            );
+        }
     }
 
     // ── rescan ───────────────────────────────────────────────────────────

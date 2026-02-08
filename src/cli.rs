@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::clean_path;
 use crate::db::Db;
 use crate::scanner;
 
@@ -13,37 +14,42 @@ pub fn track(db: &Db, path: &Path) {
             return;
         }
     };
-    db.dir_track(&abs.to_string_lossy(), true);
-    println!("Scanning {}...", abs.display());
+    let abs_str = clean_path(&abs.to_string_lossy());
+    db.dir_track(&abs_str, true);
+    println!("Scanning {}...", abs_str);
     let count = scanner::discover(db, &abs);
-    println!("Tracked {} ({} media files)", abs.display(), count);
+    println!("Tracked {} ({} media files)", abs_str, count);
 }
 
 pub fn untrack(db: &Db, path: &Path) {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    db.dir_untrack(&abs.to_string_lossy());
-    println!("Untracked {}", abs.display());
+    let abs_str = clean_path(&abs.to_string_lossy());
+    db.dir_untrack(&abs_str);
+    println!("Untracked {}", abs_str);
 }
 
 pub fn watch(db: &Db, path: &Path) {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    db.dir_watch(&abs.to_string_lossy());
-    println!("Watching {}", abs.display());
+    let abs_str = clean_path(&abs.to_string_lossy());
+    db.dir_watch(&abs_str);
+    println!("Watching {}", abs_str);
 }
 
 pub fn unwatch(db: &Db, path: &Path) {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    db.dir_unwatch(&abs.to_string_lossy());
-    println!("Unwatched {}", abs.display());
+    let abs_str = clean_path(&abs.to_string_lossy());
+    db.dir_unwatch(&abs_str);
+    println!("Unwatched {}", abs_str);
 }
 
 pub fn scan(db: &Db, path: Option<&Path>) {
     let dirs: Vec<(String, bool)> = if let Some(p) = path {
         vec![(
-            p.canonicalize()
-                .unwrap_or_else(|_| p.to_path_buf())
-                .to_string_lossy()
-                .into(),
+            clean_path(
+                &p.canonicalize()
+                    .unwrap_or_else(|_| p.to_path_buf())
+                    .to_string_lossy(),
+            ),
             true,
         )]
     } else {

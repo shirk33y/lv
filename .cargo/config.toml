@@ -1,2 +1,10 @@
-# cargo ci → runs scripts/ci.sh (test + clippy + fmt in parallel)
-# Cargo aliases can't chain commands, so we use `make ci` or `bash scripts/ci.sh`
+# Cargo aliases can only invoke cargo subcommands, not shell scripts.
+# Use scripts/*.sh directly:
+#   scripts/ci.sh                  — test + clippy + fmt (parallel)
+#   scripts/dev-linux.sh [args]    — debug build + run (Linux)
+#   scripts/dev-windows.sh [args]  — debug build + run (Windows/WSL)
+#   scripts/build-linux-intel.sh   — release x86_64 Linux
+#   scripts/build-linux-arm.sh     — release aarch64 Linux
+#   scripts/build-windows-intel.sh — release + NSIS installer Windows
+#   scripts/docker-build.sh [target|all]
+#   scripts/clean.sh

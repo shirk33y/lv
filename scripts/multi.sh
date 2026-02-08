@@ -40,12 +40,6 @@ log() {
   local label="$1" color="$2"
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    [[ "$line" == *"Compiling"* ]] && continue
-    [[ "$line" == *"Checking"* ]] && continue
-    [[ "$line" == *"Blocking"* ]] && continue
-    [[ "$line" == *"Finished"* ]] && continue
-    [[ "$line" == *"Running"* ]] && continue
-    [[ "$line" == *"Building"* ]] && continue
     printf "${color}%-7s${RST} │ %s\n" "$label" "$line"
   done
 }

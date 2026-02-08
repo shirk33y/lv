@@ -47,10 +47,31 @@ cargo run --release           # GUI
 cargo run -- track ~/Photos   # add directory
 cargo run -- scan             # rescan all tracked dirs
 cargo run -- worker           # headless hash/exif/ai worker
-make ci                       # test + clippy + fmt
+scripts/ci.sh                 # test + clippy + fmt
 ```
 
-## Runtime requirements
+## Scripts
 
-- **libmpv** — `libmpv.so.2` (Linux), `libmpv-2.dll` (Windows)
-- **SDL2** — `libSDL2.so` (Linux), `SDL2.dll` (Windows)
+| Script | Description |
+|--------|-------------|
+| `scripts/ci.sh` | test + clippy + fmt (parallel) |
+| `scripts/dev-linux.sh [args]` | debug build + run (Linux) |
+| `scripts/dev-windows.sh [args]` | debug build + run (Windows/WSL) |
+| `scripts/build-linux-intel.sh` | release build for x86_64 Linux |
+| `scripts/build-linux-arm.sh` | release build for aarch64 Linux |
+| `scripts/build-windows-intel.sh` | release build + NSIS installer for Windows |
+| `scripts/docker-build.sh [target]` | dockerized cross-builds → `dist/` |
+| `scripts/clean.sh` | remove build artifacts |
+
+```sh
+scripts/dev-linux.sh track ~/Photos
+scripts/docker-build.sh linux-intel   # or: all
+```
+
+## Dependencies (Debian/Ubuntu)
+```sh
+sudo apt install build-essential ca-certificates curl pkg-config \
+    libsdl2-dev libmpv-dev \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+    llvm clang nsis
+```

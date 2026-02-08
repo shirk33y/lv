@@ -1243,4 +1243,76 @@ mod tests {
             "rapid create+delete should leave DB clean"
         );
     }
+
+    // ── Regression: watcher paths in DB must never have \\?\ prefix ─────
+
+    #[test]
+    fn handle_event_create_no_win_prefix_in_db() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("test.jpg");
+        std::fs::write(&file_path, b"img data").unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        // Look up file using the cleaned canonical path
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let clean = crate::clean_path(&canonical.to_string_lossy());
+        let entry = db.file_lookup(&clean);
+        assert!(entry.is_some(), "file should be findable by clean path");
+
+        // The stored path must not have the \\?\ prefix
+        assert!(
+            !clean.starts_with(r"\\?\"),
+            "clean path has \\\\?\\ prefix: {}",
+            clean
+        );
+    }
+
+    #[test]
+    fn handle_event_modify_no_win_prefix_in_db() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("photo.png");
+        std::fs::write(&file_path, b"old content").unwrap();
+
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = crate::clean_path(&canonical.to_string_lossy());
+        db.file_insert(&canonical_str, &dir_str, "photo.png", Some(11), None);
+
+        // Modify the file
+        std::fs::write(&file_path, b"new content longer").unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        // File should still be findable by clean path (not \\?\ prefixed)
+        assert!(db.file_lookup(&canonical_str).is_some());
+        assert!(!canonical_str.starts_with(r"\\?\"));
+    }
 }

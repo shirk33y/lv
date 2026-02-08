@@ -5,6 +5,20 @@
 
 use imgui::{Condition, FontConfig, FontGlyphRanges, FontSource, WindowFlags};
 
+/// Action returned when a window-control button in the title bar is clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    None,
+    Close,
+    Minimize,
+    Maximize,
+}
+
+/// Height of the custom title bar (status bar at top).
+pub const BAR_HEIGHT: f32 = 24.0;
+/// Width reserved for the three window-control buttons on the right.
+pub const BUTTON_ZONE_W: f32 = 72.0;
+
 /// DejaVu Sans Mono bundled in the binary — no system font dependency.
 pub const BUNDLED_FONT: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
 
@@ -118,24 +132,34 @@ fn middle_ellipsis(ui: &imgui::Ui, s: &str, max_w: f32) -> String {
     format!("{}{}{}", left, ellipsis, right)
 }
 
-/// Draw the status bar at the bottom of the screen.
-/// Layout: [left: dirname/filename ♥] [right: [1/45] > 1:30/5:00 | Vol: 100%]
-pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, display_h: f32) {
-    let bar_height = 24.0;
+/// Draw the status bar at the top of the screen (custom title bar).
+/// Layout: [left: dirname/filename ♥] [right: video info | [1/45] | — □ ✕]
+/// Returns a `WindowAction` if a window-control button was clicked.
+pub fn draw_status_bar(
+    ui: &imgui::Ui,
+    info: &StatusInfo,
+    display_w: f32,
+    _display_h: f32,
+) -> WindowAction {
     let pad = 8.0;
+    let mut action = WindowAction::None;
+
+    // Button dimensions
+    let btn_w = 24.0;
+    let btn_h = BAR_HEIGHT;
+    let buttons_start_x = display_w - btn_w * 3.0;
 
     if let Some(_win) = ui
         .window("##statusbar")
-        .position([0.0, display_h - bar_height], Condition::Always)
-        .size([display_w, bar_height], Condition::Always)
+        .position([0.0, 0.0], Condition::Always)
+        .size([display_w, BAR_HEIGHT], Condition::Always)
         .bg_alpha(0.78)
         .flags(STATUS_FLAGS)
         .begin()
     {
-        // Save initial Y so all elements stay on the same line
         let y = ui.cursor_pos()[1];
 
-        // Build right side: [T] [index/total] + video info
+        // Build right side (before buttons): [T] [index/total] + video info
         let turbo_prefix = if info.turbo { "[T] " } else { "" };
         let index_text = format!("{}[{}/{}]", turbo_prefix, info.index, info.total);
         let right_text = if info.is_video {
@@ -152,7 +176,7 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
             index_text.clone()
         };
         let right_w = ui.calc_text_size(&right_text)[0];
-        let right_x = display_w - pad - right_w;
+        let right_x = buttons_start_x - pad - right_w;
 
         // Available width for left path + heart
         let heart_w = if info.liked {
@@ -202,7 +226,7 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
             ui.text_colored(ACCENT, " ♥");
         }
 
-        // Draw right: video info + [index/total] (index always rightmost)
+        // Draw right: video info + [index/total]
         ui.set_cursor_pos([right_x, y]);
         if info.is_video {
             let icon = if info.paused { "||" } else { ">" };
@@ -220,7 +244,40 @@ pub fn draw_status_bar(ui: &imgui::Ui, info: &StatusInfo, display_w: f32, displa
         } else {
             ui.text_colored(DIM, &right_text);
         }
+
+        // ── Window control buttons (— □ ✕) ──────────────────────────
+        let style = ui.clone_style();
+        let _style_colors = ui.push_style_color(imgui::StyleColor::Button, [0.0, 0.0, 0.0, 0.0]);
+        let _style_hover =
+            ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.4, 0.4, 0.4, 0.5]);
+        let _style_active =
+            ui.push_style_color(imgui::StyleColor::ButtonActive, [0.5, 0.5, 0.5, 0.6]);
+        let _style_pad = ui.push_style_var(imgui::StyleVar::FramePadding([0.0, 0.0]));
+        let _style_rounding = ui.push_style_var(imgui::StyleVar::FrameRounding(0.0));
+        let _ = style; // keep style alive
+
+        // Minimize  —
+        ui.set_cursor_pos([buttons_start_x, 0.0]);
+        if ui.button_with_size("—", [btn_w, btn_h]) {
+            action = WindowAction::Minimize;
+        }
+        // Maximize  □
+        ui.set_cursor_pos([buttons_start_x + btn_w, 0.0]);
+        if ui.button_with_size("□", [btn_w, btn_h]) {
+            action = WindowAction::Maximize;
+        }
+        // Close  ✕ (red hover)
+        let _close_hover =
+            ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.8, 0.2, 0.2, 0.8]);
+        let _close_active =
+            ui.push_style_color(imgui::StyleColor::ButtonActive, [0.9, 0.1, 0.1, 0.9]);
+        ui.set_cursor_pos([buttons_start_x + btn_w * 2.0, 0.0]);
+        if ui.button_with_size("✕", [btn_w, btn_h]) {
+            action = WindowAction::Close;
+        }
     }
+
+    action
 }
 
 /// Draw a circular spinner in the center of the screen (shown while video loads).
@@ -337,13 +394,15 @@ pub fn draw_info_panel(
     scroll_req: Option<f32>,
 ) -> f32 {
     let panel_w = 320.0_f32.min(display_w * 0.35);
-    let bar_h = 24.0;
     let stats_h = 130.0;
+    // Sidebar anchored to bottom: starts below title bar, ends above stats
+    let panel_y = BAR_HEIGHT;
+    let panel_h = display_h - BAR_HEIGHT - stats_h;
 
     if let Some(_win) = ui
         .window("##infopanel")
-        .position([display_w - panel_w, 0.0], Condition::Always)
-        .size([panel_w, display_h - bar_h - stats_h], Condition::Always)
+        .position([display_w - panel_w, panel_y], Condition::Always)
+        .size([panel_w, panel_h], Condition::Always)
         .bg_alpha(0.88)
         .flags(INFO_FLAGS)
         .begin()
@@ -512,7 +571,6 @@ pub fn draw_stats_section(
     use std::sync::atomic::Ordering;
 
     let panel_w = 320.0_f32.min(display_w * 0.35);
-    let bar_h = 24.0;
     let panel_h = if collection_mode.is_some() {
         155.0
     } else {
@@ -527,10 +585,11 @@ pub fn draw_stats_section(
         .union(WindowFlags::NO_FOCUS_ON_APPEARING)
         .union(WindowFlags::NO_NAV);
 
+    // Stats anchored to very bottom-right
     if let Some(_win) = ui
         .window("##stats")
         .position(
-            [display_w - panel_w, display_h - bar_h - panel_h],
+            [display_w - panel_w, display_h - panel_h],
             Condition::Always,
         )
         .size([panel_w, panel_h], Condition::Always)

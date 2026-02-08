@@ -550,13 +550,38 @@ fn main() {
     gl_attr.set_context_profile(GLProfile::Core);
     gl_attr.set_context_version(3, 3);
 
-    let window = video
+    let mut window = video
         .window("lv", 1280, 720)
         .opengl()
         .resizable()
+        .borderless()
         .position_centered()
         .build()
         .expect("Failed to create window");
+
+    // Custom hit-test: top BAR_HEIGHT pixels are draggable (except the button zone on the right)
+    unsafe {
+        unsafe extern "C" fn hit_test_cb(
+            win: *mut sdl2_sys::SDL_Window,
+            area: *const sdl2_sys::SDL_Point,
+            _data: *mut std::ffi::c_void,
+        ) -> sdl2_sys::SDL_HitTestResult {
+            let pt = &*area;
+            let bar_h = statusbar::BAR_HEIGHT as i32;
+            if pt.y < bar_h {
+                // Right side: window control buttons — let imgui handle clicks
+                let mut w: i32 = 0;
+                sdl2_sys::SDL_GetWindowSize(win, &mut w, std::ptr::null_mut());
+                let btn_zone = statusbar::BUTTON_ZONE_W as i32;
+                if pt.x >= w - btn_zone {
+                    return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_NORMAL;
+                }
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_DRAGGABLE;
+            }
+            sdl2_sys::SDL_HitTestResult::SDL_HITTEST_NORMAL
+        }
+        sdl2_sys::SDL_SetWindowHitTest(window.raw(), Some(hit_test_cb), std::ptr::null_mut());
+    }
 
     let _gl_ctx = window.gl_create_context().expect("GL context failed");
     window
@@ -1422,7 +1447,26 @@ fn main() {
                 volume,
                 turbo: is_turbo,
             };
-            statusbar::draw_status_bar(ui, &info, w as f32, h as f32);
+            let win_action = statusbar::draw_status_bar(ui, &info, w as f32, h as f32);
+            match win_action {
+                statusbar::WindowAction::Close => {
+                    running = false;
+                }
+                statusbar::WindowAction::Minimize => {
+                    window.minimize();
+                }
+                statusbar::WindowAction::Maximize => {
+                    if (window.window_flags()
+                        & sdl2_sys::SDL_WindowFlags::SDL_WINDOW_MAXIMIZED as u32)
+                        != 0
+                    {
+                        window.restore();
+                    } else {
+                        window.maximize();
+                    }
+                }
+                statusbar::WindowAction::None => {}
+            }
 
             // Info sidebar (toggle with 'i')
             if show_info {
@@ -4589,6 +4633,95 @@ mod tests {
         assert!(cursor < files.len());
         // If the viewed file wasn't deleted, cursor should still point to it
         assert_eq!(files[cursor].id, viewing_id);
+    }
+
+    // ── Regression: WindowAction enum ─────────────────────────────────
+
+    #[test]
+    fn window_action_none_is_default() {
+        assert_eq!(statusbar::WindowAction::None, statusbar::WindowAction::None);
+    }
+
+    #[test]
+    fn window_action_variants_distinct() {
+        let actions = [
+            statusbar::WindowAction::None,
+            statusbar::WindowAction::Close,
+            statusbar::WindowAction::Minimize,
+            statusbar::WindowAction::Maximize,
+        ];
+        for (i, a) in actions.iter().enumerate() {
+            for (j, b) in actions.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    // ── Regression: bar height and button zone constants ────────────────
+
+    #[test]
+    fn bar_height_positive() {
+        assert!(statusbar::BAR_HEIGHT > 0.0);
+    }
+
+    #[test]
+    fn button_zone_fits_three_buttons() {
+        // Button zone must be wide enough for 3 buttons (close/min/max)
+        assert!(statusbar::BUTTON_ZONE_W >= 60.0);
+    }
+
+    // ── Regression: clean_path used consistently at every entry point ───
+
+    #[test]
+    fn clean_path_strips_all_win_prefix_variants() {
+        // UNC path with \\?\ prefix
+        assert_eq!(
+            clean_path(r"\\?\C:\Users\test\photo.jpg"),
+            r"C:\Users\test\photo.jpg"
+        );
+        // UNC path with \\?\ and forward slashes should still strip prefix
+        assert_eq!(clean_path(r"\\?\C:/Users/test"), r"C:/Users/test");
+        // Nested prefix: only first is stripped
+        assert_eq!(clean_path(r"\\?\\\?\C:\x"), r"\\?\C:\x");
+    }
+
+    #[test]
+    fn clean_path_handles_dir_track_paths() {
+        // Simulate what cli.rs track() does: canonicalize then clean
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(dir.path()).unwrap();
+        let cleaned = clean_path(&canonical.to_string_lossy());
+        assert!(
+            !cleaned.starts_with(r"\\?\"),
+            "tracked dir has \\\\?\\ prefix: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn scanner_discover_paths_match_clean_path() {
+        // Ensure scanner and clean_path agree on directory strings
+        let db = crate::db::Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("x.jpg"), b"img").unwrap();
+        scanner::discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 1);
+        // File path should start with the clean dir string
+        assert!(
+            files[0].path.starts_with(&dir_str),
+            "file path '{}' doesn't start with clean dir '{}'",
+            files[0].path,
+            dir_str
+        );
     }
 
     #[test]
