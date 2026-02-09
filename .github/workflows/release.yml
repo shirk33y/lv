@@ -215,7 +215,7 @@ jobs:
         run: python3 test/fixtures/generate.py
 
       - name: Run smoke test (Wine)
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/build-installer/lv.exe --wine --update-reference
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/lv.exe --wine --update-reference
 
       - name: Upload screenshots
         if: always()
