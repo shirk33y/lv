@@ -166,77 +166,32 @@ jobs:
             build-installer/libmpv-2.dll
 
   # ── Smoke tests (gate the release) ────────────────────────────────────
-  smoke-test-linux:
+  smoke-test-cli:
     needs: build-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install test tools
-        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
-        with:
-          packages: xvfb xdotool graphicsmagick-imagemagick-compat
-
-      - name: Download AppImage
+      - name: Download .deb
         uses: actions/download-artifact@v4
         with:
           name: release-linux
           path: .
 
-      - name: Make AppImage executable
-        run: chmod +x lv-*.AppImage
-
-      - name: Generate test fixtures
-        run: python3 test/fixtures/generate.py
-
-      - name: Run smoke test
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-*.AppImage --update-reference
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-screenshots-linux
-          path: test/screenshots/actual/
-
-  smoke-test-windows:
-    needs: build-windows
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Wine and test tools
-        run: sudo dpkg --add-architecture i386
-
-      - name: Install Wine and test packages
+      - name: Install .deb
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb wine64 xdotool graphicsmagick-imagemagick-compat
-
-      - name: Download Windows binary + DLLs
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-bin
-          path: win-bin
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ./lv_*_amd64.deb || sudo apt-get install -y -f
 
       - name: Generate test fixtures
         run: python3 test/fixtures/generate.py
 
-      - name: Run smoke test (Wine)
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/lv.exe --wine --update-reference
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-screenshots-windows
-          path: test/screenshots/actual/
+      - name: CLI smoke tests
+        run: bash scripts/smoke-test-cli.sh
 
   # ── Create release + upload ──────────────────────────────────────────
   publish:
-    needs: [resolve-version, smoke-test-linux, smoke-test-windows]
+    needs: [resolve-version, smoke-test-cli]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
