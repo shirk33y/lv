@@ -162,6 +162,14 @@ pub fn draw_status_bar(
         .flags(STATUS_FLAGS)
         .begin()
     {
+        // Double-click on title bar (outside button zone) → maximize/restore
+        if ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+            let mouse = ui.io().mouse_pos;
+            if mouse[1] >= 0.0 && mouse[1] < BAR_HEIGHT && mouse[0] < buttons_start_x {
+                action = WindowAction::Maximize;
+            }
+        }
+
         let y = ui.cursor_pos()[1];
 
         // Build right side (before buttons): [T] [index/total] + video info

@@ -718,6 +718,8 @@ fn main() {
     // ── Main loop ───────────────────────────────────────────────────────
     let mut event_pump = sdl.event_pump().expect("Failed to create event pump");
     let mut running = true;
+    let mut borderless_maximized = false;
+    let mut restore_rect: (i32, i32, i32, i32) = (0, 0, 1280, 720);
     let mut _last_frame_start = Instant::now();
 
     while running {
@@ -1408,22 +1410,39 @@ fn main() {
         }
 
         // Composite to default framebuffer
+        // Content area excludes the status bar at the top
+        let bar_h = statusbar::BAR_HEIGHT as u32;
+        let content_h = h.saturating_sub(bar_h);
         unsafe {
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+            // Clear the full window first (including bar area)
             gl::Viewport(0, 0, w as i32, h as i32);
             gl::ClearColor(0.05, 0.05, 0.05, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
+            // Set viewport to content area below the status bar
+            // GL origin is bottom-left, so y=0 is correct (bar is at top)
+            gl::Viewport(0, 0, w as i32, content_h as i32);
         }
         let mpv_display_tex = mpv_shared.display_tex.load(Ordering::Acquire);
         if using_mpv && video_has_frame && mpv_display_tex != 0 {
             // Blit texture produced by mpv render thread (sub-1ms)
-            quad_renderer.draw_video(mpv_display_tex, w, h, w, h);
+            quad_renderer.draw_video(mpv_display_tex, w, h, w, content_h);
         } else if !using_mpv {
             if let Some(file) = files.get(cursor) {
                 if let Some(tex_info) = tex_cache.get(&file.path) {
-                    quad_renderer.draw(tex_info.gl_id, tex_info.width, tex_info.height, w, h);
+                    quad_renderer.draw(
+                        tex_info.gl_id,
+                        tex_info.width,
+                        tex_info.height,
+                        w,
+                        content_h,
+                    );
                 }
             }
+        }
+        // Restore full viewport for imgui overlay
+        unsafe {
+            gl::Viewport(0, 0, w as i32, h as i32);
         }
 
         let _t_render = _t6.elapsed();
@@ -1456,13 +1475,38 @@ fn main() {
                     window.minimize();
                 }
                 statusbar::WindowAction::Maximize => {
-                    if (window.window_flags()
-                        & sdl2_sys::SDL_WindowFlags::SDL_WINDOW_MAXIMIZED as u32)
-                        != 0
-                    {
-                        window.restore();
+                    if borderless_maximized {
+                        // Restore to saved geometry
+                        window.set_position(
+                            sdl2::video::WindowPos::Positioned(restore_rect.0),
+                            sdl2::video::WindowPos::Positioned(restore_rect.1),
+                        );
+                        window
+                            .set_size(restore_rect.2 as u32, restore_rect.3 as u32)
+                            .ok();
+                        borderless_maximized = false;
                     } else {
-                        window.maximize();
+                        // Save current geometry for restore
+                        let pos = window.position();
+                        let size = window.size();
+                        restore_rect = (pos.0, pos.1, size.0 as i32, size.1 as i32);
+                        // Maximize to usable display area (respects taskbar)
+                        let display_idx = window.display_index().unwrap_or(0);
+                        let mut bounds = sdl2_sys::SDL_Rect {
+                            x: 0,
+                            y: 0,
+                            w: 0,
+                            h: 0,
+                        };
+                        unsafe {
+                            sdl2_sys::SDL_GetDisplayUsableBounds(display_idx, &mut bounds);
+                        }
+                        window.set_position(
+                            sdl2::video::WindowPos::Positioned(bounds.x),
+                            sdl2::video::WindowPos::Positioned(bounds.y),
+                        );
+                        window.set_size(bounds.w as u32, bounds.h as u32).ok();
+                        borderless_maximized = true;
                     }
                 }
                 statusbar::WindowAction::None => {}
