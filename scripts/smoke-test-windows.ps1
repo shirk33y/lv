@@ -65,7 +65,12 @@ Write-Host "DB:       $DbPath"
 Write-Host "Fixtures: $FixturesDir"
 Write-Host ""
 
-& $Binary track $FixturesDir 2>$null
+$trackStderr = Join-Path $TmpDir "track-stderr.log"
+$trackProc = Start-Process -FilePath $Binary -ArgumentList "track", $FixturesDir `
+    -RedirectStandardError $trackStderr -PassThru -Wait -WindowStyle Hidden
+if (Test-Path $trackStderr) {
+    Get-Content $trackStderr | ForEach-Object { Write-Host "  [track] $_" }
+}
 $imgCount = (Get-ChildItem $FixturesDir -Filter "*.png").Count
 Write-Host "Tracked $imgCount test images"
 
@@ -188,15 +193,23 @@ Write-Host "Launched lv (PID $($proc.Id))"
 # ── Wait for window ─────────────────────────────────────────────────────
 $hWnd = $null
 for ($i = 0; $i -lt 100; $i++) {
+    if ($proc.HasExited) {
+        Write-Host "App exited early (code $($proc.ExitCode)) after $([math]::Round(($proc.ExitTime - $proc.StartTime).TotalMilliseconds))ms"
+        Write-Host "--- stderr ---"
+        if (Test-Path $stderrLog) { Get-Content $stderrLog | ForEach-Object { Write-Host "  $_" } }
+        Write-Error "FATAL: app exited before creating a window"
+        exit 1
+    }
     $hWnd = Find-LvWindow -ProcessId $proc.Id
     if ($hWnd -ne $null) { break }
     Start-Sleep -Milliseconds 100
 }
 
 if ($hWnd -eq $null) {
+    Write-Host "--- stderr ---"
+    if (Test-Path $stderrLog) { Get-Content $stderrLog | ForEach-Object { Write-Host "  $_" } }
     Write-Error "FATAL: lv window did not appear within 10s"
     $proc.Kill()
-    if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
     exit 1
 }
 Write-Host "  Window found: $hWnd"

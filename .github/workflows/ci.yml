@@ -87,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lv-linux-${{ matrix.arch }}-appimage
-          path: lv-${{ matrix.arch }}.AppImage
+          path: lv-*-${{ matrix.arch }}.AppImage
 
       - name: Upload binary (Linux)
         if: matrix.os == 'linux'
