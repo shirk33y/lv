@@ -76,11 +76,16 @@ jobs:
       - name: Package AppImage
         run: LV_VERSION=$VERSION bash pkg/appimage.sh x86_64
 
+      - name: Package .deb
+        run: LV_VERSION=$VERSION bash pkg/deb.sh amd64
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-linux
-          path: lv-*-x86_64.AppImage
+          path: |
+            lv-*-x86_64.AppImage
+            lv_*_amd64.deb
 
   # ── Windows cross-compile + package ──────────────────────────────────
   build-windows:
