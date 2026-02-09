@@ -166,7 +166,7 @@ jobs:
       - name: Install test tools
         uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
         with:
-          packages: xvfb xdotool imagemagick
+          packages: xvfb xdotool graphicsmagick-imagemagick-compat
 
       - name: Download AppImage
         uses: actions/download-artifact@v4
@@ -204,7 +204,7 @@ jobs:
       - name: Install Wine and test packages
         uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
         with:
-          packages: xvfb wine64 xdotool imagemagick
+          packages: xvfb wine64 xdotool graphicsmagick-imagemagick-compat
           apt_update: true
 
       - name: Download Windows binary + DLLs
