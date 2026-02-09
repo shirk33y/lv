@@ -1,5 +1,5 @@
 [package]
-name = "lv-imgui"
+name = "lv"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 debug = true
 
 [[bin]]
-name = "lv-imgui"
+name = "lv"
 path = "src/main.rs"
 
 [dependencies]

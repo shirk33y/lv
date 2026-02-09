@@ -29,7 +29,7 @@ ACTUAL="$(pwd)/test/screenshots/actual"
 REFERENCE="$(pwd)/test/screenshots/reference"
 TMPDIR_SMOKE="$(mktemp -d /tmp/lv-smoke.XXXXXX)"
 DB_PATH="$TMPDIR_SMOKE/lv-smoke.db"
-BINARY="${CUSTOM_BINARY:-$(pwd)/target-linux-intel/debug/lv-imgui}"
+BINARY="${CUSTOM_BINARY:-$(pwd)/target-linux-intel/debug/lv}"
 
 # Wine wrapper: prepend wine to all binary invocations
 if $USE_WINE; then
@@ -53,7 +53,7 @@ if [[ ! -f "$BINARY" ]]; then
         echo "FATAL: binary not found: $BINARY" >&2
         exit 1
     fi
-    echo "Building lv-imgui (debug)..."
+    echo "Building lv (debug)..."
     CARGO_TARGET_DIR=target-linux-intel cargo build 2>&1 | tail -3
 fi
 

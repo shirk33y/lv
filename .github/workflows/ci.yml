@@ -94,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lv-linux-${{ matrix.arch }}
-          path: target/release/lv-imgui
+          path: target/release/lv
 
       # ── Windows cross-compile ────────────────────────────────────────
       - name: Cache cargo-xwin binary
@@ -127,7 +127,7 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           mkdir -p build-installer
-          cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/
+          cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
           cp pkg/win64/SDL2.dll build-installer/
           cp pkg/win64/libmpv-2.dll build-installer/
           cp pkg/installer.nsi build-installer/
@@ -147,7 +147,7 @@ jobs:
         with:
           name: lv-windows-x86_64
           path: |
-            build-installer/lv-imgui.exe
+            build-installer/lv.exe
             build-installer/SDL2.dll
             build-installer/libmpv-2.dll
 
@@ -214,7 +214,7 @@ jobs:
         run: python3 test/fixtures/generate.py
 
       - name: Run smoke test (Wine)
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/lv-imgui.exe --wine --update-reference
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/lv.exe --wine --update-reference
 
       - name: Upload screenshots
         if: always()

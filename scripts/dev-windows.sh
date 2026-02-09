@@ -14,7 +14,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     cp -u pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll \
         "$WIN_TARGET_PARENT/target-windows-intel/debug/"
     echo ":: launching …"
-    "$WIN_TARGET_PARENT/target-windows-intel/debug/lv-imgui.exe" "$@"
+    "$WIN_TARGET_PARENT/target-windows-intel/debug/lv.exe" "$@"
 else
     echo ":: building + running for Windows (native) …"
     cargo run --target-dir target-windows-intel -- "$@"

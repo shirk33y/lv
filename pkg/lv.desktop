@@ -2,7 +2,7 @@
 Type=Application
 Name=lv
 Comment=Media library viewer
-Exec=lv-imgui
+Exec=lv
 Icon=lv
 Categories=Graphics;Viewer;
 MimeType=image/jpeg;image/png;image/gif;image/webp;video/mp4;video/x-matroska;

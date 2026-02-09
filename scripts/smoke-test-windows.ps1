@@ -39,7 +39,7 @@ if ($installProc.ExitCode -ne 0) {
     exit 1
 }
 
-$Binary = Join-Path $InstallDir "lv-imgui.exe"
+$Binary = Join-Path $InstallDir "lv.exe"
 if (-not (Test-Path $Binary)) {
     Write-Error "Binary not found after install: $Binary"
     Get-ChildItem $InstallDir -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name)" }

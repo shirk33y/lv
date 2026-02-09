@@ -20,7 +20,7 @@ SetCompressor /SOLID lzma
 
 ; Skip welcome/license/directory pages — just install
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\lv-imgui.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\lv.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch lv"
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
@@ -30,7 +30,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Main binary
-  File "lv-imgui.exe"
+  File "lv.exe"
 
   ; Runtime DLLs
   File "SDL2.dll"
@@ -38,7 +38,7 @@ Section "Install"
 
   ; Create start menu shortcut
   CreateDirectory "$SMPROGRAMS\lv"
-  CreateShortCut "$SMPROGRAMS\lv\lv.lnk" "$INSTDIR\lv-imgui.exe"
+  CreateShortCut "$SMPROGRAMS\lv\lv.lnk" "$INSTDIR\lv.exe"
 
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -74,14 +74,14 @@ Section "Install"
   WriteRegStr HKCU "Software\Classes\.mp4\OpenWithProgids" "lv.video" ""
   WriteRegStr HKCU "Software\Classes\.mkv\OpenWithProgids" "lv.video" ""
   WriteRegStr HKCU "Software\Classes\lv.image\shell\open\command" "" \
-    "$\"$INSTDIR\lv-imgui.exe$\" $\"%1$\""
+    "$\"$INSTDIR\lv.exe$\" $\"%1$\""
   WriteRegStr HKCU "Software\Classes\lv.video\shell\open\command" "" \
-    "$\"$INSTDIR\lv-imgui.exe$\" $\"%1$\""
+    "$\"$INSTDIR\lv.exe$\" $\"%1$\""
 SectionEnd
 
 ; ── Uninstall ────────────────────────────────────────────────────────
 Section "Uninstall"
-  Delete "$INSTDIR\lv-imgui.exe"
+  Delete "$INSTDIR\lv.exe"
   Delete "$INSTDIR\SDL2.dll"
   Delete "$INSTDIR\libmpv-2.dll"
   Delete "$INSTDIR\uninstall.exe"

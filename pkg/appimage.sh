@@ -2,12 +2,12 @@
 # Build an AppImage from the release binary.
 # Usage: ./pkg/appimage.sh [arch] [binary]
 #   arch    — x86_64 (default: uname -m)
-#   binary  — path to lv-imgui binary (default: target/release/lv-imgui)
+#   binary  — path to lv binary (default: target/release/lv)
 # Set LV_VERSION to override the version tag.
 set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
-BINARY="${2:-target/release/lv-imgui}"
+BINARY="${2:-target/release/lv}"
 LV_VERSION="${LV_VERSION:-$(git -C "$(dirname "$0")/.." describe --always --dirty 2>/dev/null || echo dev)}"
 APPDIR="AppDir"
 OUTPUT="lv-${LV_VERSION}-${ARCH}.AppImage"
@@ -26,8 +26,8 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 
 # Binary
-cp "$BINARY" "$APPDIR/usr/bin/lv-imgui"
-chmod +x "$APPDIR/usr/bin/lv-imgui"
+cp "$BINARY" "$APPDIR/usr/bin/lv"
+chmod +x "$APPDIR/usr/bin/lv"
 
 # Desktop + icon
 cp pkg/lv.desktop "$APPDIR/usr/share/applications/lv.desktop"
@@ -69,7 +69,7 @@ if [ -n "${LIB_SEARCH_PATH:-}" ]; then
   }
 
   # Seed with binary's NEEDED
-  { readelf -d "$APPDIR/usr/bin/lv-imgui" 2>/dev/null | grep NEEDED | sed 's/.*\[//;s/\]//' || true; } > "$DEPLIST"
+  { readelf -d "$APPDIR/usr/bin/lv" 2>/dev/null | grep NEEDED | sed 's/.*\[//;s/\]//' || true; } > "$DEPLIST"
 
   while [ -s "$DEPLIST" ]; do
     NEXT=$(mktemp)
@@ -91,7 +91,7 @@ if [ -n "${LIB_SEARCH_PATH:-}" ]; then
   done
 else
   # Native mode: use ldd — collect all deps in one pass
-  { ldd "$APPDIR/usr/bin/lv-imgui" 2>/dev/null | grep "=> /" | awk '{print $3}' || true; } > "$DEPLIST"
+  { ldd "$APPDIR/usr/bin/lv" 2>/dev/null | grep "=> /" | awk '{print $3}' || true; } > "$DEPLIST"
 
   while [ -s "$DEPLIST" ]; do
     NEXT=$(mktemp)
@@ -115,7 +115,7 @@ cat > "$APPDIR/AppRun" << 'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
 export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
-exec "$HERE/usr/bin/lv-imgui" "$@"
+exec "$HERE/usr/bin/lv" "$@"
 APPRUN
 chmod +x "$APPDIR/AppRun"
 

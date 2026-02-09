@@ -15,10 +15,10 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /src
 COPY . .
 RUN cargo build --release --target x86_64-unknown-linux-gnu \
-    && strip target/x86_64-unknown-linux-gnu/release/lv-imgui
+    && strip target/x86_64-unknown-linux-gnu/release/lv
 
 # Build AppImage (bundles libSDL2, libmpv, and transitive deps)
-RUN ./pkg/appimage.sh x86_64 target/x86_64-unknown-linux-gnu/release/lv-imgui
+RUN ./pkg/appimage.sh x86_64 target/x86_64-unknown-linux-gnu/release/lv
 
 FROM scratch
 COPY --from=build /src/lv-*-x86_64.AppImage /lv-linux-x86_64.AppImage

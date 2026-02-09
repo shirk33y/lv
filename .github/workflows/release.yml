@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.2.0)"
-        required: true
+        description: "Override version (default: read from Cargo.toml)"
+        required: false
 
 permissions:
   contents: write
@@ -15,6 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$V"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,7 +46,7 @@ jobs:
         run: cargo build --release
 
       - name: Package AppImage (Linux x86_64)
-        run: LV_VERSION=${{ inputs.version }} bash pkg/appimage.sh x86_64
+        run: LV_VERSION=${{ steps.ver.outputs.version }} bash pkg/appimage.sh x86_64
 
       # ── Windows cross-compile ────────────────────────────────────────
       - name: Cache cargo-xwin
@@ -60,32 +71,36 @@ jobs:
       - name: Package installer (Windows)
         run: |
           mkdir -p build-installer
-          cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/
+          cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
           cp pkg/win64/SDL2.dll build-installer/
           cp pkg/win64/libmpv-2.dll build-installer/
           cp pkg/installer.nsi build-installer/
           cd build-installer
-          makensis -DLV_VERSION=${{ inputs.version }} installer.nsi
+          makensis -DLV_VERSION=${{ steps.ver.outputs.version }} installer.nsi
 
       # ── Create release + upload assets ──────────────────────────────
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ inputs.version }}" --title "v${{ inputs.version }}" --generate-notes
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: gh release create "v$VERSION" --title "v$VERSION" --generate-notes
 
       - name: Upload AppImage
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "v${{ inputs.version }}" lv-*-x86_64.AppImage
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: gh release upload "v$VERSION" lv-*-x86_64.AppImage
 
       - name: Upload Windows installer
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "v${{ inputs.version }}" build-installer/lv-setup-*.exe
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: gh release upload "v$VERSION" build-installer/lv-setup-*.exe
 
       - name: Upload Windows binary
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          cp build-installer/lv-imgui.exe "lv-${{ inputs.version }}-x86_64-windows.exe"
-          gh release upload "v${{ inputs.version }}" "lv-${{ inputs.version }}-x86_64-windows.exe"
+          cp build-installer/lv.exe "lv-${VERSION}-x86_64-windows.exe"
+          gh release upload "v$VERSION" "lv-${VERSION}-x86_64-windows.exe"

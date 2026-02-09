@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// lv-imgui: full viewer with database, dual-path rendering, preloading.
+// lv: full viewer with database, dual-path rendering, preloading.
 // Images: image crate decode → GL texture, LRU preload cache
 // Videos: mpv render API
 // Usage: cargo run --release [-- <dir_override>]

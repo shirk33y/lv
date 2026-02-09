@@ -26,7 +26,7 @@ RUN cargo xwin build --release --target x86_64-pc-windows-msvc
 # Build NSIS installer with version
 RUN LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
     && mkdir -p /out \
-    && cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe /out/ \
+    && cp target/x86_64-pc-windows-msvc/release/lv.exe /out/ \
     && cp pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll pkg/installer.nsi /out/ \
     && cd /out && makensis -DLV_VERSION="$LV_VERSION" installer.nsi \
     && mv lv-setup-*.exe lv-setup-windows-x86_64.exe

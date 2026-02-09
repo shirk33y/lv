@@ -26,5 +26,5 @@
 - [ ] Preload strategy: prioritize direction of travel
 
 ## Packaging
-- [ ] AppImage bundle (lv-imgui + libmpv.so + ffmpeg)
-- [ ] Windows .exe bundle (lv-imgui.exe + mpv-2.dll)
+- [ ] AppImage bundle (lv + libmpv.so + ffmpeg)
+- [ ] Windows .exe bundle (lv.exe + mpv-2.dll)
