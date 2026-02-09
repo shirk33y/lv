@@ -66,9 +66,9 @@ jobs:
           shared-key: "release-build"
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+        with:
+          packages: libsdl2-dev libmpv-dev
 
       - name: Build
         run: cargo build --release
@@ -103,9 +103,9 @@ jobs:
           cache-all-crates: "true"
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
+        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+        with:
+          packages: llvm clang libsdl2-dev libmpv-dev nsis
 
       - name: Cache cargo-xwin
         uses: actions/cache@v4
@@ -164,9 +164,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xdotool imagemagick
+        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+        with:
+          packages: xdotool imagemagick
 
       - name: Download AppImage
         uses: actions/download-artifact@v4
@@ -197,10 +197,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Wine and test tools
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y wine64 xdotool imagemagick
+        run: sudo dpkg --add-architecture i386
+
+      - name: Install Wine and test packages
+        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+        with:
+          packages: wine64 xdotool imagemagick
+          apt_update: true
 
       - name: Download Windows binary + DLLs
         uses: actions/download-artifact@v4

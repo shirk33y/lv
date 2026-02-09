@@ -20,9 +20,9 @@ jobs:
           cache-all-crates: "true"
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+        with:
+          packages: libsdl2-dev libmpv-dev
 
       - name: Cargo test
         run: cargo test
