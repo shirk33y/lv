@@ -132,6 +132,7 @@ jobs:
           cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
           cp pkg/win64/SDL2.dll build-installer/
           cp pkg/win64/libmpv-2.dll build-installer/
+          cp pkg/win64/lv.ico build-installer/
           cp pkg/installer.nsi build-installer/
           cd build-installer
           makensis -DLV_VERSION=$VERSION installer.nsi

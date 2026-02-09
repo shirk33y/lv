@@ -15,7 +15,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 ; ── UI ───────────────────────────────────────────────────────────────
-; !define MUI_ICON "lv.ico"
+!define MUI_ICON "lv.ico"
 !define MUI_ABORTWARNING
 
 ; Skip welcome/license/directory pages — just install
