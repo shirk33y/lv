@@ -2462,6 +2462,11 @@ mod tests {
         let mut worst: f64 = 30.0;
         let mut sum: f64 = 100.0;
 
+        // Confirm non-zero before reset
+        assert_eq!(count, 5);
+        assert_eq!(worst, 30.0);
+        assert_eq!(sum, 100.0);
+
         // Reset (as done after 10s window)
         count = 0;
         worst = 0.0;
@@ -4435,7 +4440,7 @@ mod tests {
 
         // Switch back to dir mode
         files = db.files_by_dir(&dir_a_str);
-        cursor = 0;
+        let _cursor = 0;
         assert_eq!(files.len(), 3);
     }
 
