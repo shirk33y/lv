@@ -20,9 +20,7 @@ jobs:
           cache-all-crates: "true"
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+        run: sudo apt-get install -y libsdl2-dev libmpv-dev
 
       - name: Cargo test
         run: cargo test
@@ -70,9 +68,7 @@ jobs:
       # ── Linux build ──────────────────────────────────────────────────
       - name: Install system dependencies (Linux)
         if: matrix.os == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev
+        run: sudo apt-get install -y libsdl2-dev libmpv-dev
 
       - name: Build (Linux)
         if: matrix.os == 'linux'
@@ -115,7 +111,6 @@ jobs:
       - name: Install cross-compile tools (Windows)
         if: matrix.os == 'windows'
         run: |
-          sudo apt-get update
           sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
           which cargo-xwin || cargo install cargo-xwin --locked
 
@@ -165,25 +160,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-2.0-0 libmpv2 xvfb xdotool imagemagick python3
+      - name: Install test tools
+        run: sudo apt-get install -y xdotool
 
-      - name: Download Linux binary
+      - name: Download AppImage
         uses: actions/download-artifact@v4
         with:
-          name: lv-linux-${{ matrix.arch }}
+          name: lv-linux-${{ matrix.arch }}-appimage
           path: .
 
-      - name: Make binary executable
-        run: chmod +x lv-imgui
+      - name: Make AppImage executable
+        run: chmod +x lv-*.AppImage
 
       - name: Generate test fixtures
         run: python3 test/fixtures/generate.py
 
       - name: Run smoke test
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-imgui --update-reference
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-*.AppImage --update-reference
 
       - name: Upload screenshots
         if: always()
