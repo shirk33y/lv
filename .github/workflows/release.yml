@@ -182,6 +182,8 @@ jobs:
 
       - name: Run smoke test
         run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-*.AppImage --update-reference
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Upload screenshots
         if: always()
