@@ -151,6 +151,47 @@ jobs:
             build-installer/SDL2.dll
             build-installer/libmpv-2.dll
 
+  smoke-test-linux:
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libmpv2 xvfb xdotool imagemagick python3
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: lv-linux-${{ matrix.arch }}
+          path: .
+
+      - name: Make binary executable
+        run: chmod +x lv-imgui
+
+      - name: Generate test fixtures
+        run: python3 test/fixtures/generate.py
+
+      - name: Run smoke test
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-imgui --update-reference
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-screenshots-linux-${{ matrix.arch }}
+          path: test/screenshots/actual/
+
   smoke-test-windows:
     needs: build
     runs-on: windows-latest

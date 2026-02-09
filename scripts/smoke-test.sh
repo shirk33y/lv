@@ -2,7 +2,7 @@
 # Smoke test: launch lv with test fixtures, take screenshots, quit.
 #
 # Requirements: xdotool, import (ImageMagick), a running X/Wayland session.
-# Usage: scripts/smoke-test.sh [--update-reference]
+# Usage: scripts/smoke-test.sh [--update-reference] [--binary PATH]
 #
 # Screenshots are saved to test/screenshots/actual/.
 # With --update-reference, they are also copied to test/screenshots/reference/.
@@ -12,7 +12,14 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 UPDATE_REF=false
-[[ "${1:-}" == "--update-reference" ]] && UPDATE_REF=true
+CUSTOM_BINARY=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --update-reference) UPDATE_REF=true; shift ;;
+        --binary) CUSTOM_BINARY="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
 
 # ── Paths ────────────────────────────────────────────────────────────────
 FIXTURES="$(pwd)/test/fixtures"
@@ -20,7 +27,7 @@ ACTUAL="$(pwd)/test/screenshots/actual"
 REFERENCE="$(pwd)/test/screenshots/reference"
 TMPDIR_SMOKE="$(mktemp -d /tmp/lv-smoke.XXXXXX)"
 DB_PATH="$TMPDIR_SMOKE/lv-smoke.db"
-BINARY="$(pwd)/target-linux-intel/debug/lv-imgui"
+BINARY="${CUSTOM_BINARY:-$(pwd)/target-linux-intel/debug/lv-imgui}"
 
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 
@@ -33,6 +40,10 @@ for cmd in xdotool import; do
 done
 
 if [[ ! -f "$BINARY" ]]; then
+    if [[ -n "$CUSTOM_BINARY" ]]; then
+        echo "FATAL: binary not found: $BINARY" >&2
+        exit 1
+    fi
     echo "Building lv-imgui (debug)..."
     CARGO_TARGET_DIR=target-linux-intel cargo build 2>&1 | tail -3
 fi
