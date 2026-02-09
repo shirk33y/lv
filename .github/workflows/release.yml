@@ -31,6 +31,10 @@ jobs:
           else
             V=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           fi
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            V="${V}-$(date -u +%Y%m%dT%H%M%S)-${SHORT_SHA}"
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Releasing v$V"
 
@@ -233,3 +237,18 @@ jobs:
 
       - name: Upload assets
         run: gh release upload "v$VERSION" artifacts/release-linux/* artifacts/release-windows/*
+
+      - name: Bump patch version
+        if: ${{ inputs.prerelease != true }}
+        run: |
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          sed -i "0,/^version = \".*\"/s//version = \"$NEXT\"/" Cargo.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "chore: bump version to $NEXT [skip ci]"
+          git push
