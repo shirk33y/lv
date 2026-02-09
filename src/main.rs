@@ -720,13 +720,8 @@ fn main() {
     let mut running = true;
     let mut borderless_maximized = false;
     let mut restore_rect: (i32, i32, i32, i32) = (0, 0, 1280, 720);
-    let mut _last_frame_start = Instant::now();
-
     while running {
         let _frame_t0 = Instant::now();
-        let _frame_delta = _frame_t0.duration_since(_last_frame_start);
-        _last_frame_start = _frame_t0;
-
         tex_cache.pump_uploads();
 
         // ── Drain filesystem watcher events ─────────────────────────────

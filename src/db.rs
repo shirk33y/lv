@@ -266,7 +266,6 @@ impl Db {
             .ok();
     }
 
-    #[allow(dead_code)]
     pub fn tracked_list(&self) -> Vec<(String, bool, bool)> {
         let db = self.conn();
         let mut stmt = db
@@ -301,7 +300,6 @@ impl Db {
     // ── Collections (tag-based) ──────────────────────────────────────────
 
     /// Toggle collection tag (c2-c8) on a file. Returns new state.
-    #[allow(dead_code)]
     pub fn toggle_collection(&self, file_id: i64, collection: u8) -> bool {
         let tag = collection_tag(collection);
         let db = self.conn();
@@ -385,7 +383,6 @@ impl Db {
     }
 
     /// Get files for a collection.
-    #[allow(dead_code)]
     /// Collection 0 = all non-temporary. 1 = temporary.
     /// 2-8 = tag c2-c8. 9 = tag like.
     pub fn files_by_collection(&self, collection: u8) -> Vec<FileEntry> {
@@ -434,7 +431,6 @@ impl Db {
     }
 
     /// Random file within a collection.
-    #[allow(dead_code)]
     pub fn random_in_collection(&self, collection: u8) -> Option<FileEntry> {
         let db = self.conn();
         match collection {
@@ -513,7 +509,6 @@ impl Db {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_temporary(&self, file_id: i64, temp: bool) {
         self.conn()
             .execute(
@@ -950,7 +945,6 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
     })
 }
 
-#[allow(dead_code)]
 fn collection_tag(c: u8) -> String {
     match c {
         9 => "like".into(),
