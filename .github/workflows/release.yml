@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  upload-assets:
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+
+      # ── Linux build ──────────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libmpv-dev llvm clang nsis
+
+      - name: Extract version
+        id: version
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Build (Linux)
+        run: cargo build --release
+
+      - name: Package AppImage (Linux x86_64)
+        run: LV_VERSION=${{ steps.version.outputs.version }} bash pkg/appimage.sh x86_64
+
+      # ── Windows cross-compile ────────────────────────────────────────
+      - name: Cache cargo-xwin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-${{ runner.os }}
+          restore-keys: cargo-xwin-
+
+      - name: Cache xwin MSVC CRT/SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: xwin-msvc-sdk
+
+      - name: Install cargo-xwin
+        run: which cargo-xwin || cargo install cargo-xwin --locked
+
+      - name: Build (Windows)
+        run: cargo xwin build --release --target x86_64-pc-windows-msvc
+
+      - name: Package installer (Windows)
+        run: |
+          mkdir -p build-installer
+          cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/
+          cp pkg/win64/SDL2.dll build-installer/
+          cp pkg/win64/libmpv-2.dll build-installer/
+          cp pkg/installer.nsi build-installer/
+          cd build-installer
+          makensis -DLV_VERSION=${{ steps.version.outputs.version }} installer.nsi
+
+      # ── Upload release assets ────────────────────────────────────────
+      - name: Upload AppImage to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ needs.release-please.outputs.tag_name }} lv-*-x86_64.AppImage
+
+      - name: Upload Windows installer to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ needs.release-please.outputs.tag_name }} build-installer/lv-setup-*.exe
+
+      - name: Upload Windows binary to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build-installer/lv-imgui.exe "lv-${{ steps.version.outputs.version }}-x86_64-windows.exe"
+          gh release upload ${{ needs.release-please.outputs.tag_name }} "lv-${{ steps.version.outputs.version }}-x86_64-windows.exe"
