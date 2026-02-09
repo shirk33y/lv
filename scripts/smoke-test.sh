@@ -13,10 +13,12 @@ cd "$(dirname "$0")/.."
 
 UPDATE_REF=false
 CUSTOM_BINARY=""
+USE_WINE=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --update-reference) UPDATE_REF=true; shift ;;
         --binary) CUSTOM_BINARY="$2"; shift 2 ;;
+        --wine) USE_WINE=true; shift ;;
         *) shift ;;
     esac
 done
@@ -28,6 +30,13 @@ REFERENCE="$(pwd)/test/screenshots/reference"
 TMPDIR_SMOKE="$(mktemp -d /tmp/lv-smoke.XXXXXX)"
 DB_PATH="$TMPDIR_SMOKE/lv-smoke.db"
 BINARY="${CUSTOM_BINARY:-$(pwd)/target-linux-intel/debug/lv-imgui}"
+
+# Wine wrapper: prepend wine to all binary invocations
+if $USE_WINE; then
+    run_bin() { wine "$BINARY" "$@"; }
+else
+    run_bin() { "$BINARY" "$@"; }
+fi
 
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 
@@ -93,11 +102,11 @@ echo ""
 
 # Track fixtures and launch GUI
 export LV_DB_PATH="$DB_PATH"
-"$BINARY" track "$FIXTURES" 2>/dev/null
+run_bin track "$FIXTURES" 2>/dev/null
 echo "Tracked $(ls "$FIXTURES"/*.png | wc -l) test images"
 
 # Launch app in background pointing at fixtures dir
-"$BINARY" "$FIXTURES" 2>"$TMPDIR_SMOKE/stderr.log" &
+run_bin "$FIXTURES" 2>"$TMPDIR_SMOKE/stderr.log" &
 APP_PID=$!
 echo "Launched lv (PID $APP_PID)"
 
