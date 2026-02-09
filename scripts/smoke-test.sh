@@ -108,11 +108,7 @@ echo ""
 
 # Track fixtures and launch GUI
 export LV_DB_PATH="$DB_PATH"
-echo "Binary: $BINARY"
-echo "Binary exists: $(test -f "$BINARY" && echo yes || echo no)"
-echo "Binary executable: $(test -x "$BINARY" && echo yes || echo no)"
-file "$BINARY" 2>/dev/null || true
-run_bin track "$FIXTURES"
+run_bin track "$FIXTURES" 2>/dev/null
 echo "Tracked $(ls "$FIXTURES"/*.png | wc -l) test images"
 
 # Launch app in background pointing at fixtures dir
