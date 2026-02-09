@@ -47,6 +47,13 @@ if (-not (Test-Path $Binary)) {
 }
 Write-Host "Installed OK: $Binary"
 
+# ── Mesa software OpenGL (for headless CI) ─────────────────────────────
+if ($env:MESA_DLLS -and (Test-Path $env:MESA_DLLS)) {
+    Write-Host "Copying Mesa software OpenGL DLLs..."
+    Copy-Item (Join-Path $env:MESA_DLLS "*.dll") $InstallDir -Force
+    Get-ChildItem $InstallDir -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+}
+
 # ── Generate test fixtures ───────────────────────────────────────────────
 if (-not (Test-Path (Join-Path $FixturesDir "red_800x600.png"))) {
     Write-Host "Generating test fixtures..."

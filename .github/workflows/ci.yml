@@ -204,10 +204,19 @@ jobs:
           name: lv-windows-x86_64-installer
           path: build-installer
 
+      - name: Download Mesa software OpenGL
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.4/mesa3d-25.3.4-release-msvc.7z" -OutFile mesa.7z
+          7z x mesa.7z -omesa-extract x64/opengl32.dll x64/libgallium_wgl.dll x64/libglapi.dll
+          New-Item -ItemType Directory -Force -Path mesa-dlls | Out-Null
+          Copy-Item mesa-extract/x64/*.dll mesa-dlls/ -Force
+
       - name: Generate test fixtures
         run: python test/fixtures/generate.py
 
       - name: Run smoke test
+        env:
+          MESA_DLLS: mesa-dlls
         run: pwsh scripts/smoke-test-windows.ps1 -UpdateReference
 
       - name: Upload screenshots
