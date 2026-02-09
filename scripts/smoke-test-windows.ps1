@@ -1,14 +1,14 @@
 # Smoke test for lv on Windows.
-# Launches the app with test fixtures, takes screenshots, quits.
+# Installs via NSIS installer, launches the app with test fixtures,
+# takes screenshots, quits, then uninstalls.
 #
-# Usage: pwsh scripts/smoke-test-windows.ps1 [-UpdateReference]
+# Usage: pwsh scripts/smoke-test-windows.ps1 [-UpdateReference] [-Installer PATH]
 #
-# Requirements: lv-imgui.exe + SDL2.dll + libmpv-2.dll in $BinDir (default: build-installer/)
 # Screenshots saved to test/screenshots/actual/
 
 param(
     [switch]$UpdateReference,
-    [string]$BinDir = "build-installer"
+    [string]$Installer = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,15 +17,37 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 $FixturesDir = Join-Path $PWD "test/fixtures"
 $ActualDir   = Join-Path $PWD "test/screenshots/actual"
 $RefDir      = Join-Path $PWD "test/screenshots/reference"
-$Binary      = Join-Path $PWD "$BinDir/lv-imgui.exe"
 
-# ── Preflight ────────────────────────────────────────────────────────────
-if (-not (Test-Path $Binary)) {
-    Write-Error "Binary not found: $Binary"
+# ── Find installer ───────────────────────────────────────────────────────
+if (-not $Installer) {
+    $Installer = (Get-ChildItem "build-installer/lv-setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
+if (-not $Installer -or -not (Test-Path $Installer)) {
+    Write-Error "Installer not found. Pass -Installer PATH or place in build-installer/"
     exit 1
 }
 
-# Generate test fixtures if missing
+# ── Install silently ─────────────────────────────────────────────────────
+$InstallDir = Join-Path $env:LOCALAPPDATA "lv"
+Write-Host "=== lv smoke test (Windows) ==="
+Write-Host "Installer: $Installer"
+Write-Host "InstallDir: $InstallDir"
+
+$installProc = Start-Process -FilePath $Installer -ArgumentList "/S" -PassThru -Wait
+if ($installProc.ExitCode -ne 0) {
+    Write-Error "Installer failed with exit code $($installProc.ExitCode)"
+    exit 1
+}
+
+$Binary = Join-Path $InstallDir "lv-imgui.exe"
+if (-not (Test-Path $Binary)) {
+    Write-Error "Binary not found after install: $Binary"
+    Get-ChildItem $InstallDir -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name)" }
+    exit 1
+}
+Write-Host "Installed OK: $Binary"
+
+# ── Generate test fixtures ───────────────────────────────────────────────
 if (-not (Test-Path (Join-Path $FixturesDir "red_800x600.png"))) {
     Write-Host "Generating test fixtures..."
     python3 (Join-Path $FixturesDir "generate.py")
@@ -39,8 +61,6 @@ New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 $DbPath = Join-Path $TmpDir "lv-smoke.db"
 $env:LV_DB_PATH = $DbPath
 
-# ── Track fixtures ───────────────────────────────────────────────────────
-Write-Host "=== lv smoke test (Windows) ==="
 Write-Host "DB:       $DbPath"
 Write-Host "Fixtures: $FixturesDir"
 Write-Host ""
@@ -283,6 +303,14 @@ if ($refImages -and $refImages.Count -gt 0) {
     }
 } else {
     Write-Host "  No reference screenshots yet. Run with -UpdateReference first."
+}
+
+# ── Uninstall ────────────────────────────────────────────────────────────
+$Uninstaller = Join-Path $InstallDir "uninstall.exe"
+if (Test-Path $Uninstaller) {
+    Write-Host "--- Uninstalling ---"
+    Start-Process -FilePath $Uninstaller -ArgumentList "/S" -Wait
+    Write-Host "  Uninstalled"
 }
 
 # ── Cleanup ──────────────────────────────────────────────────────────────

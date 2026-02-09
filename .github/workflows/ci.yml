@@ -198,23 +198,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows build
+      - name: Download installer
         uses: actions/download-artifact@v4
         with:
-          name: lv-windows-x86_64
+          name: lv-windows-x86_64-installer
           path: build-installer
-
-      - name: Verify download
-        run: |
-          echo "--- build-installer/ ---"
-          Get-ChildItem -Recurse build-installer | ForEach-Object { $_.FullName }
-          if (-not (Test-Path build-installer/lv-imgui.exe)) {
-            echo "exe not at expected path, checking nested..."
-            if (Test-Path build-installer/build-installer/lv-imgui.exe) {
-              echo "Found nested, moving up"
-              Move-Item build-installer/build-installer/* build-installer/ -Force
-            }
-          }
 
       - name: Generate test fixtures
         run: python test/fixtures/generate.py
