@@ -1,14 +1,15 @@
-# Build lv for Linux aarch64 (cross-compiled from x86_64)
+# Build lv AppImage for Linux aarch64 (cross-compiled from x86_64)
 # Usage: docker build -f docker/Dockerfile.linux-aarch64 -o dist .
 FROM debian:bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture arm64 \
     && apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl pkg-config \
+    build-essential ca-certificates curl pkg-config file binutils \
     libsdl2-dev libmpv-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
     libsdl2-dev:arm64 libmpv2:arm64 \
+    binutils-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/lib/aarch64-linux-gnu/libmpv.so.2 /usr/lib/aarch64-linux-gnu/libmpv.so
 
@@ -27,5 +28,11 @@ RUN PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
     cargo build --release --target aarch64-unknown-linux-gnu \
     && aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/lv-imgui
 
+# Build AppImage (cross mode: use readelf + LIB_SEARCH_PATH instead of ldd)
+# Point readelf to the aarch64 version for parsing arm64 ELF binaries
+RUN PATH="/usr/aarch64-linux-gnu/bin:$PATH" \
+    LIB_SEARCH_PATH="/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu" \
+    ./pkg/appimage.sh aarch64 target/aarch64-unknown-linux-gnu/release/lv-imgui
+
 FROM scratch
-COPY --from=build /src/target/aarch64-unknown-linux-gnu/release/lv-imgui /lv-imgui-linux-aarch64
+COPY --from=build /src/lv-*-aarch64.AppImage /lv-linux-aarch64.AppImage

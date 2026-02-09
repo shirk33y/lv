@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 
 LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
+# Fetch libmpv-2.dll if not present
+bash scripts/fetch-mpvlib.sh
+
 cargo xwin build --release --target x86_64-pc-windows-msvc
 mkdir -p build-installer
 cp target/x86_64-pc-windows-msvc/release/lv-imgui.exe build-installer/

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download libmpv-2.dll for Windows x64 packaging.
 # Source: shinchiro mpv-winbuild-cmake builds on SourceForge.
-# Usage: bash pkg/fetch-mpv.sh [output_dir]
+# Usage: bash scripts/fetch-mpvlib.sh [output_dir]
 set -euo pipefail
 
 OUT="${1:-pkg/win64}"

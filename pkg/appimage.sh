@@ -1,22 +1,32 @@
 #!/bin/bash
 # Build an AppImage from the release binary.
-# Usage: ./pkg/appimage.sh [arch]
-# Expects: target/release/lv-imgui to exist (cargo build --release)
+# Usage: ./pkg/appimage.sh [arch] [binary]
+#   arch    — x86_64 (default: uname -m)
+#   binary  — path to lv-imgui binary (default: target/release/lv-imgui)
+# Set LV_VERSION to override the version tag.
 set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
+BINARY="${2:-target/release/lv-imgui}"
 LV_VERSION="${LV_VERSION:-$(git -C "$(dirname "$0")/.." describe --always --dirty 2>/dev/null || echo dev)}"
-APP="lv"
 APPDIR="AppDir"
+OUTPUT="lv-${LV_VERSION}-${ARCH}.AppImage"
 
 cd "$(dirname "$0")/.."
 
-echo "==> Preparing AppDir for $ARCH"
+if [ ! -f "$BINARY" ]; then
+  echo "ERROR: binary not found: $BINARY" >&2
+  exit 1
+fi
+
+echo "==> Preparing AppDir for $ARCH (binary: $BINARY)"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
+         "$APPDIR/usr/share/applications" \
+         "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 
 # Binary
-cp target/release/lv-imgui "$APPDIR/usr/bin/lv-imgui"
+cp "$BINARY" "$APPDIR/usr/bin/lv-imgui"
 chmod +x "$APPDIR/usr/bin/lv-imgui"
 
 # Desktop + icon
@@ -26,33 +36,81 @@ cp pkg/lv.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/lv.svg"
 # Root-level symlinks required by AppImage spec
 ln -sf usr/share/applications/lv.desktop "$APPDIR/lv.desktop"
 ln -sf usr/share/icons/hicolor/scalable/apps/lv.svg "$APPDIR/lv.svg"
-ln -sf usr/bin/lv-imgui "$APPDIR/AppRun"
 
-# Bundle shared libraries (SDL2, mpv, and their deps)
+# ── Bundle shared libraries ──────────────────────────────────────────
 echo "==> Bundling shared libraries"
-for lib in libSDL2 libmpv; do
-  SO=$(ldconfig -p | grep "$lib" | head -1 | awk '{print $NF}')
-  if [ -n "$SO" ]; then
-    cp "$SO" "$APPDIR/usr/lib/"
-    echo "  $SO"
-  else
-    echo "  WARNING: $lib not found, skipping"
-  fi
-done
 
-# Copy transitive deps of bundled libs (skip glibc/ld/pthread)
-for lib in "$APPDIR"/usr/lib/*.so*; do
-  ldd "$lib" 2>/dev/null | grep "=> /" | awk '{print $3}' | while read dep; do
-    base=$(basename "$dep")
-    # Skip system libs that AppImage shouldn't bundle
-    case "$base" in
-      libc.so*|libm.so*|libdl.so*|librt.so*|libpthread.so*|ld-linux*|libstdc++*|libgcc_s*) continue ;;
-    esac
-    [ ! -f "$APPDIR/usr/lib/$base" ] && cp "$dep" "$APPDIR/usr/lib/" && echo "  $dep"
+skip_lib() {
+  case "$1" in
+    libc.so*|libm.so*|libdl.so*|librt.so*|libpthread.so*|ld-linux*) return 0 ;;
+    libstdc++*|libgcc_s*) return 0 ;;
+  esac
+  return 1
+}
+
+# Collect deps into a temp file, then process iteratively (avoids subshell issues)
+DEPLIST=$(mktemp)
+trap "rm -f $DEPLIST" EXIT
+
+if [ -n "${LIB_SEARCH_PATH:-}" ]; then
+  # Cross-compile mode: use readelf to find NEEDED libs
+  echo "  (cross mode, searching: $LIB_SEARCH_PATH)"
+  find_lib() {
+    local name="$1"
+    IFS=: read -ra dirs <<< "$LIB_SEARCH_PATH"
+    for d in "${dirs[@]}"; do
+      local found
+      found=$(find "$d" -name "${name}" -type f -o -name "${name}" -type l 2>/dev/null | head -1)
+      if [ -n "$found" ]; then
+        readlink -f "$found"
+        return
+      fi
+    done
+  }
+
+  # Seed with binary's NEEDED
+  { readelf -d "$APPDIR/usr/bin/lv-imgui" 2>/dev/null | grep NEEDED | sed 's/.*\[//;s/\]//' || true; } > "$DEPLIST"
+
+  while [ -s "$DEPLIST" ]; do
+    NEXT=$(mktemp)
+    while read -r needed; do
+      base=$(basename "$needed")
+      skip_lib "$base" && continue
+      [ -f "$APPDIR/usr/lib/$base" ] && continue
+      dep=$(find_lib "$needed")
+      if [ -z "$dep" ]; then
+        echo "  WARNING: $needed not found"
+        continue
+      fi
+      cp "$dep" "$APPDIR/usr/lib/$base"
+      echo "  $base"
+      # Queue this lib's deps
+      { readelf -d "$dep" 2>/dev/null | grep NEEDED | sed 's/.*\[//;s/\]//' || true; } >> "$NEXT"
+    done < "$DEPLIST"
+    mv "$NEXT" "$DEPLIST"
   done
-done
+else
+  # Native mode: use ldd — collect all deps in one pass
+  { ldd "$APPDIR/usr/bin/lv-imgui" 2>/dev/null | grep "=> /" | awk '{print $3}' || true; } > "$DEPLIST"
 
-# Create AppRun wrapper that sets LD_LIBRARY_PATH
+  while [ -s "$DEPLIST" ]; do
+    NEXT=$(mktemp)
+    while read -r dep; do
+      base=$(basename "$dep")
+      skip_lib "$base" && continue
+      [ -f "$APPDIR/usr/lib/$base" ] && continue
+      cp "$dep" "$APPDIR/usr/lib/$base"
+      echo "  $base"
+      # Queue transitive deps
+      { ldd "$dep" 2>/dev/null | grep "=> /" | awk '{print $3}' || true; } >> "$NEXT"
+    done < "$DEPLIST"
+    mv "$NEXT" "$DEPLIST"
+  done
+fi
+
+rm -f "$DEPLIST"
+
+# ── AppRun wrapper (sets LD_LIBRARY_PATH) ─────────────────────────────
 cat > "$APPDIR/AppRun" << 'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
@@ -61,17 +119,19 @@ exec "$HERE/usr/bin/lv-imgui" "$@"
 APPRUN
 chmod +x "$APPDIR/AppRun"
 
-# Download appimagetool if not present
-TOOL="appimagetool-${ARCH}.AppImage"
+# ── Download appimagetool (host arch, not target) ────────────────────
+HOST_ARCH="$(uname -m)"
+TOOL="appimagetool-${HOST_ARCH}.AppImage"
 if [ ! -f "$TOOL" ]; then
-  echo "==> Downloading appimagetool"
+  echo "==> Downloading appimagetool ($HOST_ARCH)"
   curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/$TOOL" -o "$TOOL"
   chmod +x "$TOOL"
 fi
 
-# Build AppImage
-echo "==> Building AppImage"
-ARCH="$ARCH" ./"$TOOL" "$APPDIR" "lv-${LV_VERSION}-${ARCH}.AppImage"
+# ── Build AppImage ────────────────────────────────────────────────────
+# Use --appimage-extract-and-run so it works inside Docker (no FUSE)
+echo "==> Building $OUTPUT"
+ARCH="$ARCH" ./"$TOOL" --appimage-extract-and-run "$APPDIR" "$OUTPUT"
 
-echo "==> Done: lv-${LV_VERSION}-${ARCH}.AppImage"
+echo "==> Done: $OUTPUT"
 rm -rf "$APPDIR"

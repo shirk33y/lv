@@ -1,11 +1,11 @@
-# Build lv for Windows x86_64 (cross-compiled via cargo-xwin)
+# Build lv .exe installer for Windows x86_64 (cross-compiled via cargo-xwin)
 # Usage: docker build -f docker/Dockerfile.windows-x86_64 -o dist .
 FROM debian:bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates curl pkg-config \
-    llvm clang nsis \
+    llvm clang nsis p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -17,6 +17,10 @@ RUN cargo install cargo-xwin --locked
 
 WORKDIR /src
 COPY . .
+
+# Fetch libmpv-2.dll if not checked in
+RUN bash scripts/fetch-mpvlib.sh
+
 RUN cargo xwin build --release --target x86_64-pc-windows-msvc
 
 # Build NSIS installer with version
@@ -28,7 +32,4 @@ RUN LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     && mv lv-setup-*.exe lv-setup-windows-x86_64.exe
 
 FROM scratch
-COPY --from=build /out/lv-imgui.exe /lv-imgui-windows-x86_64.exe
-COPY --from=build /out/SDL2.dll /SDL2.dll
-COPY --from=build /out/libmpv-2.dll /libmpv-2.dll
 COPY --from=build /out/lv-setup-windows-x86_64.exe /lv-setup-windows-x86_64.exe
