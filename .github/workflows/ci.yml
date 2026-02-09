@@ -202,7 +202,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: lv-windows-x86_64
-          path: .
+          path: build-installer
 
       - name: Generate test fixtures
         run: python test/fixtures/generate.py
