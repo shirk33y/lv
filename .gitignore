@@ -4,3 +4,10 @@
 /target-windows-intel/
 /dist/
 build-installer/
+AppDir/
+appimagetool-*.AppImage
+lv-*.AppImage
+
+# Smoke test artifacts
+test/screenshots/actual/
+test/fixtures/*.png

@@ -141,9 +141,37 @@ jobs:
           name: lv-windows-x86_64-installer
           path: build-installer/lv-setup-*.exe
 
-      - name: Upload binary (Windows)
+      - name: Upload binary + DLLs (Windows)
         if: matrix.os == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: lv-windows-x86_64
-          path: target/x86_64-pc-windows-msvc/release/lv-imgui.exe
+          path: |
+            build-installer/lv-imgui.exe
+            build-installer/SDL2.dll
+            build-installer/libmpv-2.dll
+
+  smoke-test-windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: lv-windows-x86_64
+          path: .
+
+      - name: Generate test fixtures
+        run: python test/fixtures/generate.py
+
+      - name: Run smoke test
+        run: pwsh scripts/smoke-test-windows.ps1 -UpdateReference
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-screenshots-windows
+          path: test/screenshots/actual/

@@ -960,6 +960,9 @@ fn collection_tag(c: u8) -> String {
 }
 
 fn default_db_path() -> PathBuf {
+    if let Ok(p) = std::env::var("LV_DB_PATH") {
+        return PathBuf::from(p);
+    }
     if let Some(dirs) = directories::ProjectDirs::from("dev", "lv", "lv") {
         let data = dirs.data_dir();
         data.join("lv.db")
