@@ -76,18 +76,24 @@ screenshot() {
 # ── Helper: wait for window to appear ────────────────────────────────────
 wait_for_window() {
     local attempts=0
+    local max_attempts=150  # 15 seconds
     while true; do
-        # SDL2 window starts as "lv", then updates to "[1/N] file — dir — lv ..."
-        # Search by exact name first (initial), then by pattern (after title update)
-        WID=$(xdotool search --name '^lv$' 2>/dev/null | head -1 || true)
-        [[ -z "$WID" ]] && WID=$(xdotool search --name ' — lv ' 2>/dev/null | head -1 || true)
+        # Try by PID first (most reliable)
+        WID=$(xdotool search --pid "$APP_PID" 2>/dev/null | head -1 || true)
+        # Fallback: search by name patterns
+        [[ -z "$WID" ]] && WID=$(xdotool search --name '^lv$' 2>/dev/null | head -1 || true)
+        [[ -z "$WID" ]] && WID=$(xdotool search --name 'lv' 2>/dev/null | head -1 || true)
         if [[ -n "$WID" ]]; then
-            echo "  Window found: $WID"
+            echo "  Window found: $WID (attempt $attempts)"
             return 0
         fi
         attempts=$((attempts + 1))
-        if [[ $attempts -ge 50 ]]; then
-            echo "FATAL: lv window did not appear within 5s" >&2
+        if [[ $attempts -ge $max_attempts ]]; then
+            echo "FATAL: lv window did not appear within 15s" >&2
+            echo "  All X windows:" >&2
+            xdotool search --name '' 2>/dev/null | while read w; do
+                echo "    wid=$w name=$(xdotool getwindowname "$w" 2>/dev/null || echo '?')" >&2
+            done
             return 1
         fi
         sleep 0.1
