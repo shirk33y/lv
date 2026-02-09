@@ -108,7 +108,7 @@ echo ""
 
 # Track fixtures and launch GUI
 export LV_DB_PATH="$DB_PATH"
-run_bin track "$FIXTURES"
+run_bin track "$FIXTURES" 2>/dev/null
 echo "Tracked $(ls "$FIXTURES"/*.png | wc -l) test images"
 
 # Launch app in background pointing at fixtures dir

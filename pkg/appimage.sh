@@ -106,6 +106,19 @@ else
     done < "$DEPLIST"
     mv "$NEXT" "$DEPLIST"
   done
+
+  # Second pass: re-resolve with bundled libs on LD_LIBRARY_PATH to catch
+  # transitive deps that differ between build environments
+  echo "==> Verifying bundled libraries"
+  LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
+    ldd "$APPDIR/usr/bin/lv" 2>/dev/null | grep "=> /" | awk '{print $3}' > "$DEPLIST"
+  while read -r dep; do
+    base=$(basename "$dep")
+    skip_lib "$base" && continue
+    [ -f "$APPDIR/usr/lib/$base" ] && continue
+    cp "$dep" "$APPDIR/usr/lib/$base"
+    echo "  $base (missed in first pass)"
+  done < "$DEPLIST"
 fi
 
 rm -f "$DEPLIST"
