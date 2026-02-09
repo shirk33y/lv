@@ -37,6 +37,16 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Releasing v$V"
+          {
+            echo "## Release v$V"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Version** | \`$V\` |"
+            echo "| **Prerelease** | ${{ inputs.prerelease }} |"
+            echo "| **Commit** | \`$(git rev-parse --short HEAD)\` |"
+            echo "| **Source** | ${{ inputs.version && 'manual input' || 'Cargo.toml' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Linux build + package ────────────────────────────────────────────
   build-linux:
@@ -236,6 +246,29 @@ jobs:
 
       - name: Upload assets
         run: gh release upload "v$VERSION" artifacts/release-linux/* artifacts/release-windows/*
+
+      - name: Summary
+        run: |
+          LINUX=$(ls artifacts/release-linux/ | head -5)
+          WINDOWS=$(ls artifacts/release-windows/ | head -5)
+          REPO="https://github.com/${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          {
+            echo "## Published v$VERSION"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Release** | [$REPO/releases/tag/v$VERSION]($REPO/releases/tag/v$VERSION) |"
+            echo "| **Tag** | [\`v$VERSION\`]($REPO/tree/v$VERSION) |"
+            echo "| **Commit** | [\`$SHORT_SHA\`]($REPO/commit/$SHA) |"
+            echo ""
+            echo "### Artifacts"
+            echo "#### Linux"
+            for f in $LINUX; do echo "- \`$f\`"; done
+            echo "#### Windows"
+            for f in $WINDOWS; do echo "- \`$f\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Bump patch version
         if: ${{ inputs.prerelease != true }}
