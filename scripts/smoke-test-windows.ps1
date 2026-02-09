@@ -127,28 +127,13 @@ public class Win32 {
 
 function Find-LvWindow {
     param([int]$ProcessId)
-    $found = $null
-    $callback = [Win32+EnumWindowsProc]{
-        param([IntPtr]$hWnd, [IntPtr]$lParam)
-        if (-not [Win32]::IsWindowVisible($hWnd)) { return $true }
-        [uint32]$wpid = 0
-        [Win32]::GetWindowThreadProcessId($hWnd, [ref]$wpid) | Out-Null
-        if ($wpid -eq $ProcessId) {
-            $len = [Win32]::GetWindowTextLength($hWnd)
-            if ($len -gt 0) {
-                $sb = New-Object System.Text.StringBuilder ($len + 1)
-                [Win32]::GetWindowText($hWnd, $sb, $sb.Capacity) | Out-Null
-                $title = $sb.ToString()
-                if ($title -match "lv") {
-                    $script:found = $hWnd
-                    return $false  # stop enumerating
-                }
-            }
+    try {
+        $p = Get-Process -Id $ProcessId -ErrorAction Stop
+        if ($p.MainWindowHandle -ne [IntPtr]::Zero) {
+            return $p.MainWindowHandle
         }
-        return $true
-    }
-    [Win32]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-    return $found
+    } catch {}
+    return $null
 }
 
 function Take-Screenshot {
