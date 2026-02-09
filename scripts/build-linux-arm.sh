@@ -2,6 +2,9 @@
 # Release build + AppImage for aarch64 Linux (cross-compile)
 set -eo pipefail
 cd "$(dirname "$0")/.."
+
+export LV_VERSION="${LV_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(date -u +%Y%m%dT%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+
 PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
 PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
 cargo build --release --target aarch64-unknown-linux-gnu

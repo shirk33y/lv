@@ -3,7 +3,7 @@
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
-LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+LV_VERSION="${LV_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(date -u +%Y%m%dT%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 # Fetch libmpv-2.dll if not present
 bash scripts/fetch-mpvlib.sh
