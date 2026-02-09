@@ -168,7 +168,7 @@ jobs:
       - name: Install test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xdotool
+          sudo apt-get install -y xdotool imagemagick
 
       - name: Download AppImage
         uses: actions/download-artifact@v4
