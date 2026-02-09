@@ -1,5 +1,4 @@
 name: release
-run-name: "Release ${{ inputs.version || 'from Cargo.toml' }}${{ inputs.prerelease == true && ' (prerelease)' || '' }}"
 
 on:
   workflow_dispatch:
