@@ -106,9 +106,9 @@ function Find-LvWindow {
     $callback = [Win32+EnumWindowsProc]{
         param([IntPtr]$hWnd, [IntPtr]$lParam)
         if (-not [Win32]::IsWindowVisible($hWnd)) { return $true }
-        [uint32]$pid = 0
-        [Win32]::GetWindowThreadProcessId($hWnd, [ref]$pid) | Out-Null
-        if ($pid -eq $ProcessId) {
+        [uint32]$wpid = 0
+        [Win32]::GetWindowThreadProcessId($hWnd, [ref]$wpid) | Out-Null
+        if ($wpid -eq $ProcessId) {
             $len = [Win32]::GetWindowTextLength($hWnd)
             if ($len -gt 0) {
                 $sb = New-Object System.Text.StringBuilder ($len + 1)
