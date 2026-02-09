@@ -23,7 +23,7 @@ echo "==> Preparing AppDir for $ARCH (binary: $BINARY)"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/applications" \
-         "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+         "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 # Binary
 cp "$BINARY" "$APPDIR/usr/bin/lv"
@@ -31,11 +31,11 @@ chmod +x "$APPDIR/usr/bin/lv"
 
 # Desktop + icon
 cp pkg/lv.desktop "$APPDIR/usr/share/applications/lv.desktop"
-cp pkg/lv.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/lv.svg"
+cp pkg/lv-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/lv.png"
 
 # Root-level symlinks required by AppImage spec
 ln -sf usr/share/applications/lv.desktop "$APPDIR/lv.desktop"
-ln -sf usr/share/icons/hicolor/scalable/apps/lv.svg "$APPDIR/lv.svg"
+ln -sf usr/share/icons/hicolor/256x256/apps/lv.png "$APPDIR/lv.png"
 
 # ── Bundle shared libraries ──────────────────────────────────────────
 echo "==> Bundling shared libraries"
