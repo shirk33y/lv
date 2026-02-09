@@ -33,193 +33,24 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt -- --check
 
-      - name: Cargo check (release)
-        run: cargo check --release
-
   build:
     needs: test
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-            os: linux
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            os: linux
-          - arch: x86_64
-            runner: ubuntu-latest
-            os: windows
-
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: ${{ matrix.os == 'windows' }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'windows' && 'x86_64-pc-windows-msvc' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
           shared-key: "release-build"
 
-      # ── Linux build ──────────────────────────────────────────────────
-      - name: Install system dependencies (Linux)
-        if: matrix.os == 'linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libmpv-dev
 
-      - name: Build (Linux)
-        if: matrix.os == 'linux'
+      - name: Build (Linux x86_64)
         run: cargo build --release
-
-      - name: Package AppImage (Linux)
-        if: matrix.os == 'linux'
-        run: bash pkg/appimage.sh ${{ matrix.arch }}
-
-      - name: Upload AppImage (Linux)
-        if: matrix.os == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lv-linux-${{ matrix.arch }}-appimage
-          path: lv-*-${{ matrix.arch }}.AppImage
-
-      - name: Upload binary (Linux)
-        if: matrix.os == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lv-linux-${{ matrix.arch }}
-          path: target/release/lv
-
-      # ── Windows cross-compile ────────────────────────────────────────
-      - name: Cache cargo-xwin binary
-        if: matrix.os == 'windows'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-xwin
-          key: cargo-xwin-${{ runner.os }}
-          restore-keys: cargo-xwin-
-
-      - name: Cache xwin MSVC CRT/SDK
-        if: matrix.os == 'windows'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/cargo-xwin
-          key: xwin-msvc-sdk
-
-      - name: Install cross-compile tools (Windows)
-        if: matrix.os == 'windows'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
-          which cargo-xwin || cargo install cargo-xwin --locked
-
-      - name: Build (Windows)
-        if: matrix.os == 'windows'
-        run: cargo xwin build --release --target x86_64-pc-windows-msvc
-
-      - name: Package installer (Windows)
-        if: matrix.os == 'windows'
-        run: |
-          mkdir -p build-installer
-          cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
-          cp pkg/win64/SDL2.dll build-installer/
-          cp pkg/win64/libmpv-2.dll build-installer/
-          cp pkg/installer.nsi build-installer/
-          cd build-installer
-          makensis installer.nsi
-
-      - name: Upload installer (Windows)
-        if: matrix.os == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lv-windows-x86_64-installer
-          path: build-installer/lv-setup-*.exe
-
-      - name: Upload binary + DLLs (Windows)
-        if: matrix.os == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lv-windows-x86_64
-          path: |
-            build-installer/lv.exe
-            build-installer/SDL2.dll
-            build-installer/libmpv-2.dll
-
-  smoke-test-linux:
-    needs: build
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xdotool imagemagick
-
-      - name: Download AppImage
-        uses: actions/download-artifact@v4
-        with:
-          name: lv-linux-${{ matrix.arch }}-appimage
-          path: .
-
-      - name: Make AppImage executable
-        run: chmod +x lv-*.AppImage
-
-      - name: Generate test fixtures
-        run: python3 test/fixtures/generate.py
-
-      - name: Run smoke test
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-*.AppImage --update-reference
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-screenshots-linux-${{ matrix.arch }}
-          path: test/screenshots/actual/
-
-  smoke-test-windows:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Wine and test tools
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y wine64 xdotool imagemagick
-
-      - name: Download Windows binary + DLLs
-        uses: actions/download-artifact@v4
-        with:
-          name: lv-windows-x86_64
-          path: win-bin
-
-      - name: Generate test fixtures
-        run: python3 test/fixtures/generate.py
-
-      - name: Run smoke test (Wine)
-        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/lv.exe --wine --update-reference
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-screenshots-windows
-          path: test/screenshots/actual/

@@ -6,13 +6,20 @@ on:
       version:
         description: "Override version (default: read from Cargo.toml)"
         required: false
+      prerelease:
+        description: "Mark as prerelease"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  # ── Resolve version (shared by all jobs) ─────────────────────────────
+  resolve-version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +34,51 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Releasing v$V"
 
+  # ── Linux build + package ────────────────────────────────────────────
+  build-linux:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+          shared-key: "release-build"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libmpv-dev
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package AppImage
+        run: LV_VERSION=$VERSION bash pkg/appimage.sh x86_64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: lv-*-x86_64.AppImage
+
+  # ── Windows cross-compile + package ──────────────────────────────────
+  build-windows:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,19 +89,11 @@ jobs:
           cache-all-crates: "true"
           shared-key: "release-build"
 
-      # ── Linux build ──────────────────────────────────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libmpv-dev llvm clang nsis
+          sudo apt-get install -y llvm clang libsdl2-dev libmpv-dev nsis
 
-      - name: Build (Linux)
-        run: cargo build --release
-
-      - name: Package AppImage (Linux x86_64)
-        run: LV_VERSION=${{ steps.ver.outputs.version }} bash pkg/appimage.sh x86_64
-
-      # ── Windows cross-compile ────────────────────────────────────────
       - name: Cache cargo-xwin
         uses: actions/cache@v4
         with:
@@ -66,10 +110,10 @@ jobs:
       - name: Install cargo-xwin
         run: which cargo-xwin || cargo install cargo-xwin --locked
 
-      - name: Build (Windows)
+      - name: Build
         run: cargo xwin build --release --target x86_64-pc-windows-msvc
 
-      - name: Package installer (Windows)
+      - name: Package installer
         run: |
           mkdir -p build-installer
           cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
@@ -77,31 +121,115 @@ jobs:
           cp pkg/win64/libmpv-2.dll build-installer/
           cp pkg/installer.nsi build-installer/
           cd build-installer
-          makensis -DLV_VERSION=${{ steps.ver.outputs.version }} installer.nsi
+          makensis -DLV_VERSION=$VERSION installer.nsi
 
-      # ── Create release + upload assets ──────────────────────────────
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: gh release create "v$VERSION" --title "v$VERSION" --generate-notes
+      - name: Rename standalone binary
+        run: cp target/x86_64-pc-windows-msvc/release/lv.exe "lv-${VERSION}-x86_64-windows.exe"
 
-      - name: Upload AppImage
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: gh release upload "v$VERSION" lv-*-x86_64.AppImage
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            build-installer/lv-setup-*.exe
+            lv-*-x86_64-windows.exe
 
-      - name: Upload Windows installer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: gh release upload "v$VERSION" build-installer/lv-setup-*.exe
+      - name: Upload binary + DLLs (for smoke test)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bin
+          path: |
+            build-installer/lv.exe
+            build-installer/SDL2.dll
+            build-installer/libmpv-2.dll
 
-      - name: Upload Windows binary
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
+  # ── Smoke tests (gate the release) ────────────────────────────────────
+  smoke-test-linux:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test tools
         run: |
-          cp build-installer/lv.exe "lv-${VERSION}-x86_64-windows.exe"
-          gh release upload "v$VERSION" "lv-${VERSION}-x86_64-windows.exe"
+          sudo apt-get update
+          sudo apt-get install -y xdotool imagemagick
+
+      - name: Download AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: .
+
+      - name: Make AppImage executable
+        run: chmod +x lv-*.AppImage
+
+      - name: Generate test fixtures
+        run: python3 test/fixtures/generate.py
+
+      - name: Run smoke test
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary ./lv-*.AppImage --update-reference
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-screenshots-linux
+          path: test/screenshots/actual/
+
+  smoke-test-windows:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wine and test tools
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y wine64 xdotool imagemagick
+
+      - name: Download Windows binary + DLLs
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-bin
+          path: win-bin
+
+      - name: Generate test fixtures
+        run: python3 test/fixtures/generate.py
+
+      - name: Run smoke test (Wine)
+        run: xvfb-run -a bash scripts/smoke-test.sh --binary win-bin/build-installer/lv.exe --wine --update-reference
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-screenshots-windows
+          path: test/screenshots/actual/
+
+  # ── Create release + upload ──────────────────────────────────────────
+  publish:
+    needs: [resolve-version, smoke-test-linux, smoke-test-windows]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub release
+        run: |
+          FLAGS="--title v$VERSION --generate-notes"
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            FLAGS="$FLAGS --prerelease"
+          fi
+          gh release create "v$VERSION" $FLAGS
+
+      - name: Upload assets
+        run: gh release upload "v$VERSION" artifacts/release-linux/* artifacts/release-windows/*
