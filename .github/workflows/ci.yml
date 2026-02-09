@@ -66,6 +66,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
+          shared-key: "release-build"
 
       # ── Linux build ──────────────────────────────────────────────────
       - name: Install system dependencies (Linux)
