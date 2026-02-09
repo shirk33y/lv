@@ -1,5 +1,9 @@
 # lv
 
+[![CI](https://github.com/shirk33y/lv/actions/workflows/ci.yml/badge.svg)](https://github.com/shirk33y/lv/actions/workflows/ci.yml)
+[![Release](https://github.com/shirk33y/lv/actions/workflows/release.yml/badge.svg)](https://github.com/shirk33y/lv/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/shirk33y/lv?include_prereleases)](https://github.com/shirk33y/lv/releases/latest)
+
 Fast keyboard-driven media viewer. Single Rust binary, SQLite library database, GPU-rendered UI.
 
 ![screenshot](screenshot01.jpg)
