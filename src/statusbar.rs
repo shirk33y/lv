@@ -15,9 +15,10 @@ pub enum WindowAction {
 }
 
 /// Height of the custom title bar (status bar at top).
-pub const BAR_HEIGHT: f32 = 24.0;
+/// Computed at runtime as font_size + 2px.
+pub const BAR_HEIGHT: f32 = 19.0;
 /// Width reserved for the three window-control buttons on the right.
-pub const BUTTON_ZONE_W: f32 = 72.0;
+pub const BUTTON_ZONE_W: f32 = 96.0;
 
 /// DejaVu Sans Mono bundled in the binary — no system font dependency.
 pub const BUNDLED_FONT: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
@@ -29,8 +30,10 @@ const GLYPH_RANGES: &[u32] = &[
     0x0180, 0x024F, // Latin Extended-B
     0x2000, 0x206F, // General Punctuation (—, …)
     0x2190, 0x21FF, // Arrows
+    0x2500, 0x257F, // Box Drawing (─ │ etc.)
+    0x25A0, 0x25FF, // Geometric Shapes (□ ■ etc.)
     0x2600, 0x26FF, // Misc Symbols (♥)
-    0x2764, 0x2764, // ❤
+    0x2700, 0x27BF, // Dingbats (✕ ❤ etc.)
     0,
 ];
 
@@ -38,7 +41,7 @@ const GLYPH_RANGES: &[u32] = &[
 pub fn add_font(imgui: &mut imgui::Context) {
     imgui.fonts().add_font(&[FontSource::TtfData {
         data: BUNDLED_FONT,
-        size_pixels: 15.0,
+        size_pixels: 13.0,
         config: Some(FontConfig {
             glyph_ranges: FontGlyphRanges::from_slice(GLYPH_RANGES),
             oversample_h: 2,
@@ -54,9 +57,10 @@ pub fn apply_theme(imgui: &mut imgui::Context) {
     let style = imgui.style_mut();
     style.window_rounding = 0.0;
     style.window_border_size = 0.0;
-    style.window_padding = [8.0, 4.0];
-    style.frame_padding = [4.0, 2.0];
-    style.item_spacing = [8.0, 4.0];
+    style.window_padding = [4.0, 2.0];
+    style.frame_padding = [4.0, 0.0];
+    style.item_spacing = [4.0, 0.0];
+    style.window_min_size = [1.0, 1.0];
 
     style.colors[imgui::sys::ImGuiCol_WindowBg as usize] = [0.0, 0.0, 0.0, 0.78];
     style.colors[imgui::sys::ImGuiCol_Text as usize] = [0.9, 0.9, 0.9, 1.0];
@@ -141,13 +145,14 @@ pub fn draw_status_bar(
     display_w: f32,
     _display_h: f32,
 ) -> WindowAction {
-    let pad = 8.0;
+    let pad = 4.0;
     let mut action = WindowAction::None;
 
-    // Button dimensions
-    let btn_w = 24.0;
+    // Button dimensions — flush to right edge (subtract window padding so last button touches edge)
+    let btn_w = 32.0;
     let btn_h = BAR_HEIGHT;
-    let buttons_start_x = display_w - btn_w * 3.0;
+    let win_pad_x = 4.0; // matches style.window_padding[0]
+    let buttons_start_x = display_w - btn_w * 3.0 - win_pad_x;
 
     if let Some(_win) = ui
         .window("##statusbar")
@@ -257,12 +262,13 @@ pub fn draw_status_bar(
         let _ = style; // keep style alive
 
         // Minimize  —
-        ui.set_cursor_pos([buttons_start_x, 0.0]);
+        let btn_y = 0.0;
+        ui.set_cursor_pos([buttons_start_x, btn_y]);
         if ui.button_with_size("—", [btn_w, btn_h]) {
             action = WindowAction::Minimize;
         }
         // Maximize  □
-        ui.set_cursor_pos([buttons_start_x + btn_w, 0.0]);
+        ui.set_cursor_pos([buttons_start_x + btn_w, btn_y]);
         if ui.button_with_size("□", [btn_w, btn_h]) {
             action = WindowAction::Maximize;
         }
@@ -271,7 +277,7 @@ pub fn draw_status_bar(
             ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.8, 0.2, 0.2, 0.8]);
         let _close_active =
             ui.push_style_color(imgui::StyleColor::ButtonActive, [0.9, 0.1, 0.1, 0.9]);
-        ui.set_cursor_pos([buttons_start_x + btn_w * 2.0, 0.0]);
+        ui.set_cursor_pos([buttons_start_x + btn_w * 2.0, btn_y]);
         if ui.button_with_size("✕", [btn_w, btn_h]) {
             action = WindowAction::Close;
         }
