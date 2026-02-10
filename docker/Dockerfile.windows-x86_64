@@ -37,13 +37,11 @@ FROM base AS deps
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY pkg/win64/ pkg/win64/
-COPY scripts/cargo-cache-clean.sh /usr/local/bin/cargo-cache-clean
 # Dummy main.rs so cargo can resolve the crate graph and build deps
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
 RUN cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 \
     || true
-# Clean dummy crate artifacts so real source triggers recompile of lv only
-RUN sh /usr/local/bin/cargo-cache-clean
+# No cleanup needed: cargo's fingerprint system handles recompilation.
 
 # ── Stage: build (compile lv only) ───────────────────────────────────
 FROM deps AS build
