@@ -1,35 +1,98 @@
-# Build lv .exe installer for Windows x86_64 (cross-compiled via cargo-xwin)
-# Usage: docker build -f docker/Dockerfile.windows-x86_64 -o dist .
-FROM debian:bookworm-slim AS build
+# Multi-stage build for lv on Windows x86_64 (cross-compiled via cargo-xwin)
+#
+# Stages:
+#   base    — system deps + Rust toolchain + cargo-xwin
+#   deps    — compile dependencies only (cached unless Cargo.toml/lock change)
+#   build   — compile lv (only recompiles lv crate)
+#   package — NSIS installer
+#   smoke   — Wine smoke tests
+#   out     — scratch, extract artifacts
+#
+# Usage:
+#   docker build -f docker/Dockerfile.windows-x86_64 --target=out -o dist .
+#   docker build -f docker/Dockerfile.windows-x86_64 --target=smoke .
+
+# ── Stage: base (toolchain + system deps) ────────────────────────────
+FROM debian:bookworm-slim AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl pkg-config \
-    llvm clang nsis p7zip-full \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl pkg-config git \
+    llvm clang nsis p7zip-full
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable --profile minimal \
     -t x86_64-pc-windows-msvc
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_INCREMENTAL=0
 
 RUN cargo install cargo-xwin --locked
 
 WORKDIR /src
+
+# ── Stage: deps (compile dependencies only) ──────────────────────────
+FROM base AS deps
+
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY pkg/win64/ pkg/win64/
+COPY scripts/cargo-cache-clean.sh /usr/local/bin/cargo-cache-clean
+# Dummy main.rs so cargo can resolve the crate graph and build deps
+RUN mkdir src && echo 'fn main() {}' > src/main.rs
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 \
+    || true
+# Clean own crate artifacts + prune cache mounts
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    sh /usr/local/bin/cargo-cache-clean
+
+# ── Stage: build (compile lv only) ───────────────────────────────────
+FROM deps AS build
+
 COPY . .
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo xwin build --release --target x86_64-pc-windows-msvc \
+    && cp target/x86_64-pc-windows-msvc/release/lv.exe /tmp/lv.exe \
+    && sh /usr/local/bin/cargo-cache-clean
 
-# Fetch libmpv-2.dll if not checked in
-RUN bash scripts/fetch-mpvlib.sh
+# ── Stage: package (NSIS installer) ──────────────────────────────────
+FROM build AS package
 
-RUN cargo xwin build --release --target x86_64-pc-windows-msvc
-
-# Build NSIS installer with version
 RUN LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
     && mkdir -p /out \
-    && cp target/x86_64-pc-windows-msvc/release/lv.exe /out/ \
-    && cp pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll pkg/installer.nsi /out/ \
+    && cp /tmp/lv.exe /out/ \
+    && cp pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll pkg/win64/lv.ico pkg/installer.nsi /out/ \
     && cd /out && makensis -DLV_VERSION="$LV_VERSION" installer.nsi \
     && mv lv-setup-*.exe lv-setup-windows-x86_64.exe
 
-FROM scratch
-COPY --from=build /out/lv-setup-windows-x86_64.exe /lv-setup-windows-x86_64.exe
+# ── Stage: smoke (Wine) ──────────────────────────────────────────────
+FROM ubuntu:24.04 AS smoke
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    dpkg --add-architecture i386 \
+    && apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends wine wine64 \
+    && wineboot --init 2>/dev/null || true
+
+COPY --from=package /out/lv.exe /bin/
+COPY --from=package /out/SDL2.dll /bin/
+COPY --from=package /out/libmpv-2.dll /bin/
+COPY test/fixtures/ /fixtures/
+COPY scripts/smoke-test-wine.sh /scripts/smoke-test-wine.sh
+RUN LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-wine.sh /bin /fixtures
+
+# ── Stage: out (extract artifacts) ───────────────────────────────────
+FROM scratch AS out
+COPY --from=package /out/lv-setup-windows-x86_64.exe /lv-setup-windows-x86_64.exe
+COPY --from=package /out/lv.exe /bin/lv.exe
+COPY --from=package /out/SDL2.dll /bin/SDL2.dll
+COPY --from=package /out/libmpv-2.dll /bin/libmpv-2.dll

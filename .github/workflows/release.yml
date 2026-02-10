@@ -48,7 +48,7 @@ jobs:
             echo "| **Source** | ${{ inputs.version && 'manual input' || 'Cargo.toml' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Linux build + package ────────────────────────────────────────────
+  # ── Linux build + package (Docker multi-stage) ───────────────────────
   build-linux:
     needs: resolve-version
     runs-on: ubuntu-latest
@@ -56,41 +56,39 @@ jobs:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
         with:
-          cache-all-crates: "true"
-          shared-key: "release-build"
+          lfs: true
 
-      - name: Install system dependencies
-        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + smoke test
+        uses: docker/build-push-action@v6
         with:
-          packages: libsdl2-dev libmpv-dev
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: smoke
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          cache-to: type=gha,mode=max,scope=linux-x86_64
 
-      - name: Build
-        run: cargo build --release --target x86_64-unknown-linux-gnu
-
-      - name: Strip binary
-        run: strip target/x86_64-unknown-linux-gnu/release/lv
-
-      - name: Package AppImage
-        run: LV_VERSION=$VERSION bash pkg/appimage.sh x86_64 target/x86_64-unknown-linux-gnu/release/lv
-
-      - name: Package .deb
-        run: LV_VERSION=$VERSION bash pkg/deb.sh amd64 target/x86_64-unknown-linux-gnu/release/lv
+      - name: Extract artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: out
+          push: false
+          outputs: type=local,dest=dist-linux
+          cache-from: type=gha,scope=linux-x86_64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-linux
-          path: |
-            lv-*-x86_64.AppImage
-            lv_*_amd64.deb
+          path: dist-linux/
 
-  # ── Windows cross-compile + package ──────────────────────────────────
+  # ── Windows cross-compile + package (Docker multi-stage) ─────────────
   build-windows:
     needs: resolve-version
     runs-on: ubuntu-latest
@@ -101,97 +99,38 @@ jobs:
         with:
           lfs: true
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + smoke test
+        uses: docker/build-push-action@v6
         with:
-          targets: x86_64-pc-windows-msvc
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: smoke
+          push: false
+          cache-from: type=gha,scope=windows-x86_64
+          cache-to: type=gha,mode=max,scope=windows-x86_64
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Extract artifacts
+        uses: docker/build-push-action@v6
         with:
-          cache-all-crates: "true"
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: out
+          push: false
+          outputs: type=local,dest=dist-windows
+          cache-from: type=gha,scope=windows-x86_64
 
-      - name: Install system dependencies
-        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
-        with:
-          packages: llvm clang libsdl2-dev libmpv-dev nsis
-
-      - name: Cache cargo-xwin
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-xwin
-          key: cargo-xwin-${{ runner.os }}
-          restore-keys: cargo-xwin-
-
-      - name: Cache xwin MSVC CRT/SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/cargo-xwin
-          key: xwin-msvc-sdk
-
-      - name: Install cargo-xwin
-        run: which cargo-xwin || cargo install cargo-xwin --locked
-
-      - name: Build
-        run: cargo xwin build --release --target x86_64-pc-windows-msvc
-
-      - name: Package installer
-        run: |
-          mkdir -p build-installer
-          cp target/x86_64-pc-windows-msvc/release/lv.exe build-installer/
-          cp pkg/win64/SDL2.dll build-installer/
-          cp pkg/win64/libmpv-2.dll build-installer/
-          cp pkg/win64/lv.ico build-installer/
-          cp pkg/installer.nsi build-installer/
-          cd build-installer
-          makensis -DLV_VERSION=$VERSION installer.nsi
-
-      - name: Rename standalone binary
-        run: cp target/x86_64-pc-windows-msvc/release/lv.exe "lv-${VERSION}-x86_64-windows.exe"
-
-      - name: Upload release artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: |
-            build-installer/lv-setup-*.exe
-            lv-*-x86_64-windows.exe
+          path: dist-windows/
 
-      - name: Upload binary + DLLs (for smoke test)
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-bin
-          path: |
-            build-installer/lv.exe
-            build-installer/SDL2.dll
-            build-installer/libmpv-2.dll
-
-  # ── Smoke tests (gate the release) ────────────────────────────────────
-  smoke-test-cli:
-    needs: build-linux
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download .deb
-        uses: actions/download-artifact@v4
-        with:
-          name: release-linux
-          path: .
-
-      - name: Install .deb
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ./lv_*_amd64.deb || sudo apt-get install -y -f
-
-      - name: Generate test fixtures
-        run: python3 test/fixtures/generate.py
-
-      - name: CLI smoke tests
-        run: bash scripts/smoke-test-cli.sh
-
-  # ── Create release + upload ──────────────────────────────────────────
+  # ── Publish release ──────────────────────────────────────────────────
   publish:
-    needs: [resolve-version, smoke-test-cli]
+    needs: [resolve-version, build-linux, build-windows]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -213,12 +152,14 @@ jobs:
           gh release create "v$VERSION" $FLAGS
 
       - name: Upload assets
-        run: gh release upload "v$VERSION" artifacts/release-linux/* artifacts/release-windows/*
+        run: |
+          find artifacts/release-linux -type f | xargs gh release upload "v$VERSION"
+          find artifacts/release-windows -type f | xargs gh release upload "v$VERSION"
 
       - name: Summary
         run: |
-          LINUX=$(ls artifacts/release-linux/ | head -5)
-          WINDOWS=$(ls artifacts/release-windows/ | head -5)
+          LINUX=$(find artifacts/release-linux -type f -printf '%f\n' | head -5)
+          WINDOWS=$(find artifacts/release-windows -type f -printf '%f\n' | head -5)
           REPO="https://github.com/${{ github.repository }}"
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"

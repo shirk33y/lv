@@ -12,26 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Run tests (cargo test + clippy + fmt)
+        uses: docker/build-push-action@v6
         with:
-          cache-all-crates: "true"
-
-      - name: Install system dependencies
-        uses: eclipse-score/apt-install@bd30e2e74a4850389719cb8c3e312bb26aada4e0
-        with:
-          packages: libsdl2-dev libmpv-dev
-
-      - name: Cargo test
-        run: cargo test
-
-      - name: Cargo clippy
-        run: cargo clippy -- -D warnings
-
-      - name: Cargo fmt
-        run: cargo fmt -- --check
-
-      - name: Build
-        run: cargo build
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: test
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          cache-to: type=gha,mode=max,scope=linux-x86_64

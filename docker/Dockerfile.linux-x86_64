@@ -1,24 +1,104 @@
-# Build lv AppImage for Linux x86_64
-# Usage: docker build -f docker/Dockerfile.linux-x86_64 -o dist .
-FROM debian:bookworm-slim AS build
+# Multi-stage build for lv on Linux x86_64 (ubuntu:22.04, glibc ≤ 2.35)
+#
+# Stages:
+#   base    — system deps + Rust toolchain (cached layer)
+#   deps    — compile dependencies only (cached unless Cargo.toml/lock change)
+#   build   — compile lv (only recompiles lv crate, ~6s)
+#   test    — cargo test + clippy + fmt (can run parallel with build)
+#   package — .deb + .AppImage
+#   smoke   — install .deb, run CLI smoke tests
+#   out     — scratch, extract artifacts
+#
+# Usage:
+#   docker build -f docker/Dockerfile.linux-x86_64 --target=out -o dist .
+#   docker build -f docker/Dockerfile.linux-x86_64 --target=smoke .
+#   docker build -f docker/Dockerfile.linux-x86_64 --target=test .
+
+# ── Stage: base (toolchain + system deps) ────────────────────────────
+FROM ubuntu:22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl pkg-config file \
-    libsdl2-dev libmpv-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl pkg-config file git \
+    libsdl2-dev libmpv-dev
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain stable --profile minimal
+    sh -s -- -y --default-toolchain stable --profile minimal \
+    --component clippy rustfmt
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_INCREMENTAL=0
 
 WORKDIR /src
+
+# ── Stage: deps (compile dependencies only) ──────────────────────────
+FROM base AS deps
+
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY scripts/cargo-cache-clean.sh /usr/local/bin/cargo-cache-clean
+# Dummy main.rs so cargo can resolve the crate graph and build deps
+RUN mkdir src && echo 'fn main() {}' > src/main.rs
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --target x86_64-unknown-linux-gnu 2>&1 \
+    && cargo build --target x86_64-unknown-linux-gnu 2>&1 \
+    || true
+# Clean own crate artifacts + prune cache mounts
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    sh /usr/local/bin/cargo-cache-clean
+
+# ── Stage: build (compile lv only) ───────────────────────────────────
+FROM deps AS build
+
 COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-gnu \
-    && strip target/x86_64-unknown-linux-gnu/release/lv
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --target x86_64-unknown-linux-gnu \
+    && cp target/x86_64-unknown-linux-gnu/release/lv /tmp/lv \
+    && strip /tmp/lv \
+    && sh /usr/local/bin/cargo-cache-clean
 
-# Build AppImage (bundles libSDL2, libmpv, and transitive deps)
-RUN ./pkg/appimage.sh x86_64 target/x86_64-unknown-linux-gnu/release/lv
+# ── Stage: test (cargo test + clippy + fmt) ──────────────────────────
+FROM deps AS test
 
-FROM scratch
-COPY --from=build /src/lv-*-x86_64.AppImage /lv-linux-x86_64.AppImage
+COPY . .
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo test --target x86_64-unknown-linux-gnu \
+    && cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings \
+    && cargo fmt -- --check \
+    && sh /usr/local/bin/cargo-cache-clean
+
+# ── Stage: package (.deb + .AppImage) ────────────────────────────────
+FROM build AS package
+
+RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
+    bash pkg/deb.sh amd64 /tmp/lv
+
+RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
+    bash pkg/appimage.sh x86_64 /tmp/lv
+
+# ── Stage: smoke (install .deb + CLI smoke tests) ────────────────────
+FROM ubuntu:22.04 AS smoke
+
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=package /src/lv_*_amd64.deb /tmp/
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update -qq \
+    && apt-get install -y -qq /tmp/lv_*_amd64.deb
+
+COPY test/fixtures/ /fixtures/
+COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
+RUN LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage: out (extract artifacts) ───────────────────────────────────
+FROM scratch AS out
+COPY --from=package /src/lv_*_amd64.deb /
+COPY --from=package /src/lv-*-x86_64.AppImage /
