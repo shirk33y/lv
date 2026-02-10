@@ -25,9 +25,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libsdl2-dev libmpv-dev
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain stable --profile minimal \
-    --component clippy rustfmt
+    sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add clippy rustfmt
 ENV CARGO_INCREMENTAL=0
 
 WORKDIR /src
