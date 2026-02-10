@@ -1,59 +1,16 @@
 name: release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Override version (default: read from Cargo.toml)"
-        required: false
-      prerelease:
-        description: "Mark as prerelease"
-        type: boolean
-        default: false
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
-  # ── Resolve version (shared by all jobs) ─────────────────────────────
-  resolve-version:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: ver
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            V="${{ inputs.version }}"
-          else
-            V=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          fi
-          if [ "${{ inputs.prerelease }}" = "true" ]; then
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            V="${V}-$(date -u +%Y%m%dT%H%M%S)-${SHORT_SHA}"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Releasing v$V"
-          {
-            echo "## Release v$V"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| **Version** | \`$V\` |"
-            echo "| **Prerelease** | ${{ inputs.prerelease }} |"
-            echo "| **Commit** | \`$(git rev-parse --short HEAD)\` |"
-            echo "| **Source** | ${{ inputs.version && 'manual input' || 'Cargo.toml' }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ── Linux build + package (Docker multi-stage) ───────────────────────
   build-linux:
-    needs: resolve-version
     runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,10 +59,7 @@ jobs:
 
   # ── Windows cross-compile + package (Docker multi-stage) ─────────────
   build-windows:
-    needs: resolve-version
     runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,33 +106,32 @@ jobs:
           name: release-windows
           path: dist-windows/
 
-  # ── Publish release ──────────────────────────────────────────────────
+  # ── Upload assets to the release created by release-please ───────────
   publish:
-    needs: [resolve-version, build-linux, build-windows]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.resolve-version.outputs.version }}
+      TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download Linux artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: release-linux
+          path: artifacts/release-linux
 
-      - name: Create GitHub release
-        run: |
-          FLAGS="--title v$VERSION --generate-notes"
-          if [ "${{ inputs.prerelease }}" = "true" ]; then
-            FLAGS="$FLAGS --prerelease"
-          fi
-          gh release create "v$VERSION" $FLAGS
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: artifacts/release-windows
 
       - name: Upload assets
         run: |
-          find artifacts/release-linux -type f | xargs gh release upload "v$VERSION"
-          find artifacts/release-windows -type f | xargs gh release upload "v$VERSION"
+          find artifacts/release-linux -type f | xargs gh release upload "$TAG"
+          find artifacts/release-windows -type f | xargs gh release upload "$TAG"
 
       - name: Summary
         run: |
@@ -188,12 +141,12 @@ jobs:
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"
           {
-            echo "## Published v$VERSION"
+            echo "## Published $TAG"
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| **Release** | [$REPO/releases/tag/v$VERSION]($REPO/releases/tag/v$VERSION) |"
-            echo "| **Tag** | [\`v$VERSION\`]($REPO/tree/v$VERSION) |"
+            echo "| **Release** | [$REPO/releases/tag/$TAG]($REPO/releases/tag/$TAG) |"
+            echo "| **Tag** | [\`$TAG\`]($REPO/tree/$TAG) |"
             echo "| **Commit** | [\`$SHORT_SHA\`]($REPO/commit/$SHA) |"
             echo ""
             echo "### Artifacts"
@@ -202,18 +155,3 @@ jobs:
             echo "#### Windows"
             for f in $WINDOWS; do echo "- \`$f\`"; done
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Bump patch version
-        if: ${{ inputs.prerelease != true }}
-        run: |
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          sed -i "0,/^version = \".*\"/s//version = \"$NEXT\"/" Cargo.toml
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml
-          git commit -m "chore: bump version to $NEXT [skip ci]"
-          git push
