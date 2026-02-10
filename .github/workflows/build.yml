@@ -57,6 +57,60 @@ jobs:
           name: release-linux
           path: dist-linux/
 
+  # ── Linux ARM64 cross-compile + package (Docker multi-stage) ────────
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up QEMU (for arm64 smoke test)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-aarch64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=linux-aarch64
+          cache-to: type=gha,mode=max,scope=linux-aarch64
+          github-token: ${{ github.token }}
+
+      - name: Build + smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-aarch64
+          target: smoke
+          push: false
+          cache-from: type=gha,scope=linux-aarch64
+          github-token: ${{ github.token }}
+
+      - name: Extract artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-aarch64
+          target: out
+          push: false
+          outputs: type=local,dest=dist-linux-arm64
+          cache-from: type=gha,scope=linux-aarch64
+          github-token: ${{ github.token }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: dist-linux-arm64/
+
   # ── Windows cross-compile + package (Docker multi-stage) ─────────────
   build-windows:
     runs-on: ubuntu-latest
@@ -108,7 +162,7 @@ jobs:
 
   # ── Upload assets to the release created by release-please ───────────
   publish:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows]
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name }}
@@ -122,6 +176,12 @@ jobs:
           name: release-linux
           path: artifacts/release-linux
 
+      - name: Download Linux ARM64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: artifacts/release-linux-arm64
+
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
@@ -131,11 +191,13 @@ jobs:
       - name: Upload assets
         run: |
           find artifacts/release-linux -type f | xargs gh release upload "$TAG"
+          find artifacts/release-linux-arm64 -type f | xargs gh release upload "$TAG"
           find artifacts/release-windows -type f | xargs gh release upload "$TAG"
 
       - name: Summary
         run: |
           LINUX=$(find artifacts/release-linux -type f -printf '%f\n' | head -5)
+          LINUX_ARM64=$(find artifacts/release-linux-arm64 -type f -printf '%f\n' | head -5)
           WINDOWS=$(find artifacts/release-windows -type f -printf '%f\n' | head -5)
           REPO="https://github.com/${{ github.repository }}"
           SHA="${{ github.sha }}"
@@ -150,8 +212,10 @@ jobs:
             echo "| **Commit** | [\`$SHORT_SHA\`]($REPO/commit/$SHA) |"
             echo ""
             echo "### Artifacts"
-            echo "#### Linux"
+            echo "#### Linux x86_64"
             for f in $LINUX; do echo "- \`$f\`"; done
+            echo "#### Linux ARM64"
+            for f in $LINUX_ARM64; do echo "- \`$f\`"; done
             echo "#### Windows"
             for f in $WINDOWS; do echo "- \`$f\`"; done
           } >> "$GITHUB_STEP_SUMMARY"
