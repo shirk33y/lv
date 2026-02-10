@@ -39,41 +39,27 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY scripts/cargo-cache-clean.sh /usr/local/bin/cargo-cache-clean
 # Dummy main.rs so cargo can resolve the crate graph and build deps
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo build --release --target x86_64-unknown-linux-gnu 2>&1 \
+RUN cargo build --release --target x86_64-unknown-linux-gnu 2>&1 \
     && cargo build --target x86_64-unknown-linux-gnu 2>&1 \
     || true
-# Clean own crate artifacts + prune cache mounts
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    sh /usr/local/bin/cargo-cache-clean
+# Clean dummy crate artifacts so real source triggers recompile of lv only
+RUN sh /usr/local/bin/cargo-cache-clean
 
 # ── Stage: build (compile lv only) ───────────────────────────────────
 FROM deps AS build
 
 COPY . .
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo build --release --target x86_64-unknown-linux-gnu \
+RUN cargo build --release --target x86_64-unknown-linux-gnu \
     && cp target/x86_64-unknown-linux-gnu/release/lv /tmp/lv \
-    && strip /tmp/lv \
-    && sh /usr/local/bin/cargo-cache-clean
+    && strip /tmp/lv
 
 # ── Stage: test (cargo test + clippy + fmt) ──────────────────────────
 FROM deps AS test
 
 COPY . .
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo test --target x86_64-unknown-linux-gnu \
+RUN cargo test --target x86_64-unknown-linux-gnu \
     && cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings \
-    && cargo fmt -- --check \
-    && sh /usr/local/bin/cargo-cache-clean
+    && cargo fmt -- --check
 
 # ── Stage: package (.deb + .AppImage) ────────────────────────────────
 FROM build AS package

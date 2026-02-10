@@ -21,19 +21,16 @@ RUN dpkg --add-architecture arm64 \
     && ln -sf /usr/lib/aarch64-linux-gnu/libmpv.so.2 /usr/lib/aarch64-linux-gnu/libmpv.so
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain stable --profile minimal \
-    -t aarch64-unknown-linux-gnu
+    sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup target add aarch64-unknown-linux-gnu
 
 RUN printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' \
     >> /root/.cargo/config.toml
 
 WORKDIR /src
 COPY . .
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
+RUN PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
     PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
     cargo build --release --target aarch64-unknown-linux-gnu \
     && cp target/aarch64-unknown-linux-gnu/release/lv /tmp/lv \
