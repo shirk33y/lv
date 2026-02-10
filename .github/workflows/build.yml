@@ -1,0 +1,157 @@
+name: build
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Linux build + package (Docker multi-stage) ───────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          cache-to: type=gha,mode=max,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Build + smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: smoke
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Extract artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: out
+          push: false
+          outputs: type=local,dest=dist-linux
+          cache-from: type=gha,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist-linux/
+
+  # ── Windows cross-compile + package (Docker multi-stage) ─────────────
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=windows-x86_64
+          cache-to: type=gha,mode=max,scope=windows-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Build + smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: smoke
+          push: false
+          cache-from: type=gha,scope=windows-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Extract artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: out
+          push: false
+          outputs: type=local,dest=dist-windows
+          cache-from: type=gha,scope=windows-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist-windows/
+
+  # ── Upload assets to the release created by release-please ───────────
+  publish:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: artifacts/release-linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: artifacts/release-windows
+
+      - name: Upload assets
+        run: |
+          find artifacts/release-linux -type f | xargs gh release upload "$TAG"
+          find artifacts/release-windows -type f | xargs gh release upload "$TAG"
+
+      - name: Summary
+        run: |
+          LINUX=$(find artifacts/release-linux -type f -printf '%f\n' | head -5)
+          WINDOWS=$(find artifacts/release-windows -type f -printf '%f\n' | head -5)
+          REPO="https://github.com/${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          {
+            echo "## Published $TAG"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Release** | [$REPO/releases/tag/$TAG]($REPO/releases/tag/$TAG) |"
+            echo "| **Tag** | [\`$TAG\`]($REPO/tree/$TAG) |"
+            echo "| **Commit** | [\`$SHORT_SHA\`]($REPO/commit/$SHA) |"
+            echo ""
+            echo "### Artifacts"
+            echo "#### Linux"
+            for f in $LINUX; do echo "- \`$f\`"; done
+            echo "#### Windows"
+            for f in $WINDOWS; do echo "- \`$f\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
