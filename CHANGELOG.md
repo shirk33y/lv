@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/shirk33y/lv/compare/lv-v0.1.1...lv-v0.1.2) (2026-02-10)
+
+
+### Bug Fixes
+
+* exclude provenance.json from release asset upload ([eced569](https://github.com/shirk33y/lv/commit/eced569d76a22d3ea0bf08cbdf5c2c37ff9d10a4))
+
 ## [0.1.1](https://github.com/shirk33y/lv/compare/lv-v0.1.0...lv-v0.1.1) (2026-02-10)
 
 
