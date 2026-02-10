@@ -1,6 +1,6 @@
 .PHONY: ci clean dev-linux dev-windows \
         build-linux-intel build-linux-arm build-windows-intel \
-        docker-build smoke-test
+        docker-build docker-smoke smoke-test
 
 # ── Checks ────────────────────────────────────────────────────────────
 ci:
@@ -23,9 +23,12 @@ build-linux-arm:
 build-windows-intel:
 	bash scripts/build-windows-intel.sh
 
-# ── Docker builds → ./dist/ ──────────────────────────────────────────
+# ── Docker builds + smoke tests → ./dist/ ────────────────────────────
 docker-build:
-	bash scripts/docker-build.sh $(TARGET)
+	bash scripts/smoke-test-docker.sh --build-only $(TARGET)
+
+docker-smoke:
+	bash scripts/smoke-test-docker.sh $(TARGET)
 
 # ── Test ──────────────────────────────────────────────────────────────
 smoke-test:

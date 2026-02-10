@@ -1,4 +1,13 @@
 target/
+target-*/
 dist/
 build-installer/
+AppDir/
 .git/
+.github/
+.cargo/
+*.deb
+*.AppImage
+*.exe
+screenshot01.jpg
+test/screenshots/

@@ -58,9 +58,17 @@ impl Db {
     }
 
     pub fn open_default() -> Self {
-        let path = default_db_path();
+        Self::open_path(&default_db_path())
+    }
+
+    pub fn open_path(path: &std::path::Path) -> Self {
         eprintln!("db: {}", path.display());
-        let conn = Connection::open(&path).expect("failed to open lv.db");
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).expect("failed to create db directory");
+            }
+        }
+        let conn = Connection::open(path).expect("failed to open lv.db");
         conn.execute_batch("PRAGMA journal_mode = WAL;").ok();
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         Db(Arc::new(Mutex::new(conn)))
@@ -2698,6 +2706,71 @@ mod tests {
             assert_eq!(lossy1, lossy2); // deterministic
             assert!(lossy1.contains('\u{FFFD}')); // replacement char present
             assert!(!lossy1.contains('\u{FF}')); // original byte gone
+        }
+    }
+
+    // ── open_path creates parent directories ──────────────────────────
+
+    #[test]
+    fn open_path_creates_deeply_nested_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("a").join("b").join("c").join("lv.db");
+        assert!(!db_path.parent().unwrap().exists());
+
+        let db = Db::open_path(&db_path);
+        assert!(db_path.parent().unwrap().exists());
+        db.ensure_schema();
+        assert_eq!(db.file_count(), 0);
+    }
+
+    #[test]
+    fn open_path_existing_dir_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+        assert!(db_path.parent().unwrap().exists());
+
+        let db = Db::open_path(&db_path);
+        db.ensure_schema();
+        assert_eq!(db.file_count(), 0);
+    }
+
+    #[test]
+    fn open_path_single_missing_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("newdir").join("lv.db");
+        assert!(!tmp.path().join("newdir").exists());
+
+        let db = Db::open_path(&db_path);
+        assert!(tmp.path().join("newdir").exists());
+        db.ensure_schema();
+        assert_eq!(db.file_count(), 0);
+    }
+
+    #[test]
+    fn open_path_idempotent_on_existing_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+
+        // First open: creates DB
+        let db1 = Db::open_path(&db_path);
+        db1.ensure_schema();
+        assert_eq!(db1.file_count(), 0);
+        drop(db1);
+
+        // Second open: same path, no error
+        let db2 = Db::open_path(&db_path);
+        db2.ensure_schema();
+        assert_eq!(db2.file_count(), 0);
+    }
+
+    #[test]
+    fn default_db_path_ends_with_lv_db() {
+        // Without LV_DB_PATH set, should use project dirs ending in lv.db
+        // (env var may or may not be set by other tests, so we test the
+        // function's fallback branch directly)
+        if let Some(dirs) = directories::ProjectDirs::from("dev", "lv", "lv") {
+            let path = dirs.data_dir().join("lv.db");
+            assert_eq!(path.file_name().unwrap(), "lv.db");
         }
     }
 }

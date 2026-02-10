@@ -2,11 +2,17 @@
 # CLI smoke test: verify lv subcommands work correctly.
 # Expects lv to be installed (e.g. via .deb) and test fixtures generated.
 set -eo pipefail
-cd "$(dirname "$0")/.."
 
-FIXTURES="$(pwd)/test/fixtures"
+# Allow overriding paths for Docker use
+if [ -z "${LV_FIXTURES:-}" ]; then
+  cd "$(dirname "$0")/.."
+  FIXTURES="$(pwd)/test/fixtures"
+else
+  FIXTURES="$LV_FIXTURES"
+fi
+
 TMPDIR_SMOKE="$(mktemp -d /tmp/lv-smoke-cli.XXXXXX)"
-DB_PATH="$TMPDIR_SMOKE/lv-smoke.db"
+DB_PATH="${LV_DB_PATH:-$TMPDIR_SMOKE/lv-smoke.db}"
 export LV_DB_PATH="$DB_PATH"
 
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT

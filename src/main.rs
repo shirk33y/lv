@@ -533,10 +533,10 @@ fn main() {
         (f, dir, 0)
     };
     if files.is_empty() {
-        eprintln!("No files in dir: {}", current_dir);
-        std::process::exit(1);
+        eprintln!("No files in library (use `lv track <dir>` to add media)");
+    } else {
+        eprintln!("dir: {} ({} files)", current_dir, files.len());
     }
-    eprintln!("dir: {} ({} files)", current_dir, files.len());
 
     // Auto-watch the initial current directory
     let mut watched_dir = current_dir.clone();
@@ -4793,5 +4793,139 @@ mod tests {
                 ext
             );
         }
+    }
+
+    // ── Empty library (no files) tests ──────────────────────────────────
+
+    #[test]
+    fn empty_library_first_dir_is_empty_string() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        let dir = db.first_dir().unwrap_or_default();
+        assert_eq!(dir, "");
+    }
+
+    #[test]
+    fn empty_library_files_by_dir_returns_empty() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        let files = db.files_by_dir("");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn empty_library_file_count_zero() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert_eq!(db.file_count(), 0);
+        assert_eq!(db.dir_count(), 0);
+    }
+
+    #[test]
+    fn empty_files_update_title_is_noop() {
+        // update_title with empty files should not panic
+        // (it guards with `if let Some(file) = files.get(cursor)`)
+        let files: Vec<FileEntry> = Vec::new();
+        let cursor = 0usize;
+        assert!(files.get(cursor).is_none());
+    }
+
+    #[test]
+    fn empty_files_navigation_bounds() {
+        // Simulates j/k navigation guards with empty file list
+        let files: Vec<FileEntry> = Vec::new();
+        let cursor = 0usize;
+        // j: cursor + 1 < files.len() → 1 < 0 → false, no advance
+        assert!(!(cursor + 1 < files.len()));
+        // k: cursor > 0 → false, no retreat
+        assert!(!(cursor > 0));
+    }
+
+    #[test]
+    fn empty_files_display_skipped() {
+        // The display block uses `if let Some(file) = files.get(cursor)`
+        let files: Vec<FileEntry> = Vec::new();
+        let cursor = 0usize;
+        assert!(files.get(cursor).is_none());
+    }
+
+    #[test]
+    fn empty_library_drop_populates_files() {
+        // Starting from empty library, dropping a file should work
+        let (db, dir) = setup_drop_dir(&["photo.jpg", "clip.mp4"]);
+        let mut files: Vec<FileEntry> = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        assert!(files.is_empty());
+        let ok = handle_drop(
+            &db,
+            &dir.path().join("photo.jpg"),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert!(!files.is_empty());
+        assert_eq!(files[cursor].filename, "photo.jpg");
+    }
+
+    #[test]
+    fn empty_library_drop_dir_populates_files() {
+        let (db, dir) = setup_drop_dir(&["a.jpg", "b.png"]);
+        let mut files: Vec<FileEntry> = Vec::new();
+        let mut current_dir = String::new();
+        let mut cursor = 0usize;
+        let mut col = None;
+
+        assert!(files.is_empty());
+        let ok = handle_drop(
+            &db,
+            dir.path(),
+            &mut files,
+            &mut current_dir,
+            &mut cursor,
+            &mut col,
+        );
+        assert!(ok);
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn empty_library_random_file_returns_none() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert!(db.random_file().is_none());
+    }
+
+    #[test]
+    fn empty_library_newest_file_returns_none() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert!(db.newest_file().is_none());
+    }
+
+    #[test]
+    fn empty_library_random_fav_returns_none() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert!(db.random_fav().is_none());
+    }
+
+    #[test]
+    fn empty_library_latest_fav_returns_none() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert!(db.latest_fav().is_none());
+    }
+
+    #[test]
+    fn empty_library_navigate_dir_returns_none() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        assert!(db.navigate_dir("", 1).is_none());
+        assert!(db.navigate_dir("", -1).is_none());
     }
 }

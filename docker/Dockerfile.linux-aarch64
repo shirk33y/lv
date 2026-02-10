@@ -1,11 +1,18 @@
-# Build lv AppImage for Linux aarch64 (cross-compiled from x86_64)
-# Usage: docker build -f docker/Dockerfile.linux-aarch64 -o dist .
+# Build & smoke-test lv .deb for Linux aarch64 (cross-compiled from x86_64)
+#
+# Build only:  docker build -f docker/Dockerfile.linux-aarch64 --target=out -o dist .
+# Smoke test:  docker build -f docker/Dockerfile.linux-aarch64 --target=smoke .
+#
+# The smoke stage runs a native arm64 image — requires QEMU on x86_64 hosts:
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+# ── Stage 1: build (cross-compile on x86_64) ──────────────────────────
 FROM debian:bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture arm64 \
     && apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl pkg-config file binutils \
+    build-essential ca-certificates curl pkg-config file binutils dpkg-dev \
     libsdl2-dev libmpv-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
     libsdl2-dev:arm64 libmpv2:arm64 \
@@ -23,16 +30,31 @@ RUN printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"
 
 WORKDIR /src
 COPY . .
-RUN PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
     PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
     cargo build --release --target aarch64-unknown-linux-gnu \
-    && aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/lv
+    && cp target/aarch64-unknown-linux-gnu/release/lv /tmp/lv \
+    && aarch64-linux-gnu-strip /tmp/lv
 
-# Build AppImage (cross mode: use readelf + LIB_SEARCH_PATH instead of ldd)
-# Point readelf to the aarch64 version for parsing arm64 ELF binaries
-RUN PATH="/usr/aarch64-linux-gnu/bin:$PATH" \
-    LIB_SEARCH_PATH="/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu" \
-    ./pkg/appimage.sh aarch64 target/aarch64-unknown-linux-gnu/release/lv
+RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
+    bash pkg/deb.sh arm64 /tmp/lv
 
-FROM scratch
-COPY --from=build /src/lv-*-aarch64.AppImage /lv-linux-aarch64.AppImage
+# ── Stage 2: smoke test (native arm64 via QEMU) ───────────────────────
+FROM --platform=linux/arm64 ubuntu:22.04 AS smoke
+
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=build /src/lv_*_arm64.deb /tmp/
+RUN apt-get update -qq \
+    && apt-get install -y -qq /tmp/lv_*_arm64.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY test/fixtures/ /fixtures/
+COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
+RUN LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage 3: output artifact ──────────────────────────────────────────
+FROM scratch AS out
+COPY --from=build /src/lv_*_arm64.deb /

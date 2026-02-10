@@ -10,5 +10,4 @@ lv-*.AppImage
 
 # Smoke test artifacts
 test/screenshots/actual/
-test/fixtures/*.png
 lv_*.deb
