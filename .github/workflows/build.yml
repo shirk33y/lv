@@ -190,9 +190,7 @@ jobs:
 
       - name: Upload assets
         run: |
-          find artifacts/release-linux -type f | xargs gh release upload "$TAG"
-          find artifacts/release-linux-arm64 -type f | xargs gh release upload "$TAG"
-          find artifacts/release-windows -type f | xargs gh release upload "$TAG"
+          find artifacts -type f ! -name 'provenance.json' | xargs gh release upload "$TAG"
 
       - name: Summary
         run: |
