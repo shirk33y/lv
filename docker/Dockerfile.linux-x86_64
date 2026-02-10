@@ -4,7 +4,8 @@
 #   base    — system deps + Rust toolchain (cached layer)
 #   deps    — compile dependencies only (cached unless Cargo.toml/lock change)
 #   build   — compile lv (only recompiles lv crate, ~6s)
-#   test    — cargo test + clippy + fmt (can run parallel with build)
+#   test    — cargo test
+#   lint    — clippy + fmt check
 #   package — .deb + .AppImage
 #   smoke   — install .deb, run CLI smoke tests
 #   out     — scratch, extract artifacts
@@ -13,6 +14,7 @@
 #   docker build -f docker/Dockerfile.linux-x86_64 --target=out -o dist .
 #   docker build -f docker/Dockerfile.linux-x86_64 --target=smoke .
 #   docker build -f docker/Dockerfile.linux-x86_64 --target=test .
+#   docker build -f docker/Dockerfile.linux-x86_64 --target=lint .
 
 # ── Stage: base (toolchain + system deps) ────────────────────────────
 FROM ubuntu:22.04 AS base
@@ -53,12 +55,17 @@ RUN cargo build --release --target x86_64-unknown-linux-gnu \
     && cp target/x86_64-unknown-linux-gnu/release/lv /tmp/lv \
     && strip /tmp/lv
 
-# ── Stage: test (cargo test + clippy + fmt) ──────────────────────────
+# ── Stage: test (cargo test) ───────────────────────────────────────
 FROM deps AS test
 
 COPY . .
-RUN cargo test --target x86_64-unknown-linux-gnu \
-    && cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings \
+RUN cargo test --target x86_64-unknown-linux-gnu
+
+# ── Stage: lint (clippy + fmt) ─────────────────────────────────────
+FROM deps AS lint
+
+COPY . .
+RUN cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings \
     && cargo fmt -- --check
 
 # ── Stage: package (.deb + .AppImage) ────────────────────────────────

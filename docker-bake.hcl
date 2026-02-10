@@ -15,7 +15,7 @@ group "default" {
 }
 
 group "test" {
-  targets = ["linux-test"]
+  targets = ["linux-test", "linux-lint"]
 }
 
 group "smoke" {
@@ -28,6 +28,12 @@ target "linux-test" {
   dockerfile = "docker/Dockerfile.linux-x86_64"
   context    = "."
   target     = "test"
+}
+
+target "linux-lint" {
+  dockerfile = "docker/Dockerfile.linux-x86_64"
+  context    = "."
+  target     = "lint"
 }
 
 target "linux-smoke" {

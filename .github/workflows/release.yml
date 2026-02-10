@@ -62,6 +62,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          cache-to: type=gha,mode=max,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
       - name: Build + smoke test
         uses: docker/build-push-action@v6
         with:
@@ -70,7 +81,6 @@ jobs:
           target: smoke
           push: false
           cache-from: type=gha,scope=linux-x86_64
-          cache-to: type=gha,mode=max,scope=linux-x86_64
           github-token: ${{ github.token }}
 
       - name: Extract artifacts
@@ -104,6 +114,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.windows-x86_64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=windows-x86_64
+          cache-to: type=gha,mode=max,scope=windows-x86_64
+          github-token: ${{ github.token }}
+
       - name: Build + smoke test
         uses: docker/build-push-action@v6
         with:
@@ -112,7 +133,6 @@ jobs:
           target: smoke
           push: false
           cache-from: type=gha,scope=windows-x86_64
-          cache-to: type=gha,mode=max,scope=windows-x86_64
           github-token: ${{ github.token }}
 
       - name: Extract artifacts

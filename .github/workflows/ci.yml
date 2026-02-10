@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +15,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Run tests (cargo test + clippy + fmt)
+      - name: Compile dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: deps
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
+          cache-to: type=gha,mode=max,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Test (cargo test)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -23,5 +34,14 @@ jobs:
           target: test
           push: false
           cache-from: type=gha,scope=linux-x86_64
-          cache-to: type=gha,mode=max,scope=linux-x86_64
+          github-token: ${{ github.token }}
+
+      - name: Lint (clippy + fmt)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.linux-x86_64
+          target: lint
+          push: false
+          cache-from: type=gha,scope=linux-x86_64
           github-token: ${{ github.token }}
