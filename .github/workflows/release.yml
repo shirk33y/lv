@@ -71,6 +71,7 @@ jobs:
           push: false
           cache-from: type=gha,scope=linux-x86_64
           cache-to: type=gha,mode=max,scope=linux-x86_64
+          github-token: ${{ github.token }}
 
       - name: Extract artifacts
         uses: docker/build-push-action@v6
@@ -81,6 +82,7 @@ jobs:
           push: false
           outputs: type=local,dest=dist-linux
           cache-from: type=gha,scope=linux-x86_64
+          github-token: ${{ github.token }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -111,6 +113,7 @@ jobs:
           push: false
           cache-from: type=gha,scope=windows-x86_64
           cache-to: type=gha,mode=max,scope=windows-x86_64
+          github-token: ${{ github.token }}
 
       - name: Extract artifacts
         uses: docker/build-push-action@v6
@@ -121,6 +124,7 @@ jobs:
           push: false
           outputs: type=local,dest=dist-windows
           cache-from: type=gha,scope=windows-x86_64
+          github-token: ${{ github.token }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
