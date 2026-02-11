@@ -9,5 +9,10 @@ AppDir/
 *.deb
 *.AppImage
 *.exe
+*.md
 screenshot01.jpg
+Makefile
+docker-bake.hcl
+release-please-config.json
+.release-please-manifest.json
 test/screenshots/

@@ -76,19 +76,35 @@ RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') 
 RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
     bash pkg/appimage.sh x86_64 /tmp/lv
 
-# ── Stage: smoke (install .deb + CLI smoke tests) ────────────────────
-FROM ubuntu:22.04 AS smoke
+# ── Stage: smoke-debian12 (Debian 12 bookworm, amd64) ────────────────
+FROM debian:bookworm-slim AS smoke-debian12
 
 ENV DEBIAN_FRONTEND=noninteractive
 COPY --from=package /src/lv_*_amd64.deb /tmp/
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update -qq \
-    && apt-get install -y -qq /tmp/lv_*_amd64.deb
+RUN dpkg -i /tmp/lv_*_amd64.deb
 
 COPY test/fixtures/ /fixtures/
 COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
-RUN LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+RUN echo "=== Smoke: Debian 12 amd64 ===" \
+    && LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage: smoke-ubuntu2204 (Ubuntu 22.04, amd64) ───────────────────
+FROM ubuntu:22.04 AS smoke-ubuntu2204
+
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=package /src/lv_*_amd64.deb /tmp/
+RUN dpkg -i /tmp/lv_*_amd64.deb
+
+COPY test/fixtures/ /fixtures/
+COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
+RUN echo "=== Smoke: Ubuntu 22.04 amd64 ===" \
+    && LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage: smoke (gate — all smoke tests must pass) ──────────────────
+FROM debian:bookworm-slim AS smoke
+COPY --from=smoke-debian12 /usr/bin/lv /tmp/smoke-debian12-ok
+COPY --from=smoke-ubuntu2204 /usr/bin/lv /tmp/smoke-ubuntu2204-ok
+RUN echo "All amd64 smoke tests passed"
 
 # ── Stage: out (extract artifacts) ───────────────────────────────────
 FROM scratch AS out

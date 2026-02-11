@@ -20,8 +20,13 @@ fn main() {
         }
     }
 
-    // ── Windows link path + icon ─────────────────────────────────────
+    // ── Linux RPATH (bundled libs in /usr/lib/lv/) ───────────────────
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target == "linux" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/lv");
+    }
+
+    // ── Windows link path + icon ─────────────────────────────────────
     if target == "windows" {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let lib_dir = std::path::Path::new(&manifest).join("pkg/win64");

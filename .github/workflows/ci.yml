@@ -16,36 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsdl2-dev libmpv-dev
 
-      - name: Compile dependencies
-        uses: docker/build-push-action@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: deps
-          push: false
-          cache-from: type=gha,scope=linux-x86_64
-          cache-to: type=gha,mode=max,scope=linux-x86_64
-          github-token: ${{ github.token }}
+          components: clippy, rustfmt
 
-      - name: Test (cargo test)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: test
-          push: false
-          cache-from: type=gha,scope=linux-x86_64
-          github-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Lint (clippy + fmt)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: lint
-          push: false
-          cache-from: type=gha,scope=linux-x86_64
-          github-token: ${{ github.token }}
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Format
+        run: cargo fmt -- --check

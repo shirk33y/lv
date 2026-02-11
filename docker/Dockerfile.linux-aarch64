@@ -57,21 +57,35 @@ FROM build AS package
 RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
     bash pkg/deb.sh arm64 /tmp/lv
 
-# ── Stage: smoke test (native arm64 via QEMU) ───────────────────────
-FROM --platform=linux/arm64 ubuntu:22.04 AS smoke
+# ── Stage: smoke-debian12 (Debian 12 bookworm, arm64) ────────────────
+FROM --platform=linux/arm64 debian:bookworm-slim AS smoke-debian12
 
 ENV DEBIAN_FRONTEND=noninteractive
 COPY --from=package /src/lv_*_arm64.deb /tmp/
-RUN apt-get update -qq \
-    && apt-get install -y -qq software-properties-common \
-    && add-apt-repository -y universe \
-    && apt-get update -qq \
-    && apt-get install -y -qq /tmp/lv_*_arm64.deb \
-    && rm -rf /var/lib/apt/lists/*
+RUN dpkg -i /tmp/lv_*_arm64.deb
 
 COPY test/fixtures/ /fixtures/
 COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
-RUN LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+RUN echo "=== Smoke: Debian 12 arm64 ===" \
+    && LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage: smoke-debian13 (Debian 13 trixie, arm64) ─────────────────
+FROM --platform=linux/arm64 debian:trixie-slim AS smoke-debian13
+
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=package /src/lv_*_arm64.deb /tmp/
+RUN dpkg -i /tmp/lv_*_arm64.deb
+
+COPY test/fixtures/ /fixtures/
+COPY scripts/smoke-test-cli.sh /scripts/smoke-test-cli.sh
+RUN echo "=== Smoke: Debian 13 arm64 ===" \
+    && LV_FIXTURES=/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash /scripts/smoke-test-cli.sh
+
+# ── Stage: smoke (gate — all smoke tests must pass) ──────────────────
+FROM --platform=linux/arm64 debian:bookworm-slim AS smoke
+COPY --from=smoke-debian12 /usr/bin/lv /tmp/smoke-debian12-ok
+COPY --from=smoke-debian13 /usr/bin/lv /tmp/smoke-debian13-ok
+RUN echo "All arm64 smoke tests passed"
 
 # ── Stage: out (extract artifacts) ───────────────────────────────────
 FROM scratch AS out
