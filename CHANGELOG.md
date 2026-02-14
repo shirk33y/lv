@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/shirk33y/lv/compare/lv-v0.1.2...lv-v0.1.3) (2026-02-11)
+
+
+### Bug Fixes
+
+* libmpv dep hopefully ([ad85104](https://github.com/shirk33y/lv/commit/ad85104b0e020bed160be44075efd73824400519))
+
 ## [0.1.2](https://github.com/shirk33y/lv/compare/lv-v0.1.1...lv-v0.1.2) (2026-02-10)
 
 
