@@ -1,13 +1,32 @@
+# Rust
 /target/
 /target-linux-intel/
 /target-linux-arm/
 /target-windows-intel/
+Cargo.lock
+**/*.rs.bk
+
+# Build artifacts
 /dist/
 build-installer/
 AppDir/
 appimagetool-*.AppImage
 lv-*.AppImage
-
-# Smoke test artifacts
-test/screenshots/actual/
 lv_*.deb
+
+# Test artifacts
+test/screenshots/actual/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
