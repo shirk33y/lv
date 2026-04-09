@@ -432,7 +432,6 @@ pub fn draw_info_panel(
 
         let mut rows: Vec<(&str, String)> = Vec::new();
         rows.push(("Filename", meta.filename.clone()));
-        rows.push(("Directory", crate::clean_path(&meta.dir)));
         if let Some(size) = meta.size {
             rows.push(("Size", format_size(size)));
         }
@@ -476,27 +475,6 @@ pub fn draw_info_panel(
             }
         }
 
-        // SHA-512 at bottom (long, special handling)
-        if let Some(ref hash) = meta.hash_sha512 {
-            ui.spacing();
-            ui.separator();
-            ui.spacing();
-            ui.text_colored(LABEL_COL, "SHA-512");
-            // Show hash in two lines of 32 chars
-            let h = hash.as_str();
-            if h.len() > 32 {
-                ui.text_colored(DIM, &h[..32]);
-                ui.text_colored(DIM, &h[32..64.min(h.len())]);
-                if h.len() > 64 {
-                    ui.text_colored(DIM, &h[64..96.min(h.len())]);
-                    if h.len() > 96 {
-                        ui.text_colored(DIM, &h[96..]);
-                    }
-                }
-            } else {
-                ui.text_colored(DIM, h);
-            }
-        }
 
         // AI metadata
         if let Some(ref info) = meta.pnginfo {
@@ -507,12 +485,6 @@ pub fn draw_info_panel(
             ui.text_wrapped(info);
         }
 
-        // Path at very bottom
-        ui.spacing();
-        ui.separator();
-        ui.spacing();
-        ui.text_colored(LABEL_COL, "Path");
-        ui.text_wrapped(crate::clean_path(&meta.path));
     }
 
     panel_w
