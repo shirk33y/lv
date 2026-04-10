@@ -32,6 +32,7 @@ pub struct CollectionStats {
 }
 
 /// Extended metadata for the info sidebar.
+#[allow(dead_code)]
 pub struct FileMeta {
     pub filename: String,
     pub path: String,
