@@ -475,7 +475,6 @@ pub fn draw_info_panel(
             }
         }
 
-
         // AI metadata
         if let Some(ref info) = meta.pnginfo {
             ui.spacing();
@@ -484,7 +483,6 @@ pub fn draw_info_panel(
             ui.text_colored(HEADER_COL, "AI");
             ui.text_wrapped(info);
         }
-
     }
 
     panel_w
