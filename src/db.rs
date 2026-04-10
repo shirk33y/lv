@@ -34,11 +34,8 @@ pub struct CollectionStats {
 /// Extended metadata for the info sidebar.
 pub struct FileMeta {
     pub filename: String,
-    pub path: String,
-    pub dir: String,
     pub size: Option<i64>,
     pub modified_at: Option<String>,
-    pub hash_sha512: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub format: Option<String>,
@@ -733,30 +730,27 @@ impl Db {
     pub fn get_file_metadata(&self, file_id: i64) -> Option<FileMeta> {
         let db = self.conn();
         db.query_row(
-            "SELECT f.filename, f.path, f.dir, f.size, f.modified_at, f.hash_sha512,
+            "SELECT f.filename, f.size, f.modified_at,
                     m.width, m.height, m.format, m.duration_ms, m.bitrate, m.codecs,
                     COALESCE(m.tags, '[]'), m.pnginfo
              FROM files f LEFT JOIN meta m ON f.meta_id = m.id
              WHERE f.id = ?1",
             [file_id],
             |row| {
-                let tags_str: String = row.get(12)?;
+                let tags_str: String = row.get(9)?;
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
                 Ok(FileMeta {
                     filename: row.get(0)?,
-                    path: row.get(1)?,
-                    dir: row.get(2)?,
-                    size: row.get(3)?,
-                    modified_at: row.get(4)?,
-                    hash_sha512: row.get(5)?,
-                    width: row.get(6)?,
-                    height: row.get(7)?,
-                    format: row.get(8)?,
-                    duration_ms: row.get(9)?,
-                    bitrate: row.get(10)?,
-                    codecs: row.get(11)?,
+                    size: row.get(1)?,
+                    modified_at: row.get(2)?,
+                    width: row.get(3)?,
+                    height: row.get(4)?,
+                    format: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    bitrate: row.get(7)?,
+                    codecs: row.get(8)?,
                     tags,
-                    pnginfo: row.get(13)?,
+                    pnginfo: row.get(10)?,
                 })
             },
         )
@@ -1866,8 +1860,6 @@ mod tests {
         assert!(meta.is_some());
         let m = meta.unwrap();
         assert_eq!(m.filename, "1.jpg");
-        assert_eq!(m.path, "/a/1.jpg");
-        assert_eq!(m.dir, "/a");
         assert!(m.width.is_none());
         assert!(m.tags.is_empty());
     }
@@ -2614,11 +2606,8 @@ mod tests {
 
         let meta = db.get_file_metadata(fid).unwrap();
         assert_eq!(meta.filename, "photo.png");
-        assert_eq!(meta.path, "/a/photo.png");
-        assert_eq!(meta.dir, "/a");
         assert_eq!(meta.size, Some(5000));
         assert_eq!(meta.modified_at, Some("2025-01-15".into()));
-        assert_eq!(meta.hash_sha512, Some("sha512_abc".into()));
         assert_eq!(meta.width, Some(3840));
         assert_eq!(meta.height, Some(2160));
         assert_eq!(meta.format, Some("PNG".into()));
@@ -2635,7 +2624,6 @@ mod tests {
         let meta = db.get_file_metadata(1).unwrap();
         assert_eq!(meta.filename, "photo.jpg");
         assert!(meta.width.is_none());
-        assert!(meta.hash_sha512.is_none());
     }
 
     #[test]
