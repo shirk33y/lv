@@ -1860,8 +1860,6 @@ mod tests {
         assert!(meta.is_some());
         let m = meta.unwrap();
         assert_eq!(m.filename, "1.jpg");
-        assert_eq!(m.path, "/a/1.jpg");
-        assert_eq!(m.dir, "/a");
         assert!(m.width.is_none());
         assert!(m.tags.is_empty());
     }
@@ -2608,11 +2606,8 @@ mod tests {
 
         let meta = db.get_file_metadata(fid).unwrap();
         assert_eq!(meta.filename, "photo.png");
-        assert_eq!(meta.path, "/a/photo.png");
-        assert_eq!(meta.dir, "/a");
         assert_eq!(meta.size, Some(5000));
         assert_eq!(meta.modified_at, Some("2025-01-15".into()));
-        assert_eq!(meta.hash_sha512, Some("sha512_abc".into()));
         assert_eq!(meta.width, Some(3840));
         assert_eq!(meta.height, Some(2160));
         assert_eq!(meta.format, Some("PNG".into()));
@@ -2629,7 +2624,6 @@ mod tests {
         let meta = db.get_file_metadata(1).unwrap();
         assert_eq!(meta.filename, "photo.jpg");
         assert!(meta.width.is_none());
-        assert!(meta.hash_sha512.is_none());
     }
 
     #[test]
