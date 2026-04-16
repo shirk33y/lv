@@ -10,9 +10,11 @@ ARCH="${1:-$(uname -m)}"
 BINARY="${2:-target/release/lv}"
 LV_VERSION="${LV_VERSION:-$(git -C "$(dirname "$0")/.." describe --always --dirty 2>/dev/null || echo dev)}"
 APPDIR="AppDir"
-OUTPUT="lv-${LV_VERSION}-${ARCH}.AppImage"
+BUILD_DIR="${BUILD_DIR:-build/appimage}"
+OUTPUT="${BUILD_DIR}/lv-${LV_VERSION}-${ARCH}.AppImage"
 
 cd "$(dirname "$0")/.."
+mkdir -p "$BUILD_DIR"
 
 if [ ! -f "$BINARY" ]; then
   echo "ERROR: binary not found: $BINARY" >&2
@@ -44,6 +46,8 @@ skip_lib() {
   case "$1" in
     libc.so*|libm.so*|libdl.so*|librt.so*|libpthread.so*|ld-linux*) return 0 ;;
     libstdc++*|libgcc_s*) return 0 ;;
+    libGL.so*|libEGL.so*|libGLX.so*|libGLdispatch.so*|libgbm.so*|libdrm.so*) return 0 ;;
+    libmpv.so*) return 0 ;;
   esac
   return 1
 }

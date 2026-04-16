@@ -28,7 +28,7 @@ use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::video::GLProfile;
 
-use libmpv2::Mpv;
+use std::ffi::CString;
 
 use db::{Db, FileEntry};
 use preload::TextureCache;
@@ -154,18 +154,38 @@ fn handle_drop(
 }
 
 /// Send mpv "stop" asynchronously so it doesn't block the UI thread.
-unsafe fn mpv_stop_async(handle: *mut libmpv2_sys::mpv_handle) {
-    let cmd = std::ffi::CString::new("stop").unwrap();
+unsafe fn mpv_stop_async(handle: *mut libmpv_sys::mpv_handle) {
+    let cmd = CString::new("stop").unwrap();
     let args: [*const std::os::raw::c_char; 2] = [cmd.as_ptr(), std::ptr::null()];
-    libmpv2_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
 }
 
 /// Send mpv "loadfile" asynchronously so it doesn't block the UI thread.
-unsafe fn mpv_loadfile_async(handle: *mut libmpv2_sys::mpv_handle, path: &str) {
-    let cmd = std::ffi::CString::new("loadfile").unwrap();
-    let p = std::ffi::CString::new(path).unwrap();
+unsafe fn mpv_loadfile_async(handle: *mut libmpv_sys::mpv_handle, path: &str) {
+    let cmd = CString::new("loadfile").unwrap();
+    let p = CString::new(path).unwrap();
     let args: [*const std::os::raw::c_char; 3] = [cmd.as_ptr(), p.as_ptr(), std::ptr::null()];
-    libmpv2_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+}
+
+unsafe fn mpv_command_async_2(handle: *mut libmpv_sys::mpv_handle, a0: &str, a1: &str) {
+    let c0 = CString::new(a0).unwrap();
+    let c1 = CString::new(a1).unwrap();
+    let args: [*const std::os::raw::c_char; 3] = [c0.as_ptr(), c1.as_ptr(), std::ptr::null()];
+    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+}
+
+unsafe fn mpv_set_property_i64(handle: *mut libmpv_sys::mpv_handle, name: &str, val: i64) {
+    let n = CString::new(name).unwrap();
+    let rc = libmpv_sys::mpv_set_property(
+        handle,
+        n.as_ptr(),
+        libmpv_sys::mpv_format_MPV_FORMAT_INT64,
+        &val as *const i64 as *mut _,
+    );
+    if rc < 0 {
+        eprintln!("mpv_set_property({}) failed: {}", name, rc);
+    }
 }
 
 // ── Offthread mpv rendering ──────────────────────────────────────────────
@@ -183,7 +203,7 @@ struct MpvRenderShared {
     height: AtomicU32,
     resize: AtomicBool,
     /// render thread → main: raw render context ptr (for report_swap)
-    render_ctx: AtomicPtr<libmpv2_sys::mpv_render_context>,
+    render_ctx: AtomicPtr<libmpv_sys::mpv_render_context>,
 }
 
 /// Spawns the mpv render thread.  Pointers are passed as `usize` for `Send`.
@@ -198,7 +218,7 @@ fn spawn_mpv_render_thread(
         .spawn(move || {
             let win = win_ptr as *mut sdl2_sys::SDL_Window;
             let gl_ctx = gl_ctx_ptr as sdl2_sys::SDL_GLContext;
-            let mpv_h = mpv_ptr as *mut libmpv2_sys::mpv_handle;
+            let mpv_h = mpv_ptr as *mut libmpv_sys::mpv_handle;
 
             // Make the shared GL context current on this thread
             unsafe { sdl2_sys::SDL_GL_MakeCurrent(win, gl_ctx); }
@@ -213,28 +233,29 @@ fn spawn_mpv_render_thread(
 
             // Create mpv render context via raw FFI
             let api_type = std::ffi::CString::new("opengl").unwrap();
-            let mut init_params = libmpv2_sys::mpv_opengl_init_params {
+            let mut init_params = libmpv_sys::mpv_opengl_init_params {
                 get_proc_address: Some(get_proc),
                 get_proc_address_ctx: std::ptr::null_mut(),
+                extra_exts: std::ptr::null(),
             };
             let mut params = [
-                libmpv2_sys::mpv_render_param {
-                    type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
+                libmpv_sys::mpv_render_param {
+                    type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
                     data: api_type.as_ptr() as *mut _,
                 },
-                libmpv2_sys::mpv_render_param {
-                    type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
+                libmpv_sys::mpv_render_param {
+                    type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
                     data: &mut init_params as *mut _ as *mut _,
                 },
-                libmpv2_sys::mpv_render_param {
-                    type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+                libmpv_sys::mpv_render_param {
+                    type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
                     data: std::ptr::null_mut(),
                 },
             ];
 
-            let mut render_ctx: *mut libmpv2_sys::mpv_render_context = std::ptr::null_mut();
+            let mut render_ctx: *mut libmpv_sys::mpv_render_context = std::ptr::null_mut();
             let rc = unsafe {
-                libmpv2_sys::mpv_render_context_create(
+                libmpv_sys::mpv_render_context_create(
                     &mut render_ctx,
                     mpv_h,
                     params.as_mut_ptr(),
@@ -253,7 +274,7 @@ fn spawn_mpv_render_thread(
                 flag.store(true, Ordering::Release);
             }
             unsafe {
-                libmpv2_sys::mpv_render_context_set_update_callback(
+                libmpv_sys::mpv_render_context_set_update_callback(
                     render_ctx,
                     Some(redraw_cb),
                     redraw_ptr as *mut _,
@@ -314,7 +335,7 @@ fn spawn_mpv_render_thread(
 
                 // Render when mpv signals a new frame
                 if redraw_flag.swap(false, Ordering::AcqRel) {
-                    let mut fbo_desc = libmpv2_sys::mpv_opengl_fbo {
+                    let mut fbo_desc = libmpv_sys::mpv_opengl_fbo {
                         fbo: fbo[back] as i32,
                         w: w as i32,
                         h: h as i32,
@@ -323,26 +344,26 @@ fn spawn_mpv_render_thread(
                     let mut flip: i32 = 1;
                     let mut block_time: i32 = 0; // don't block for A/V target time
                     let mut render_params = [
-                        libmpv2_sys::mpv_render_param {
-                            type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO,
+                        libmpv_sys::mpv_render_param {
+                            type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO,
                             data: &mut fbo_desc as *mut _ as *mut _,
                         },
-                        libmpv2_sys::mpv_render_param {
-                            type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y,
+                        libmpv_sys::mpv_render_param {
+                            type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y,
                             data: &mut flip as *mut _ as *mut _,
                         },
-                        libmpv2_sys::mpv_render_param {
-                            type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                        libmpv_sys::mpv_render_param {
+                            type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
                             data: &mut block_time as *mut _ as *mut _,
                         },
-                        libmpv2_sys::mpv_render_param {
-                            type_: libmpv2_sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+                        libmpv_sys::mpv_render_param {
+                            type_: libmpv_sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
                             data: std::ptr::null_mut(),
                         },
                     ];
 
                     unsafe {
-                        libmpv2_sys::mpv_render_context_render(
+                        libmpv_sys::mpv_render_context_render(
                             render_ctx,
                             render_params.as_mut_ptr(),
                         );
@@ -360,10 +381,10 @@ fn spawn_mpv_render_thread(
 
             // Cleanup
             unsafe {
-                libmpv2_sys::mpv_render_context_set_update_callback(
+                libmpv_sys::mpv_render_context_set_update_callback(
                     render_ctx, None, std::ptr::null_mut(),
                 );
-                libmpv2_sys::mpv_render_context_free(render_ctx);
+                libmpv_sys::mpv_render_context_free(render_ctx);
                 gl::DeleteFramebuffers(2, fbo.as_ptr());
                 gl::DeleteTextures(2, tex.as_ptr());
                 // Reclaim the leaked AtomicBool
@@ -544,6 +565,15 @@ fn main() {
 
     // ── SDL2 + OpenGL ───────────────────────────────────────────────────
     let sdl = sdl2::init().expect("SDL2 init failed");
+    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        if std::env::var_os("__GLX_VENDOR_LIBRARY_NAME").is_none() {
+            if let Ok(display) = std::env::var("DISPLAY") {
+                if display != ":0" {
+                    std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "mesa");
+                }
+            }
+        }
+    }
     let video = sdl.video().expect("SDL2 video init failed");
 
     let gl_attr = video.gl_attr();
@@ -606,39 +636,53 @@ fn main() {
         .expect("Failed to create imgui glow renderer");
 
     // ── libmpv ──────────────────────────────────────────────────────────
-    let mpv = Mpv::new().expect("Failed to create mpv instance");
-    mpv.set_property("vo", "libmpv").unwrap();
-    mpv.set_property("hwdec", "auto").unwrap();
-    mpv.set_property("terminal", "no").unwrap();
-    mpv.set_property("image-display-duration", "inf").unwrap();
-    mpv.set_property("keep-open", "yes").unwrap();
+    let mpv_handle = unsafe { libmpv_sys::mpv_create() };
+    if mpv_handle.is_null() {
+        panic!("Failed to create mpv instance");
+    }
+    let set_prop = |name: &str, val: &str| {
+        let n = CString::new(name).unwrap();
+        let v = CString::new(val).unwrap();
+        let rc = unsafe { libmpv_sys::mpv_set_property_string(mpv_handle, n.as_ptr(), v.as_ptr()) };
+        if rc < 0 {
+            panic!("mpv_set_property_string failed: {}", rc);
+        }
+    };
+    set_prop("vo", "libmpv");
+    set_prop("hwdec", "auto");
+    set_prop("terminal", "no");
+    set_prop("image-display-duration", "inf");
+    set_prop("keep-open", "yes");
+    let init_rc = unsafe { libmpv_sys::mpv_initialize(mpv_handle) };
+    if init_rc < 0 {
+        panic!("mpv_initialize failed: {}", init_rc);
+    }
 
     // Observe properties via push events (non-blocking, replaces get_property polling)
     const OBS_TIME_POS: u64 = 1;
     const OBS_DURATION: u64 = 2;
     const OBS_PAUSE: u64 = 3;
     unsafe {
-        let h = mpv.ctx.as_ptr();
-        let tp = std::ffi::CString::new("time-pos").unwrap();
-        let dur = std::ffi::CString::new("duration").unwrap();
-        let pau = std::ffi::CString::new("pause").unwrap();
-        libmpv2_sys::mpv_observe_property(
-            h,
+        let tp = CString::new("time-pos").unwrap();
+        let dur = CString::new("duration").unwrap();
+        let pau = CString::new("pause").unwrap();
+        libmpv_sys::mpv_observe_property(
+            mpv_handle,
             OBS_TIME_POS,
             tp.as_ptr(),
-            libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE,
+            libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
         );
-        libmpv2_sys::mpv_observe_property(
-            h,
+        libmpv_sys::mpv_observe_property(
+            mpv_handle,
             OBS_DURATION,
             dur.as_ptr(),
-            libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE,
+            libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
         );
-        libmpv2_sys::mpv_observe_property(
-            h,
+        libmpv_sys::mpv_observe_property(
+            mpv_handle,
             OBS_PAUSE,
             pau.as_ptr(),
-            libmpv2_sys::mpv_format_MPV_FORMAT_FLAG,
+            libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
         );
     }
 
@@ -670,7 +714,6 @@ fn main() {
         resize: AtomicBool::new(false),
         render_ctx: AtomicPtr::new(std::ptr::null_mut()),
     });
-    let mpv_handle = mpv.ctx.as_ptr();
     let render_thread = spawn_mpv_render_thread(
         window.raw() as usize,
         mpv_gl_ctx_raw as usize,
@@ -1100,31 +1143,31 @@ fn main() {
                         // ── space: pause video ──────────────────────────
                         Keycode::Space => {
                             if using_mpv {
-                                mpv.command("cycle", &["pause"]).ok();
+                                unsafe { mpv_command_async_2(mpv_handle, "cycle", "pause") };
                             }
                         }
 
                         // ── video seek / volume ─────────────────────────
                         Keycode::Left => {
                             if using_mpv {
-                                mpv.command("seek", &["-5"]).ok();
+                                unsafe { mpv_command_async_2(mpv_handle, "seek", "-5") };
                             }
                         }
                         Keycode::Right => {
                             if using_mpv {
-                                mpv.command("seek", &["15"]).ok();
+                                unsafe { mpv_command_async_2(mpv_handle, "seek", "15") };
                             }
                         }
                         Keycode::Up => {
                             if using_mpv {
                                 volume = (volume + 5).min(150);
-                                mpv.set_property("volume", volume).ok();
+                                unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                             }
                         }
                         Keycode::Down => {
                             if using_mpv {
                                 volume = (volume - 5).max(0);
-                                mpv.set_property("volume", volume).ok();
+                                unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                             }
                         }
 
@@ -1331,61 +1374,8 @@ fn main() {
         }
 
         let _t_debounce = _t3.elapsed();
+
         let _t4 = Instant::now();
-
-        // ── Drain mpv events (before rendering for responsiveness) ─────
-        if using_mpv {
-            loop {
-                let ev = unsafe { libmpv2_sys::mpv_wait_event(mpv_handle, 0.0) };
-                if ev.is_null() {
-                    break;
-                }
-                let event_id = unsafe { (*ev).event_id };
-                match event_id {
-                    libmpv2_sys::mpv_event_id_MPV_EVENT_NONE => break,
-                    libmpv2_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => {
-                        running = false;
-                        break;
-                    }
-                    libmpv2_sys::mpv_event_id_MPV_EVENT_PLAYBACK_RESTART => {
-                        video_has_frame = true;
-                    }
-                    libmpv2_sys::mpv_event_id_MPV_EVENT_END_FILE => {
-                        video_has_frame = false;
-                    }
-                    libmpv2_sys::mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => unsafe {
-                        let prop = (*ev).data as *const libmpv2_sys::mpv_event_property;
-                        if !prop.is_null() {
-                            match (*ev).reply_userdata {
-                                OBS_TIME_POS => {
-                                    if (*prop).format == libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE {
-                                        video_pos = *((*prop).data as *const f64);
-                                    }
-                                }
-                                OBS_DURATION => {
-                                    if (*prop).format == libmpv2_sys::mpv_format_MPV_FORMAT_DOUBLE {
-                                        video_duration = *((*prop).data as *const f64);
-                                    }
-                                }
-                                OBS_PAUSE => {
-                                    if (*prop).format == libmpv2_sys::mpv_format_MPV_FORMAT_FLAG {
-                                        video_paused = *((*prop).data as *const i32) != 0;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    },
-                    _ => {}
-                }
-            }
-
-            // Check if render thread has produced a frame
-            if mpv_shared.has_frame.load(Ordering::Acquire) {
-                video_has_frame = true;
-            }
-        }
-
         let _t_drain = _t4.elapsed();
 
         // Query phase eliminated — properties now arrive via observe_property events above
@@ -1545,7 +1535,7 @@ fn main() {
             let rctx = mpv_shared.render_ctx.load(Ordering::Acquire);
             if !rctx.is_null() {
                 unsafe {
-                    libmpv2_sys::mpv_render_context_report_swap(rctx);
+                    libmpv_sys::mpv_render_context_report_swap(rctx);
                 }
             }
         }
@@ -1603,7 +1593,15 @@ fn main() {
     }
     // Leak mpv handle — mpv_destroy can block for seconds on Windows.
     // The process is exiting anyway, the OS will reclaim all resources.
-    std::mem::forget(mpv);
+    #[cfg(not(windows))]
+    unsafe {
+        libmpv_sys::mpv_terminate_destroy(mpv_handle);
+    }
+    #[cfg(windows)]
+    {
+        // Intentionally leak on Windows.
+        let _ = mpv_handle;
+    }
 
     #[cfg(debug_assertions)]
     if !timings.is_empty() {

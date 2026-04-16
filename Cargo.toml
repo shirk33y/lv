@@ -14,8 +14,7 @@ path = "src/main.rs"
 sdl2 = { version = "0.37", features = ["raw-window-handle"] }
 sdl2-sys = "0.37"
 gl = "0.14"
-libmpv2 = { version = "5", features = ["render"] }
-libmpv2-sys = "4"
+libmpv-sys = "3"
 libc = "0.2"
 image = "0.25"
 walkdir = "2"

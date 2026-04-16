@@ -1,0 +1,137 @@
+{
+  "app-id": "com.shirk33y.lv",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "24.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "lv",
+  "add-extensions": {
+    "org.freedesktop.Platform.ffmpeg-full": {
+      "directory": "lib/ffmpeg",
+      "version": "24.08",
+      "add-ld-path": ".",
+      "no-autodownload": true,
+      "autodelete": false
+    }
+  },
+  "finish-args": [
+    "--share=ipc",
+    "--socket=x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--share=network",
+    "--filesystem=home",
+    "--env=LD_LIBRARY_PATH=/app/lib:/app/lib/ffmpeg"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "prepend-ld-library-path": "/usr/lib/sdk/rust-stable/lib"
+  },
+  "modules": [
+    {
+      "name": "libsdl2",
+      "buildsystem": "cmake-ninja",
+      "builddir": true,
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-2.30.0.tar.gz",
+          "sha256": "36e2e41557e0fa4a1519315c0f5958a87ccb27e25c51776beb6f1239526447b0"
+        }
+      ],
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_PREFIX=/app"
+      ]
+    },
+    {
+      "name": "libplacebo",
+      "buildsystem": "meson",
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://code.videolan.org/videolan/libplacebo.git",
+          "tag": "v7.349.0"
+        }
+      ],
+      "config-opts": [
+        "-Dvulkan=enabled",
+        "-Dshaderc=enabled",
+        "-Dglslang=disabled",
+        "-Dd3d11=disabled",
+        "-Dlcms=enabled",
+        "-Ddemos=false"
+      ]
+    },
+    {
+      "name": "libass",
+      "buildsystem": "autotools",
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/libass/libass.git",
+          "tag": "0.17.3"
+        }
+      ],
+      "config-opts": [
+        "--disable-static",
+        "--enable-shared"
+      ]
+    },
+    {
+      "name": "libmpv",
+      "buildsystem": "meson",
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/mpv-player/mpv.git",
+          "tag": "v0.40.0"
+        }
+      ],
+      "config-opts": [
+        "-Ddefault_library=shared",
+        "-Dhtml-build=disabled",
+        "-Dlibmpv=true",
+        "-Dlua=disabled",
+        "-Duchardet=disabled",
+        "-Dbuild-date=false",
+        "-Djavascript=disabled"
+      ]
+    },
+    {
+      "name": "lv",
+      "buildsystem": "simple",
+      "build-commands": [
+        "mkdir -p .cargo",
+        "echo '[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"vendored-sources\"]\ndirectory = \"cargo/vendor\"' > .cargo/config.toml",
+        "cargo build --offline --release",
+        "install -Dm755 target/release/lv /app/bin/lv",
+        "mkdir -p /app/lib/ffmpeg"
+      ],
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "prepend-ld-library-path": "/usr/lib/sdk/rust-stable/lib",
+        "env": {
+          "PKG_CONFIG_PATH": "/app/lib/pkgconfig",
+          "RUSTFLAGS": "-L/app/lib"
+        }
+      },
+      "sources": [
+        "cargo-sources.json",
+        {"type": "file", "path": "Cargo.toml"},
+        {"type": "file", "path": "Cargo.lock"},
+        {"type": "file", "path": "build.rs"},
+        {"type": "dir", "path": "src",    "dest": "src"},
+        {"type": "dir", "path": "assets", "dest": "assets"},
+        {"type": "dir", "path": "pkg",    "dest": "pkg"}
+      ],
+      "post-install": [
+        "install -Dm644 pkg/lv.desktop /app/share/applications/com.shirk33y.lv.desktop",
+        "install -Dm644 pkg/lv-256.png /app/share/icons/hicolor/256x256/apps/com.shirk33y.lv.png",
+        "install -Dm644 pkg/lv.svg /app/share/icons/hicolor/scalable/apps/com.shirk33y.lv.svg"
+      ]
+    }
+  ]
+}

@@ -65,12 +65,48 @@ scripts/ci.sh                 # test + clippy + fmt
 | `scripts/build-linux-arm.sh` | release build for aarch64 Linux |
 | `scripts/build-windows-intel.sh` | release build + NSIS installer for Windows |
 | `scripts/docker-build.sh [target]` | dockerized cross-builds → `dist/` |
+| `scripts/flatpak-build.sh [--install]` | build Flatpak bundle via podman → `build/flatpak/` |
 | `scripts/clean.sh` | remove build artifacts |
+| `pkg/appimage.sh [arch] [binary]` | build AppImage → `build/appimage/` |
+| `pkg/deb.sh [arch] [binary]` | build .deb package → `build/deb/` |
 
 ```sh
 scripts/dev-linux.sh track ~/Photos
 scripts/docker-build.sh linux-intel   # or: all
 ```
+
+## Build Formats
+
+### Flatpak
+
+Build Flatpak bundle via podman (containerized, no local deps needed):
+
+```sh
+./scripts/flatpak-build.sh --build-only         # build bundle to build/flatpak/lv.flatpak
+./scripts/flatpak-build.sh --install            # build + install system-wide
+```
+
+**Requirements**: podman, ~30-40min build time (FFmpeg prebuilt SDK, SDL2, libmpv, Rust offline crates)
+
+**System-wide command**: After install, create PATH wrapper:
+```bash
+sudo tee /usr/local/bin/lv > /dev/null <<'EOF'
+#!/bin/bash
+exec flatpak run com.shirk33y.lv "$@"
+EOF
+sudo chmod +x /usr/local/bin/lv
+```
+
+**Manifest**: `com.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable)
+
+### AppImage & .deb
+
+```sh
+pkg/appimage.sh [x86_64|aarch64]    # → build/appimage/lv-*.AppImage
+pkg/deb.sh [amd64|arm64]             # → build/deb/lv-*.deb
+```
+
+All build artifacts consolidated to `build/` directory.
 
 ## Dependencies (Debian/Ubuntu)
 ```sh
