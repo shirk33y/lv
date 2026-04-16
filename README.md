@@ -84,9 +84,11 @@ Build Flatpak bundle via podman (containerized, no local deps needed):
 ```sh
 ./scripts/build-flatpak.sh --build-only         # build bundle to build/flatpak/lv.flatpak
 ./scripts/build-flatpak.sh --install            # build + install system-wide
+./scripts/build-flatpak.sh --no-cache           # clean build (longer)
+./scripts/build-flatpak.sh --rebuild-image      # rebuild env image (forces runtime re-download)
 ```
 
-**Requirements**: podman, ~30-40min build time (FFmpeg prebuilt SDK, SDL2, libmpv, Rust offline crates)
+**Requirements**: podman, ~30-40min first build (downloads runtimes). Subsequent builds use cached runtimes (~5-10min). Cache stored in `~/.cache/flatpak/`
 
 **System-wide command**: After install, create PATH wrapper:
 ```bash

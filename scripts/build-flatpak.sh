@@ -1,21 +1,26 @@
 #!/bin/bash
 # Build lv as a Flatpak using podman
-# Usage: ./scripts/build-flatpak.sh [--install] [--build-only]
+# Usage: ./scripts/build-flatpak.sh [--install] [--build-only] [--no-cache] [--rebuild-image]
 #
 # Requires podman. Builds entirely in containers:
-#   1. podman build  — creates build-env image with flatpak runtimes (cached)
+#   1. podman build  — creates build-env image with flatpak runtimes (cached by default)
 #   2. podman run    — generates cargo-sources.json from Cargo.lock
 #   3. podman run --privileged — runs flatpak-builder, produces build/lv.flatpak
 #
 # Output: build/lv.flatpak (gitignored)
+# Cache: ~/.cache/flatpak/ (shared volume, speeds up runtime downloads)
 
 set -euo pipefail
 
 INSTALL=false
+NO_CACHE=false
+REBUILD_IMAGE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --install) INSTALL=true; shift ;;
     --build-only) INSTALL=false; shift ;;
+    --no-cache) NO_CACHE=true; shift ;;
+    --rebuild-image) REBUILD_IMAGE=true; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -26,14 +31,20 @@ APP_ID="com.shirk33y.lv"
 ENV_IMAGE="lv-flatpak-env"
 TMPDIR="${TMPDIR:-$HOME/.buildah-tmp}"
 BUILD_DIR="${BUILD_DIR:-build}"
-mkdir -p "$TMPDIR" "$BUILD_DIR"
+FLATPAK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/flatpak"
+mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE"
 
-echo "==> [1/4] Building flatpak build-env image..."
-TMPDIR="$TMPDIR" podman build \
-    --cap-add=SYS_ADMIN \
-    --security-opt=seccomp=unconfined \
-    -f extra/flatpak/Dockerfile.flatpak \
-    -t "$ENV_IMAGE" .
+# Check if image exists (unless --rebuild-image)
+if [ "$REBUILD_IMAGE" = false ] && podman image exists "$ENV_IMAGE" 2>/dev/null; then
+    echo "==> [1/4] Using cached flatpak build-env image..."
+else
+    echo "==> [1/4] Building flatpak build-env image (runtimes cached in $FLATPAK_CACHE)..."
+    TMPDIR="$TMPDIR" podman build \
+        --cap-add=SYS_ADMIN \
+        --security-opt=seccomp=unconfined \
+        -f extra/flatpak/Dockerfile.flatpak \
+        -t "$ENV_IMAGE" .
+fi
 
 echo "==> [2/4] Generating cargo-sources.json..."
 TMPDIR="$TMPDIR" podman run --rm \
@@ -42,16 +53,23 @@ TMPDIR="$TMPDIR" podman run --rm \
     "$ENV_IMAGE" \
     python3 /usr/local/bin/flatpak-cargo-generator.py /src/Cargo.lock -o /src/cargo-sources.json
 
-echo "==> [3/4] Running flatpak-builder..."
+echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
+FORCE_CLEAN_FLAG="--force-clean"
+if [ "$NO_CACHE" = false ]; then
+    FORCE_CLEAN_FLAG=""  # Reuse build artifacts from previous runs
+fi
+
 TMPDIR="$TMPDIR" podman run --rm \
     --privileged \
     --security-opt=label=disable \
     -v "$(pwd):/src" \
+    -v "$FLATPAK_CACHE:/root/.cache/flatpak" \
+    -v "$FLATPAK_CACHE:/root/.var/app/flatpak/cache" \
     -w /src \
     "$ENV_IMAGE" \
     flatpak-builder \
       --disable-rofiles-fuse \
-      --force-clean \
+      $FORCE_CLEAN_FLAG \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
       extra/flatpak/"$APP_ID.json"
