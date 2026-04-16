@@ -17,7 +17,7 @@ scripts/
 ├── build-linux-intel.sh
 ├── build-linux-arm.sh
 ├── build-windows-intel.sh
-├── flatpak-build.sh
+├── build-flatpak.sh
 ├── ci.sh
 ├── clean.sh
 ├── dev-linux.sh
@@ -36,7 +36,7 @@ scripts/
 ├── build-windows-intel.sh
 ├── build-appimage.sh         ← moved from pkg/appimage.sh
 ├── build-deb.sh              ← moved from pkg/deb.sh
-├── flatpak-build.sh
+├── build-flatpak.sh
 ├── ci.sh
 ├── clean.sh
 ├── dev-linux.sh
@@ -87,7 +87,7 @@ pkg/                         ← DELETE (absorbed into scripts/ + dist/)
 
 ### Phase 4: Update Script References
 Update paths in:
-- `scripts/flatpak-build.sh`: `com.shirk33y.lv.json` → `dist/flatpak/com.shirk33y.lv.json`
+- `scripts/build-flatpak.sh`: `com.shirk33y.lv.json` → `dist/flatpak/com.shirk33y.lv.json`
 - `scripts/build-appimage.sh`: reference AppImage config location (if any)
 - `scripts/build-deb.sh`: reference deb config location (if any)
 

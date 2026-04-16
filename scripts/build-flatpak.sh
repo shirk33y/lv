@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build lv as a Flatpak using podman
-# Usage: ./scripts/flatpak-build.sh [--install] [--build-only]
+# Usage: ./scripts/build-flatpak.sh [--install] [--build-only]
 #
 # Requires podman. Builds entirely in containers:
 #   1. podman build  — creates build-env image with flatpak runtimes (cached)
@@ -32,7 +32,7 @@ echo "==> [1/4] Building flatpak build-env image..."
 TMPDIR="$TMPDIR" podman build \
     --cap-add=SYS_ADMIN \
     --security-opt=seccomp=unconfined \
-    -f docker/Dockerfile.flatpak \
+    -f dist/flatpak/Dockerfile.flatpak \
     -t "$ENV_IMAGE" .
 
 echo "==> [2/4] Generating cargo-sources.json..."
@@ -54,7 +54,7 @@ TMPDIR="$TMPDIR" podman run --rm \
       --force-clean \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
-      "$APP_ID.json"
+      dist/flatpak/"$APP_ID.json"
 
 echo "==> [4/4] Creating bundle $BUILD_DIR/lv.flatpak..."
 TMPDIR="$TMPDIR" podman run --rm \
