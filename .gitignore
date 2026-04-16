@@ -8,11 +8,16 @@ Cargo.lock
 
 # Build artifacts
 /dist/
+/build/
 build-installer/
 AppDir/
 appimagetool-*.AppImage
 lv-*.AppImage
 lv_*.deb
+cargo-sources.json
+**/cargo-sources.json
+.flatpak-builder/
+pkg/
 
 # Test artifacts
 test/screenshots/actual/
