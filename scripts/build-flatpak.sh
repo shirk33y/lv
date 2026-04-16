@@ -32,7 +32,7 @@ echo "==> [1/4] Building flatpak build-env image..."
 TMPDIR="$TMPDIR" podman build \
     --cap-add=SYS_ADMIN \
     --security-opt=seccomp=unconfined \
-    -f dist/flatpak/Dockerfile.flatpak \
+    -f extra/flatpak/Dockerfile.flatpak \
     -t "$ENV_IMAGE" .
 
 echo "==> [2/4] Generating cargo-sources.json..."
@@ -54,7 +54,7 @@ TMPDIR="$TMPDIR" podman run --rm \
       --force-clean \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
-      dist/flatpak/"$APP_ID.json"
+      extra/flatpak/"$APP_ID.json"
 
 echo "==> [4/4] Creating bundle $BUILD_DIR/lv.flatpak..."
 TMPDIR="$TMPDIR" podman run --rm \

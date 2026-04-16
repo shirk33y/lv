@@ -97,7 +97,7 @@ EOF
 sudo chmod +x /usr/local/bin/lv
 ```
 
-**Manifest**: `dist/flatpak/com.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable)
+**Manifest**: `extra/flatpak/com.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable)
 
 ### AppImage & .deb
 
