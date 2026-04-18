@@ -120,12 +120,12 @@
       },
       "sources": [
         {"type": "file", "path": "cargo-sources.json"},
-        {"type": "file", "path": "Cargo.toml"},
-        {"type": "file", "path": "Cargo.lock"},
-        {"type": "file", "path": "build.rs"},
-        {"type": "dir", "path": "src",    "dest": "src"},
-        {"type": "dir", "path": "assets", "dest": "assets"},
-        {"type": "dir", "path": "extra/flatpak",    "dest": "extra/flatpak"}
+        {"type": "file", "path": "../../Cargo.toml"},
+        {"type": "file", "path": "../../Cargo.lock"},
+        {"type": "file", "path": "../../build.rs"},
+        {"type": "dir", "path": "../../src",    "dest": "src"},
+        {"type": "dir", "path": "../../assets", "dest": "assets"},
+        {"type": "dir", "path": ".",    "dest": "extra/flatpak"}
       ],
       "post-install": [
         "install -Dm644 extra/linux/lv.desktop /app/share/applications/com.shirk33y.lv.desktop",
