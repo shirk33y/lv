@@ -53,6 +53,11 @@ TMPDIR="$TMPDIR" podman run --rm \
 # Copy to manifest directory (flatpak-builder resolves relative paths from manifest location)
 cp -f cargo-sources.json extra/flatpak/cargo-sources.json
 
+# Merge cargo sources into manifest: prepend all cargo crates to lv module's sources
+jq --slurpfile cargo_sources cargo-sources.json \
+    '.modules[] |= if .name == "lv" then .sources = $cargo_sources[0] + .sources else . end' \
+    extra/flatpak/"$APP_ID.json" > "$BUILD_DIR/$APP_ID.json"
+
 echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
 FORCE_CLEAN_FLAG="--force-clean"
 if [ "$NO_CACHE" = false ]; then
@@ -72,7 +77,7 @@ TMPDIR="$TMPDIR" podman run --rm \
       $FORCE_CLEAN_FLAG \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
-      extra/flatpak/"$APP_ID.json"
+      "$BUILD_DIR/$APP_ID.json"
 
 echo "==> [4/4] Creating bundle $BUILD_DIR/lv.flatpak..."
 TMPDIR="$TMPDIR" podman run --rm \
