@@ -36,12 +36,10 @@ mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE"
 
 # Check if image exists (unless --rebuild-image)
 if [ "$REBUILD_IMAGE" = false ] && podman image exists "$ENV_IMAGE" 2>/dev/null; then
-    echo "==> [1/4] Using cached flatpak build-env image..."
+    echo "==> [1/4] Using cached build-env image..."
 else
-    echo "==> [1/4] Building flatpak build-env image (runtimes cached in $FLATPAK_CACHE)..."
+    echo "==> [1/4] Building build-env image from freedesktopsdk/flatpak + cargo generator..."
     TMPDIR="$TMPDIR" podman build \
-        --cap-add=SYS_ADMIN \
-        --security-opt=seccomp=unconfined \
         -f extra/flatpak/Dockerfile.flatpak \
         -t "$ENV_IMAGE" .
 fi

@@ -1,36 +1,17 @@
 # Flatpak build environment image
-# This image contains all tools and runtimes needed to build the lv Flatpak.
-# Actual build is run via: podman run --privileged (see scripts/flatpak-build.sh)
+# Uses freedesktopsdk/flatpak which includes Flatpak 24.08 SDK + runtimes pre-installed
+# Actual build is run via: podman run --privileged (see scripts/build-flatpak.sh)
 #
-# Build env image:
-#   TMPDIR=~/.buildah-tmp podman build -f docker/Dockerfile.flatpak -t lv-flatpak-env .
-# Run build:
-#   ./scripts/flatpak-build.sh
+# This image is pre-built by freedesktop SDK project, so it just needs cargo generator
 
-FROM registry.fedoraproject.org/fedora:41
+FROM docker.io/freedesktopsdk/flatpak:latest
 
-RUN dnf install -y \
-    flatpak \
-    flatpak-builder \
-    python3 \
+# Add Python deps + cargo generator
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
-    git \
     curl \
-    bubblewrap \
-    ostree \
-    && dnf clean all
+    && rm -rf /var/lib/apt/lists/*
 
-# Add flathub remote
-RUN flatpak --user remote-add --if-not-exists flathub \
-    https://dl.flathub.org/repo/flathub.flatpakrepo
-
-# Install required runtime + SDK + Rust extension
-RUN flatpak --user install -y flathub \
-    org.freedesktop.Platform//24.08 \
-    org.freedesktop.Sdk//24.08 \
-    org.freedesktop.Sdk.Extension.rust-stable//24.08
-
-# Pre-install cargo generator deps
 RUN pip3 install --quiet aiohttp toml tomlkit && \
     curl -fsSL -o /usr/local/bin/flatpak-cargo-generator.py \
       https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
