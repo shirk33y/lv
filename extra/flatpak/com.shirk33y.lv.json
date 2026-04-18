@@ -125,6 +125,9 @@
         {"type": "file", "path": "../../build.rs"},
         {"type": "dir", "path": "../../src",    "dest": "src"},
         {"type": "dir", "path": "../../assets", "dest": "assets"},
+        {"type": "file", "path": "../../extra/linux/lv.desktop", "dest": "extra/linux/"},
+        {"type": "file", "path": "../../extra/images/lv-256.png", "dest": "extra/images/"},
+        {"type": "file", "path": "../../extra/images/lv.svg",     "dest": "extra/images/"},
         {"type": "dir", "path": ".",    "dest": "extra/flatpak"}
       ],
       "post-install": [
