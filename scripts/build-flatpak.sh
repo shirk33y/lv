@@ -52,6 +52,7 @@ TMPDIR="$TMPDIR" podman run --rm \
     python3 /usr/local/bin/flatpak-cargo-generator.py /src/Cargo.lock -o /src/cargo-sources.json
 # Copy to manifest directory (flatpak-builder resolves relative paths from manifest location)
 cp -f cargo-sources.json extra/flatpak/cargo-sources.json
+cp -rf cargo/ extra/flatpak/cargo/
 
 echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
 FORCE_CLEAN_FLAG="--force-clean"

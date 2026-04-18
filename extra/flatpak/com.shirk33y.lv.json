@@ -120,6 +120,7 @@
       },
       "sources": [
         {"type": "file", "path": "cargo-sources.json"},
+        {"type": "dir", "path": "cargo", "dest": "cargo"},
         {"type": "file", "path": "../../Cargo.toml"},
         {"type": "file", "path": "../../Cargo.lock"},
         {"type": "file", "path": "../../build.rs"},
