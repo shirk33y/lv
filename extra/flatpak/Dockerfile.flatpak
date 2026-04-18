@@ -4,14 +4,26 @@
 #
 # This image is pre-built by freedesktop SDK project, so it just needs cargo generator
 
-FROM docker.io/freedesktopsdk/flatpak:latest
+# Flatpak build environment using official Fedora + runtimes
+# Runtimes cached in ~/.cache/flatpak volume (managed by build script)
 
-# Add Python deps + cargo generator
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+FROM registry.fedoraproject.org/fedora:41
 
-RUN pip3 install --quiet aiohttp toml tomlkit && \
-    curl -fsSL -o /usr/local/bin/flatpak-cargo-generator.py \
-      https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+RUN dnf install -y \
+    flatpak flatpak-builder python3 python3-pip git curl \
+    bubblewrap ostree \
+    && dnf clean all
+
+# Add flathub + install runtimes (cached via volume mount in build script)
+RUN flatpak --user remote-add --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo
+
+RUN flatpak --user install -y flathub \
+    org.freedesktop.Platform//24.08 \
+    org.freedesktop.Sdk//24.08 \
+    org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+# Cargo generator deps + copy generator
+RUN pip3 install --quiet aiohttp toml tomlkit
+COPY extra/flatpak/flatpak-cargo-generator.py /usr/local/bin/flatpak-cargo-generator.py
+RUN chmod +x /usr/local/bin/flatpak-cargo-generator.py
