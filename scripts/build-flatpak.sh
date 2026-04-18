@@ -54,8 +54,9 @@ TMPDIR="$TMPDIR" podman run --rm \
 cp -f cargo-sources.json extra/flatpak/cargo-sources.json
 
 # Merge cargo sources into manifest: prepend all cargo crates to lv module's sources
+# Remove cargo-sources.json file entry (no longer needed after merge)
 jq --slurpfile cargo_sources cargo-sources.json \
-    '.modules[] |= if .name == "lv" then .sources = $cargo_sources[0] + .sources else . end' \
+    '.modules[] |= if .name == "lv" then .sources = ($cargo_sources[0] + (.sources | map(select(.path != "cargo-sources.json")))) else . end' \
     extra/flatpak/"$APP_ID.json" > "$BUILD_DIR/$APP_ID.json"
 
 echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
