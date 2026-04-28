@@ -278,7 +278,7 @@ pub fn draw_status_bar(
         }
         // Maximize/Restore
         ui.set_cursor_pos([buttons_start_x + btn_w, btn_y]);
-        let max_icon = if is_maximized { "v" } else { "^" };
+        let max_icon = if is_maximized { "▼" } else { "⬆" };
         if ui.button_with_size(max_icon, [btn_w, btn_h]) {
             action = WindowAction::Maximize;
         }
