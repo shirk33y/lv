@@ -105,15 +105,16 @@ Advanced video tests:
 ## Known Issues
 
 ### Video Playback in Flatpak
-Flatpak can process (scan/index) video files but full playback support depends on:
-1. **FFmpeg extension** — Not auto-downloaded; manual install required:
-   ```bash
-   flatpak install flathub org.freedesktop.Platform.ffmpeg-full
-   ```
+Video playback is now fully supported! Flatpak can process and display video files.
 
-2. **libmpv configuration** — May need codec plugins for certain formats
+**Codec Support:** Full playback support for common codecs requires FFmpeg extension:
+```bash
+flatpak install flathub org.freedesktop.Platform.ffmpeg-full
+```
 
-**Status:** Video processing works ✅ | Full playback: needs FFmpeg extension
+Without the FFmpeg extension, h.264 (AVC) may have limited support depending on libmpv's fallback codecs.
+
+**Status:** Video rendering works ✅ | Full codec support: install FFmpeg extension
 
 ## Adding New Tests
 
