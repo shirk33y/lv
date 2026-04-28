@@ -762,7 +762,10 @@ fn main() {
     let mut event_pump = sdl.event_pump().expect("Failed to create event pump");
     let mut running = true;
     let mut borderless_maximized = false;
-    let mut restore_rect: (i32, i32, i32, i32) = (0, 0, 1280, 720);
+    let initial_pos = window.position();
+    let initial_size = window.size();
+    let mut restore_rect: (i32, i32, i32, i32) = (initial_pos.0, initial_pos.1, initial_size.0 as i32, initial_size.1 as i32);
+    let mut window_minimized = false;
     while running {
         let _frame_t0 = Instant::now();
         tex_cache.pump_uploads();
@@ -1192,6 +1195,23 @@ fn main() {
                     }
                 }
 
+                Event::Window {
+                    win_event: sdl2::video::WindowEvent::Minimized,
+                    ..
+                } => {
+                    window_minimized = true;
+                }
+
+                Event::Window {
+                    win_event: sdl2::video::WindowEvent::Shown
+                        | sdl2::video::WindowEvent::Restored
+                        | sdl2::video::WindowEvent::Exposed,
+                    ..
+                } => {
+                    window_minimized = false;
+                    mpv_shared.resize.store(true, Ordering::Release);
+                }
+
                 _ => {}
             }
         }
@@ -1452,7 +1472,7 @@ fn main() {
                 volume,
                 turbo: is_turbo,
             };
-            let win_action = statusbar::draw_status_bar(ui, &info, w as f32, h as f32);
+            let win_action = statusbar::draw_status_bar(ui, &info, w as f32, h as f32, borderless_maximized);
             match win_action {
                 statusbar::WindowAction::Close => {
                     running = false;

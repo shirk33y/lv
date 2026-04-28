@@ -144,6 +144,7 @@ pub fn draw_status_bar(
     info: &StatusInfo,
     display_w: f32,
     _display_h: f32,
+    is_maximized: bool,
 ) -> WindowAction {
     let pad = 4.0;
     let mut action = WindowAction::None;
@@ -275,9 +276,10 @@ pub fn draw_status_bar(
         if ui.button_with_size("—", [btn_w, btn_h]) {
             action = WindowAction::Minimize;
         }
-        // Maximize  □
+        // Maximize/Restore
         ui.set_cursor_pos([buttons_start_x + btn_w, btn_y]);
-        if ui.button_with_size("□", [btn_w, btn_h]) {
+        let max_icon = if is_maximized { "⬇" } else { "⬆" };
+        if ui.button_with_size(max_icon, [btn_w, btn_h]) {
             action = WindowAction::Maximize;
         }
         // Close  ✕ (red hover)
