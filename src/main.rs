@@ -1409,6 +1409,7 @@ fn main() {
             gl::Viewport(0, 0, w as i32, content_h as i32);
         }
         let mpv_display_tex = mpv_shared.display_tex.load(Ordering::Acquire);
+        video_has_frame = mpv_shared.has_frame.load(Ordering::Acquire);
         if using_mpv && video_has_frame && mpv_display_tex != 0 {
             // Blit texture produced by mpv render thread (sub-1ms)
             quad_renderer.draw_video(mpv_display_tex, w, h, w, content_h);
