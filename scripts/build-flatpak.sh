@@ -63,10 +63,6 @@ jq --slurpfile cargo_sources cargo-sources.json \
     > "$BUILD_DIR/$APP_ID.json"
 
 echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
-FORCE_CLEAN_FLAG="--force-clean"
-if [ "$NO_CACHE" = false ]; then
-    FORCE_CLEAN_FLAG=""  # Reuse build artifacts from previous runs
-fi
 
 TMPDIR="$TMPDIR" podman run --rm \
     --privileged \
@@ -78,7 +74,7 @@ TMPDIR="$TMPDIR" podman run --rm \
     "$ENV_IMAGE" \
     flatpak-builder \
       --disable-rofiles-fuse \
-      $FORCE_CLEAN_FLAG \
+      --force-clean \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
       "$BUILD_DIR/$APP_ID.json"
