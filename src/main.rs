@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
-use sdl2::event::Event;
+use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::video::GLProfile;
 
@@ -1196,16 +1196,16 @@ fn main() {
                 }
 
                 Event::Window {
-                    win_event: sdl2::video::WindowEvent::Minimized,
+                    win_event: WindowEvent::Minimized,
                     ..
                 } => {
                     window_minimized = true;
                 }
 
                 Event::Window {
-                    win_event: sdl2::video::WindowEvent::Shown
-                        | sdl2::video::WindowEvent::Restored
-                        | sdl2::video::WindowEvent::Exposed,
+                    win_event: WindowEvent::Shown
+                        | WindowEvent::Restored
+                        | WindowEvent::Exposed,
                     ..
                 } => {
                     window_minimized = false;
