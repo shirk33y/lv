@@ -1,0 +1,5 @@
+[Runtime]
+name=com.shirk33y.lv.Debug
+
+[ExtensionOf]
+ref=app/com.shirk33y.lv/x86_64/master

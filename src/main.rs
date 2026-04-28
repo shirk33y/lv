@@ -1405,6 +1405,14 @@ fn main() {
         // ── Render ──────────────────────────────────────────────────────
         let (w, h) = window.drawable_size();
 
+        // Skip rendering when window is minimized to avoid invalid drawable
+        if window_minimized || w == 0 || h == 0 {
+            // Brief sleep to prevent busy-waiting
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            window.gl_swap_window();
+            continue;
+        }
+
         // Signal render thread about resize
         if w != mpv_shared.width.load(Ordering::Relaxed)
             || h != mpv_shared.height.load(Ordering::Relaxed)

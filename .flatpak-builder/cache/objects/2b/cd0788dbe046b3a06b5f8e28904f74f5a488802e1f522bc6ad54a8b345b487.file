@@ -1,0 +1,28 @@
+[Application]
+name=com.shirk33y.lv
+runtime=org.freedesktop.Platform/x86_64/24.08
+sdk=org.freedesktop.Sdk/x86_64/24.08
+command=lv
+
+[Context]
+shared=network;ipc;
+sockets=x11;wayland;
+devices=dri;
+filesystems=home;
+
+[Environment]
+LD_LIBRARY_PATH=/app/lib:/app/lib/ffmpeg
+
+[Extension org.freedesktop.Platform.ffmpeg-full]
+directory=lib/ffmpeg
+no-autodownload=true
+add-ld-path=.
+version=24.08
+
+[Extension com.shirk33y.lv.Debug]
+directory=lib/debug
+autodelete=true
+no-autodownload=true
+
+[Build]
+built-extensions=com.shirk33y.lv.Debug;

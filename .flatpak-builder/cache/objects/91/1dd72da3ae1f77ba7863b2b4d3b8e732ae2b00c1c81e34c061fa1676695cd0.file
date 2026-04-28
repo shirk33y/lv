@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=lv
+Comment=Media library viewer
+Exec=lv
+Icon=com.shirk33y.lv
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/gif;image/webp;video/mp4;video/x-matroska;
