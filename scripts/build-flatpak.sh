@@ -93,15 +93,31 @@ TMPDIR="$TMPDIR" podman run --rm \
 echo ""
 echo "==> Done! Bundle: $(pwd)/$BUILD_DIR/lv.flatpak"
 
+# Create wrapper script for PATH
+echo "==> Creating CLI wrapper..."
+WRAPPER_CONTENT="#!/bin/bash
+exec flatpak run $APP_ID \"\$@\""
+
+# Try user-level wrapper (no sudo needed)
+mkdir -p ~/.local/bin
+if echo "$WRAPPER_CONTENT" > ~/.local/bin/lv && chmod +x ~/.local/bin/lv; then
+    echo "✅ User wrapper: ~/.local/bin/lv (no sudo needed)"
+fi
+
+# Try system-level wrapper if sudo available
+if sudo -n true 2>/dev/null || [ -t 0 ]; then
+    if sudo tee /usr/local/bin/lv > /dev/null << 'EOF'
+#!/bin/bash
+exec flatpak run $APP_ID "$@"
+EOF
+    then
+        sudo chmod +x /usr/local/bin/lv
+        echo "✅ System wrapper: /usr/local/bin/lv (all users)"
+    fi
+fi
+
 if [ "$INSTALL" = true ]; then
     echo "==> Installing (system-wide)..."
     flatpak install -y --bundle "$BUILD_DIR/lv.flatpak"
-    echo "==> Installed! Run with: flatpak run $APP_ID"
-    echo ""
-    echo "To make 'lv' available in PATH, create a wrapper:"
-    echo "  sudo tee /usr/local/bin/lv > /dev/null <<'EOF'"
-    echo "  #!/bin/bash"
-    echo "  exec flatpak run $APP_ID \"\$@\""
-    echo "  EOF"
-    echo "  sudo chmod +x /usr/local/bin/lv"
+    echo "==> Installed! Run with: lv [files]"
 fi
