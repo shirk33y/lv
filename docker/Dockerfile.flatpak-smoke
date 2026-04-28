@@ -1,0 +1,44 @@
+# Flatpak smoke test: verify lv.flatpak works with image and video files
+# Usage:
+#   docker build -f docker/Dockerfile.flatpak-smoke -t lv-flatpak-smoke .
+#   docker run --rm lv-flatpak-smoke
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install flatpak and dependencies
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    flatpak \
+    curl \
+    ca-certificates
+
+# Initialize flatpak
+RUN flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
+RUN flatpak remote-modify --user --enable flathub || true
+
+# Install runtime and SDK
+RUN echo "Installing Freedesktop runtime..." && \
+    flatpak install --user --assumeyes \
+    org.freedesktop.Platform/x86_64/24.08 \
+    org.freedesktop.Sdk/x86_64/24.08 || true
+
+# Copy flatpak bundle and test files
+COPY build/lv.flatpak /tmp/lv.flatpak
+COPY test/fixtures /fixtures
+COPY scripts/smoke-test-flatpak.sh /scripts/smoke-test-flatpak.sh
+COPY scripts/smoke-test-flatpak-video.sh /scripts/smoke-test-flatpak-video.sh
+
+RUN chmod +x /scripts/*.sh
+
+# Run smoke tests
+RUN echo "=== Flatpak Smoke Tests ===" && \
+    FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures \
+    bash /scripts/smoke-test-flatpak.sh && \
+    echo "" && \
+    echo "=== Video Tests ===" && \
+    bash /scripts/smoke-test-flatpak-video.sh || echo "⚠️  Video test skipped (non-critical)"
+
+ENTRYPOINT ["/bin/bash"]

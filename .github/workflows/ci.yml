@@ -30,6 +30,11 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Smoke test (CLI)
+        run: |
+          cargo build --release
+          LV_FIXTURES=test/fixtures LV_DB_PATH=/tmp/lv-smoke.db bash scripts/smoke-test-cli.sh
+
       - name: Clippy
         run: cargo clippy -- -D warnings
 

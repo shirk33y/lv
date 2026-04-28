@@ -160,9 +160,51 @@ jobs:
           name: release-windows
           path: dist-windows/
 
+  # ── Flatpak smoke test (requires pre-built bundle) ──────────────────
+  test-flatpak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Note on flatpak build
+        run: |
+          echo "Flatpak build requires nested container setup (podman in Docker)"
+          echo "Build locally: distrobox-host-exec ./scripts/build-flatpak.sh"
+          echo "Then commit: git add build/lv.flatpak && git commit"
+
+      - name: Check for pre-built flatpak
+        id: check-flatpak
+        run: |
+          if [[ -f "build/lv.flatpak" ]]; then
+            echo "has-flatpak=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-flatpak=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run flatpak smoke tests
+        if: steps.check-flatpak.outputs.has-flatpak == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.flatpak-smoke
+          push: false
+          cache-from: type=gha,scope=flatpak-smoke
+          cache-to: type=gha,mode=max,scope=flatpak-smoke
+          github-token: ${{ github.token }}
+
+      - name: Upload flatpak if tested
+        if: steps.check-flatpak.outputs.has-flatpak == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak
+          path: build/lv.flatpak
+          retention-days: 7
+
   # ── Upload assets to the release created by release-please ───────────
   publish:
-    needs: [build-linux, build-linux-arm64, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows, test-flatpak]
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name }}
