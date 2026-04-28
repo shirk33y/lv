@@ -102,20 +102,6 @@ Advanced video tests:
 - Codec support verification
 - Runtime environment checks
 
-## Known Issues
-
-### Video Playback in Flatpak
-Video playback is now fully supported! Flatpak can process and display video files.
-
-**Codec Support:** Full playback support for common codecs requires FFmpeg extension:
-```bash
-flatpak install flathub org.freedesktop.Platform.ffmpeg-full
-```
-
-Without the FFmpeg extension, h.264 (AVC) may have limited support depending on libmpv's fallback codecs.
-
-**Status:** Video rendering works ✅ | Full codec support: install FFmpeg extension
-
 ## Adding New Tests
 
 1. **CLI tests**: Update `smoke-test-cli.sh`
