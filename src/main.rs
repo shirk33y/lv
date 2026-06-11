@@ -27,6 +27,7 @@ use clap::{Parser, Subcommand};
 
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::{Keycode, Mod};
+use sdl2::mouse::{Cursor, SystemCursor};
 use sdl2::video::GLProfile;
 
 use std::ffi::CString;
@@ -957,6 +958,15 @@ fn main() {
     let mut pending_video: Option<(String, Instant, u128)> = None;
     let mut error_message: Option<(String, String)> = None; // (error, filename)
 
+    // Resize cursors for borderless window edges
+    let resize_cursors = (
+        Cursor::from_system(SystemCursor::Arrow).ok(),
+        Cursor::from_system(SystemCursor::SizeNS).ok(),
+        Cursor::from_system(SystemCursor::SizeWE).ok(),
+        Cursor::from_system(SystemCursor::SizeNWSE).ok(),
+        Cursor::from_system(SystemCursor::SizeNESW).ok(),
+    );
+
     // Slow frame tracking: aggregate stats over 10s windows
     #[cfg(debug_assertions)]
     let mut slow_frame_count: u32 = 0;
@@ -1050,8 +1060,39 @@ fn main() {
             match event {
                 Event::Quit { .. } => running = false,
 
-                Event::MouseMotion { .. }
-                | Event::MouseButtonDown { .. }
+                Event::MouseMotion { x, y, .. } => {
+                    last_mouse_move = Instant::now();
+                    if !cursor_visible {
+                        unsafe {
+                            sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_ENABLE as i32);
+                        }
+                        cursor_visible = true;
+                    }
+                    // Update resize cursor for borderless window edges
+                    let (win_w, win_h) = window.size();
+                    let (mx, my) = (x as i32, y as i32);
+                    const RESIZE_HANDLE: i32 = 6;
+                    let cursor_idx = if my < RESIZE_HANDLE && mx < RESIZE_HANDLE {
+                        3 // nwse ↔ top-left
+                    } else if my < RESIZE_HANDLE && mx >= win_w as i32 - RESIZE_HANDLE {
+                        4 // nesw ↔ top-right
+                    } else if my >= win_h as i32 - RESIZE_HANDLE && mx < RESIZE_HANDLE {
+                        4 // nesw ↔ bottom-left
+                    } else if my >= win_h as i32 - RESIZE_HANDLE && mx >= win_w as i32 - RESIZE_HANDLE {
+                        3 // nwse ↔ bottom-right
+                    } else if my < RESIZE_HANDLE || my >= win_h as i32 - RESIZE_HANDLE {
+                        1 // ns
+                    } else if mx < RESIZE_HANDLE || mx >= win_w as i32 - RESIZE_HANDLE {
+                        2 // we
+                    } else {
+                        0 // arrow
+                    };
+                    let cursors = [&resize_cursors.0, &resize_cursors.1, &resize_cursors.2, &resize_cursors.3, &resize_cursors.4];
+                    if let Some(c) = cursors[cursor_idx] {
+                        c.set();
+                    }
+                }
+                Event::MouseButtonDown { .. }
                 | Event::MouseWheel { .. } => {
                     last_mouse_move = Instant::now();
                     if !cursor_visible {
