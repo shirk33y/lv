@@ -14,11 +14,12 @@ RUN dnf install -y \
     bubblewrap ostree \
     && dnf clean all
 
-# Add flathub + install runtimes (cached via volume mount in build script)
-RUN flatpak --user remote-add --if-not-exists flathub \
+# Add flathub + install runtimes system-wide in the image so build runs can use
+# rootless keep-id users without writing repo files as container root.
+RUN flatpak remote-add --if-not-exists flathub \
     https://dl.flathub.org/repo/flathub.flatpakrepo
 
-RUN flatpak --user install -y flathub \
+RUN flatpak install -y flathub \
     org.freedesktop.Platform//24.08 \
     org.freedesktop.Sdk//24.08 \
     org.freedesktop.Sdk.Extension.rust-stable//24.08

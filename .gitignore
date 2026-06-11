@@ -19,6 +19,29 @@ cargo-sources.json
 .flatpak-builder/
 pkg/
 
+# Leaked rootfs dirs from failed container exports
+/afs/
+/bin/
+/boot/
+/dev/
+/etc/
+/home/
+/lib/
+/lib64/
+/media/
+/mnt/
+/opt/
+/proc/
+/root/
+/run/
+/sbin/
+/srv/
+/sys/
+/tmp/
+/usr/
+/var/
+/.profile
+
 # Test artifacts
 test/screenshots/actual/
 

@@ -94,7 +94,7 @@ scripts/ci.sh                 # test + clippy + fmt
 | `scripts/build-linux-arm.sh` | release build for aarch64 Linux |
 | `scripts/build-windows-intel.sh` | release build + NSIS installer for Windows |
 | `scripts/docker-build.sh [target]` | dockerized cross-builds → `dist/` |
-| `scripts/build-flatpak.sh [--install]` | build Flatpak bundle via podman → `build/flatpak/` |
+| `scripts/build-flatpak.sh [--install]` | build Flatpak bundle via podman → `build/lv.flatpak` |
 | `scripts/clean.sh` | remove build artifacts |
 | `scripts/build-appimage.sh [arch] [binary]` | build AppImage → `build/appimage/` |
 | `scripts/build-deb.sh [arch] [binary]` | build .deb package → `build/deb/` |
@@ -111,22 +111,17 @@ scripts/docker-build.sh linux-intel   # or: all
 Build Flatpak bundle via podman (containerized, no local deps needed):
 
 ```sh
-./scripts/build-flatpak.sh --build-only         # build bundle to build/flatpak/lv.flatpak
-./scripts/build-flatpak.sh --install            # build + install system-wide
+./scripts/build-flatpak.sh --build-only         # build bundle to build/lv.flatpak
+./scripts/build-flatpak.sh --install            # build + install for current user
 ./scripts/build-flatpak.sh --no-cache           # clean build (longer)
 ./scripts/build-flatpak.sh --rebuild-image      # rebuild env image (forces runtime re-download)
 ```
 
-**Requirements**: podman, ~30-40min first build (downloads runtimes). Subsequent builds use cached runtimes (~5-10min). Cache stored in `~/.cache/flatpak/`
+**Requirements**: podman on Linux. Debian, Ubuntu, Fedora, and Bazzite hosts all use the same containerized build path. First build takes ~30-40min while runtimes download; later builds use cached runtimes (~5-10min).
 
-**System-wide command**: After install, create PATH wrapper:
-```bash
-sudo tee /usr/local/bin/lv > /dev/null <<'EOF'
-#!/bin/bash
-exec flatpak run com.shirk33y.lv "$@"
-EOF
-sudo chmod +x /usr/local/bin/lv
-```
+Flatpak builds run through rootless podman with `--userns=keep-id`, so generated files stay owned by the current user. The build script also disables the OSTree repo percentage free-space guard for the local build repo, which avoids false failures on nearly full filesystems. Build output and Flatpak caches are ignored by Git; do not commit `build/lv.flatpak`, `cargo-sources.json`, or `.flatpak-builder/`.
+
+`--install` uses `flatpak install --user` and creates a user PATH wrapper.
 
 **Manifest**: `extra/flatpak/com.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable)
 

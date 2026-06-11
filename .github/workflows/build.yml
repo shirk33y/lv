@@ -172,7 +172,7 @@ jobs:
         run: |
           echo "Flatpak build requires nested container setup (podman in Docker)"
           echo "Build locally: distrobox-host-exec ./scripts/build-flatpak.sh"
-          echo "Then commit: git add build/lv.flatpak && git commit"
+          echo "Artifact is ignored at build/lv.flatpak"
 
       - name: Check for pre-built flatpak
         id: check-flatpak

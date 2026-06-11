@@ -4,11 +4,11 @@
 #
 # Requires podman. Builds entirely in containers:
 #   1. podman build  — creates build-env image with flatpak runtimes (cached by default)
-#   2. podman run    — generates cargo-sources.json from Cargo.lock
-#   3. podman run --privileged — runs flatpak-builder, produces build/lv.flatpak
+#   2. podman run --userns=keep-id — generates cargo-sources.json from Cargo.lock
+#   3. podman run --userns=keep-id --privileged — runs flatpak-builder, produces build/lv.flatpak
 #
 # Output: build/lv.flatpak (gitignored)
-# Cache: ~/.cache/flatpak/ (shared volume, speeds up runtime downloads)
+# Cache: build/flatpak-home/ and ~/.cache/flatpak/ (both user-owned)
 
 set -euo pipefail
 
@@ -32,7 +32,35 @@ ENV_IMAGE="lv-flatpak-env"
 TMPDIR="${TMPDIR:-$HOME/.buildah-tmp}"
 BUILD_DIR="${BUILD_DIR:-build}"
 FLATPAK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/flatpak"
-mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE"
+FLATPAK_HOME="$BUILD_DIR/flatpak-home"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+PODMAN_KEEP_ID=(
+    --userns=keep-id
+    --user "$HOST_UID:$HOST_GID"
+    --group-add keep-groups
+)
+PODMAN_COMMON=(
+    --security-opt=label=disable
+    -e "HOME=/tmp/flatpak-home"
+    -e "XDG_CACHE_HOME=/tmp/flatpak-cache"
+    -e "XDG_RUNTIME_DIR=/tmp/flatpak-runtime"
+)
+CONTAINER_ENTRYPOINT=(
+    sh -lc 'mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" && exec "$@"' sh
+)
+
+mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE" "$FLATPAK_HOME"
+
+fix_output_ownership() {
+    local path
+    for path in "$BUILD_DIR" cargo-sources.json extra/flatpak/cargo-sources.json; do
+        [ -e "$path" ] || continue
+        podman unshare chown -R 0:0 "$path" 2>/dev/null || \
+            chown -R "$HOST_UID:$HOST_GID" "$path" 2>/dev/null || true
+    done
+}
+trap fix_output_ownership EXIT INT TERM
 
 # Check if image exists (unless --rebuild-image)
 if [ "$REBUILD_IMAGE" = false ] && podman image exists "$ENV_IMAGE" 2>/dev/null; then
@@ -46,9 +74,12 @@ fi
 
 echo "==> [2/4] Generating cargo-sources.json..."
 TMPDIR="$TMPDIR" podman run --rm \
-    --security-opt=label=disable \
-    -v "$(pwd):/src" \
+    "${PODMAN_KEEP_ID[@]}" \
+    "${PODMAN_COMMON[@]}" \
+    -v "$(pwd):/src:rw" \
+    -v "$(pwd)/$FLATPAK_HOME:/tmp/flatpak-home:rw" \
     "$ENV_IMAGE" \
+    "${CONTAINER_ENTRYPOINT[@]}" \
     python3 /usr/local/bin/flatpak-cargo-generator.py /src/Cargo.lock -o /src/cargo-sources.json
 # Copy to manifest directory (flatpak-builder resolves relative paths from manifest location)
 cp -f cargo-sources.json extra/flatpak/cargo-sources.json
@@ -65,13 +96,24 @@ jq --slurpfile cargo_sources cargo-sources.json \
 echo "==> [3/4] Running flatpak-builder (using $FLATPAK_CACHE for runtime cache)..."
 
 TMPDIR="$TMPDIR" podman run --rm \
+    "${PODMAN_KEEP_ID[@]}" \
+    "${PODMAN_COMMON[@]}" \
+    -v "$(pwd):/src:rw" \
+    -v "$(pwd)/$FLATPAK_HOME:/tmp/flatpak-home:rw" \
+    "$ENV_IMAGE" \
+    "${CONTAINER_ENTRYPOINT[@]}" \
+    sh -lc 'ostree --repo="$1" init --mode=archive-z2 2>/dev/null || true; ostree --repo="$1" config set core.min-free-space-percent 0' sh /src/"$BUILD_DIR"/repo
+
+TMPDIR="$TMPDIR" podman run --rm \
     --privileged \
-    --security-opt=label=disable \
-    -v "$(pwd):/src" \
-    -v "$FLATPAK_CACHE:/root/.cache/flatpak" \
-    -v "$FLATPAK_CACHE:/root/.var/app/flatpak/cache" \
+    "${PODMAN_KEEP_ID[@]}" \
+    "${PODMAN_COMMON[@]}" \
+    -v "$(pwd):/src:rw" \
+    -v "$(pwd)/$FLATPAK_HOME:/tmp/flatpak-home:rw" \
+    -v "$FLATPAK_CACHE:/tmp/flatpak-cache/flatpak:rw" \
     -w /src \
     "$ENV_IMAGE" \
+    "${CONTAINER_ENTRYPOINT[@]}" \
     flatpak-builder \
       --disable-rofiles-fuse \
       --force-clean \
@@ -81,9 +123,12 @@ TMPDIR="$TMPDIR" podman run --rm \
 
 echo "==> [4/4] Creating bundle $BUILD_DIR/lv.flatpak..."
 TMPDIR="$TMPDIR" podman run --rm \
-    --security-opt=label=disable \
-    -v "$(pwd):/src" \
+    "${PODMAN_KEEP_ID[@]}" \
+    "${PODMAN_COMMON[@]}" \
+    -v "$(pwd):/src:rw" \
+    -v "$(pwd)/$FLATPAK_HOME:/tmp/flatpak-home:rw" \
     "$ENV_IMAGE" \
+    "${CONTAINER_ENTRYPOINT[@]}" \
     flatpak build-bundle /src/"$BUILD_DIR"/repo /src/"$BUILD_DIR"/lv.flatpak "$APP_ID"
 
 echo ""
@@ -100,20 +145,8 @@ if echo "$WRAPPER_CONTENT" > ~/.local/bin/lv && chmod +x ~/.local/bin/lv; then
     echo "✅ User wrapper: ~/.local/bin/lv (no sudo needed)"
 fi
 
-# Try system-level wrapper if sudo available
-if sudo -n true 2>/dev/null || [ -t 0 ]; then
-    if sudo tee /usr/local/bin/lv > /dev/null << 'EOF'
-#!/bin/bash
-exec flatpak run $APP_ID "$@"
-EOF
-    then
-        sudo chmod +x /usr/local/bin/lv
-        echo "✅ System wrapper: /usr/local/bin/lv (all users)"
-    fi
-fi
-
 if [ "$INSTALL" = true ]; then
-    echo "==> Installing (system-wide)..."
-    flatpak install -y --bundle "$BUILD_DIR/lv.flatpak"
+    echo "==> Installing (user)..."
+    flatpak install --user -y --bundle "$BUILD_DIR/lv.flatpak"
     echo "==> Installed! Run with: lv [files]"
 fi
