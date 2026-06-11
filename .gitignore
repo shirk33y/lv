@@ -1,5 +1,6 @@
 # Rust
 /target/
+/config.local.mk
 /target-linux-intel/
 /target-linux-arm/
 /target-windows-intel/

@@ -1,12 +1,29 @@
-.PHONY: ci clean dev-linux dev-windows \
+.PHONY: ci clean dev dev-linux dev-windows \
+        configure check test \
         build-linux-intel build-linux-arm build-windows-intel \
         docker-build docker-smoke smoke-test
+
+CONFIG_MK ?= config.local.mk
+-include $(CONFIG_MK)
+export LV_NATIVE_PREFIXES
 
 # ── Checks ────────────────────────────────────────────────────────────
 ci:
 	bash scripts/ci.sh
 
+configure:
+	bash scripts/configure-native.sh
+
+check:
+	bash scripts/native-env.sh cargo check
+
+test:
+	bash scripts/native-env.sh cargo test
+
 # ── Dev ───────────────────────────────────────────────────────────────
+dev:
+	bash scripts/native-env.sh cargo run -- $(ARGS)
+
 dev-linux:
 	bash scripts/dev-linux.sh $(ARGS)
 

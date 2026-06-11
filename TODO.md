@@ -22,6 +22,6 @@
 - [ ] Investigate dedicated prewarm mpv handle or demux/cache strategy for adjacent videos
 
 ## Video playback
-- [ ] Keep libmpv as source of truth for seek, duration, pause, loop, and animated WebP playback
-- [ ] Add richer playback controls that mirror normal mpv status: seekbar, position, duration, paused/playing, volume
-- [ ] Test rapid navigation across video/video, video/image, image/video, missing files, and animated WebP
+- [x] Keep libmpv as source of truth for seek, duration, pause, loop, and animated WebP playback
+- [x] Add richer playback controls that mirror normal mpv status: seekbar, position, duration, paused/playing, volume
+- [x] Test rapid navigation across video/video, video/image, image/video, missing files, and animated WebP

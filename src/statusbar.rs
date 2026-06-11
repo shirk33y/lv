@@ -81,6 +81,12 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
 const DIM: [f32; 4] = [0.50, 0.50, 0.50, 1.0];
 const BRIGHT: [f32; 4] = [0.92, 0.92, 0.92, 1.0];
 const ACCENT: [f32; 4] = [1.0, 0.40, 0.40, 1.0];
+const SEEKBAR_BG: [f32; 4] = [0.15, 0.15, 0.15, 0.55];
+const SEEKBAR_FILL: [f32; 4] = [0.86, 0.86, 0.86, 0.55];
+const SEEKBAR_HOVER: [f32; 4] = [1.0, 0.40, 0.40, 0.85];
+const SEEKBAR_IDLE_H: f32 = 3.0;
+const SEEKBAR_ACTIVE_H: f32 = 24.0;
+const SEEKBAR_TRIGGER_DIST: f32 = 96.0;
 
 /// Status bar info passed from main loop.
 pub struct StatusInfo<'a> {
@@ -171,6 +177,50 @@ fn draw_window_controls(
     action
 }
 
+pub fn seek_fraction_at(mouse_x: f32, seek_x: f32, seek_w: f32) -> f32 {
+    if !mouse_x.is_finite() || !seek_x.is_finite() || !seek_w.is_finite() || seek_w <= 0.0 {
+        return 0.0;
+    }
+    ((mouse_x - seek_x) / seek_w).clamp(0.0, 1.0)
+}
+
+pub fn seekbar_window_height(visible: bool) -> f32 {
+    if visible {
+        SEEKBAR_ACTIVE_H
+    } else {
+        SEEKBAR_IDLE_H
+    }
+}
+
+pub fn seekbar_expanded(mouse_y: f32, display_h: f32) -> bool {
+    mouse_y.is_finite()
+        && display_h.is_finite()
+        && mouse_y >= display_h - SEEKBAR_TRIGGER_DIST
+        && mouse_y <= display_h
+}
+
+pub fn seekbar_label_x(seek_x: f32, seek_w: f32, text_w: f32, fraction: f32) -> f32 {
+    let hover_x = seek_x + seek_w * fraction.clamp(0.0, 1.0);
+    let gap = 12.0;
+    if fraction <= 0.5 {
+        (hover_x + gap).clamp(seek_x + 2.0, seek_x + seek_w - text_w - 2.0)
+    } else {
+        (hover_x - text_w - gap).clamp(seek_x + 2.0, seek_x + seek_w - text_w - 2.0)
+    }
+}
+
+const TEXT_BORDER: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+const TEXT_COL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+fn draw_text_with_border(draw: &imgui::DrawListMut, pos: [f32; 2], text: &str) {
+    for dx in [-1.0, 1.0] {
+        for dy in [-1.0, 1.0] {
+            draw.add_text([pos[0] + dx, pos[1] + dy], TEXT_BORDER, text);
+        }
+    }
+    draw.add_text(pos, TEXT_COL, text);
+}
+
 pub fn draw_empty_status_bar(ui: &imgui::Ui, display_w: f32, is_maximized: bool) -> WindowAction {
     let pad = 4.0;
     let btn_w = 32.0;
@@ -219,7 +269,7 @@ pub fn draw_status_bar(
     ui: &imgui::Ui,
     info: &StatusInfo,
     display_w: f32,
-    _display_h: f32,
+    display_h: f32,
     is_maximized: bool,
 ) -> WindowAction {
     let pad = 4.0;
@@ -317,35 +367,57 @@ pub fn draw_status_bar(
         }
 
         if info.is_video {
-            let seek_w = (buttons_start_x - pad * 2.0).max(80.0);
-            let seek_h = 3.0;
-            let seek_x = pad;
-            let seek_y = BAR_HEIGHT - seek_h - 1.0;
-            ui.set_cursor_pos([seek_x, seek_y - 4.0]);
-            ui.invisible_button("##seekbar", [seek_w, seek_h + 8.0]);
-            if ui.is_item_active() || ui.is_item_hovered() {
-                let mouse_x = ui.io().mouse_pos[0];
-                let fraction = ((mouse_x - seek_x) / seek_w).clamp(0.0, 1.0);
-                if ui.is_mouse_down(imgui::MouseButton::Left) {
-                    action = WindowAction::Seek(fraction);
+            let seek_w = display_w.max(80.0);
+            let seek_x = 0.0;
+            let expanded = seekbar_expanded(ui.io().mouse_pos[1], display_h);
+            let seek_h = seekbar_window_height(expanded);
+            let seek_y = display_h - seek_h;
+            let draw = ui.get_foreground_draw_list();
+            if let Some(seek_win) = ui
+                .window("##seekbar")
+                .position([seek_x, seek_y], Condition::Always)
+                .size([seek_w, seek_h], Condition::Always)
+                .bg_alpha(0.0)
+                .flags(STATUS_FLAGS)
+                .begin()
+            {
+                ui.set_cursor_pos([0.0, 0.0]);
+                ui.invisible_button("##seekbar", [seek_w, seek_h]);
+                let seek_hovered = ui.is_item_active() || ui.is_item_hovered();
+                let hover_fraction = if seek_hovered {
+                    let mouse_x = ui.io().mouse_pos[0];
+                    let fraction = seek_fraction_at(mouse_x, seek_x, seek_w);
+                    if ui.is_mouse_down(imgui::MouseButton::Left) {
+                        action = WindowAction::Seek(fraction);
+                    }
+                    Some(fraction)
+                } else {
+                    None
+                };
+                let progress = video_progress_fraction(info.video_pos, info.video_duration);
+                draw.add_rect([seek_x, seek_y], [seek_x + seek_w, seek_y + seek_h], SEEKBAR_BG)
+                    .filled(true)
+                    .build();
+                draw.add_rect(
+                    [seek_x, seek_y],
+                    [seek_x + seek_w * progress, seek_y + seek_h],
+                    SEEKBAR_FILL,
+                )
+                .filled(true)
+                .build();
+                if let Some(fraction) = hover_fraction {
+                    let hover_x = seek_x + seek_w * fraction;
+                    draw.add_line([hover_x, seek_y], [hover_x, seek_y + seek_h], SEEKBAR_HOVER)
+                        .thickness(1.0)
+                        .build();
+                    let seek_time = fmt_time(info.video_duration * fraction as f64);
+                    let text_size = ui.calc_text_size(&seek_time);
+                    let text_x = seekbar_label_x(seek_x, seek_w, text_size[0], fraction);
+                    let text_y = seek_y + (seek_h - text_size[1]) * 0.5;
+                    draw_text_with_border(&draw, [text_x, text_y], &seek_time);
                 }
+                let _ = seek_win;
             }
-            let progress = video_progress_fraction(info.video_pos, info.video_duration);
-            let draw = ui.get_window_draw_list();
-            draw.add_rect(
-                [seek_x, seek_y],
-                [seek_x + seek_w, seek_y + seek_h],
-                [0.24, 0.24, 0.24, 1.0],
-            )
-            .filled(true)
-            .build();
-            draw.add_rect(
-                [seek_x, seek_y],
-                [seek_x + seek_w * progress, seek_y + seek_h],
-                [0.86, 0.86, 0.86, 1.0],
-            )
-            .filled(true)
-            .build();
         }
 
         // Draw right: video info + [index/total]
@@ -866,6 +938,33 @@ mod tests {
     fn video_progress_fraction_rejects_invalid_position() {
         assert_eq!(video_progress_fraction(f64::NAN, 10.0), 0.0);
         assert_eq!(video_progress_fraction(f64::INFINITY, 10.0), 0.0);
+    }
+
+    #[test]
+    fn seek_fraction_at_maps_inside_bar() {
+        assert_eq!(seek_fraction_at(50.0, 10.0, 80.0), 0.5);
+        assert_eq!(seek_fraction_at(10.0, 10.0, 80.0), 0.0);
+        assert_eq!(seek_fraction_at(90.0, 10.0, 80.0), 1.0);
+    }
+
+    #[test]
+    fn seek_fraction_at_clamps_outside_bar() {
+        assert_eq!(seek_fraction_at(-100.0, 10.0, 80.0), 0.0);
+        assert_eq!(seek_fraction_at(900.0, 10.0, 80.0), 1.0);
+    }
+
+    #[test]
+    fn seek_fraction_at_rejects_invalid_geometry() {
+        assert_eq!(seek_fraction_at(50.0, 10.0, 0.0), 0.0);
+        assert_eq!(seek_fraction_at(50.0, 10.0, -1.0), 0.0);
+        assert_eq!(seek_fraction_at(f32::NAN, 10.0, 80.0), 0.0);
+        assert_eq!(seek_fraction_at(50.0, f32::NAN, 80.0), 0.0);
+        assert_eq!(seek_fraction_at(50.0, 10.0, f32::NAN), 0.0);
+    }
+
+    fn seekbar_window_height_expands_downward() {
+        assert_eq!(seekbar_window_height(false), SEEKBAR_IDLE_H);
+        assert_eq!(seekbar_window_height(true), SEEKBAR_ACTIVE_H);
     }
 
     #[test]

@@ -769,19 +769,51 @@ fn main() {
         .build()
         .expect("Failed to create window");
 
-    // Custom hit-test: top BAR_HEIGHT pixels are draggable (except the button zone on the right)
+    // Custom hit-test: top bar draggable, edges resizable
     unsafe {
+        const RESIZE_HANDLE: i32 = 6;
         unsafe extern "C" fn hit_test_cb(
             win: *mut sdl2_sys::SDL_Window,
             area: *const sdl2_sys::SDL_Point,
             _data: *mut std::ffi::c_void,
         ) -> sdl2_sys::SDL_HitTestResult {
             let pt = &*area;
+            let mut w: i32 = 0;
+            let mut h: i32 = 0;
+            sdl2_sys::SDL_GetWindowSize(win, &mut w, &mut h);
+
+            let top = pt.y < RESIZE_HANDLE;
+            let bottom = pt.y >= h - RESIZE_HANDLE;
+            let left = pt.x < RESIZE_HANDLE;
+            let right = pt.x >= w - RESIZE_HANDLE;
+
+            if top && left {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_TOPLEFT;
+            }
+            if top && right {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_TOPRIGHT;
+            }
+            if bottom && left {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_BOTTOMLEFT;
+            }
+            if bottom && right {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+            }
+            if top {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_TOP;
+            }
+            if bottom {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_BOTTOM;
+            }
+            if left {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_LEFT;
+            }
+            if right {
+                return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_RESIZE_RIGHT;
+            }
+
             let bar_h = statusbar::BAR_HEIGHT as i32;
             if pt.y < bar_h {
-                // Right side: window control buttons — let imgui handle clicks
-                let mut w: i32 = 0;
-                sdl2_sys::SDL_GetWindowSize(win, &mut w, std::ptr::null_mut());
                 let btn_zone = statusbar::BUTTON_ZONE_W as i32;
                 if pt.x >= w - btn_zone {
                     return sdl2_sys::SDL_HitTestResult::SDL_HITTEST_NORMAL;
@@ -1018,7 +1050,9 @@ fn main() {
             match event {
                 Event::Quit { .. } => running = false,
 
-                Event::MouseMotion { .. } => {
+                Event::MouseMotion { .. }
+                | Event::MouseButtonDown { .. }
+                | Event::MouseWheel { .. } => {
                     last_mouse_move = Instant::now();
                     if !cursor_visible {
                         unsafe {

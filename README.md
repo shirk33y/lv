@@ -61,19 +61,17 @@ rustup toolchain install stable
 
 Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
 
-On Bazzite, use Homebrew libraries for native checks/tests:
+On Bazzite, run one-time configure, then use `make` targets:
 
 ```sh
 brew install sdl2 mpv xorgproto libx11 libxext libxrandr libxfixes
 
-BREW_PREFIX="$(brew --prefix)"
-export PKG_CONFIG_PATH="$BREW_PREFIX/opt/sdl2/lib/pkgconfig:$BREW_PREFIX/opt/mpv/lib/pkgconfig:$BREW_PREFIX/opt/xorgproto/share/pkgconfig:$BREW_PREFIX/opt/libx11/lib/pkgconfig:$BREW_PREFIX/opt/libxext/lib/pkgconfig:$BREW_PREFIX/opt/libxrandr/lib/pkgconfig:$BREW_PREFIX/opt/libxfixes/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-export LIBRARY_PATH="$BREW_PREFIX/opt/sdl2/lib:$BREW_PREFIX/opt/mpv/lib:${LIBRARY_PATH:-}"
-export LD_LIBRARY_PATH="$BREW_PREFIX/opt/sdl2/lib:$BREW_PREFIX/opt/mpv/lib:${LD_LIBRARY_PATH:-}"
-
-cargo check
-cargo test
+make configure
+make check
+make test
 ```
+
+Use `LV_NATIVE_PREFIXES=/custom/prefix1:/custom/prefix2 make configure` if the libraries live outside Homebrew.
 
 ```sh
 cargo run --release           # GUI
