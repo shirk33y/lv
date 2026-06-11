@@ -1,8 +1,10 @@
 target/
 target-*/
 dist/
+build/
 build-installer/
 AppDir/
+.flatpak-builder/
 .git/
 .github/
 .cargo/
