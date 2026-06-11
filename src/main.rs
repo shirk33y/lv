@@ -17,9 +17,10 @@ mod scanner;
 mod statusbar;
 mod watcher;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
@@ -50,6 +51,10 @@ fn is_image(path: &str) -> bool {
 
 fn is_video(path: &str) -> bool {
     VIDEO_EXTS.contains(&ext_of(path).as_str())
+}
+
+fn is_mpv_media(path: &str) -> bool {
+    is_video(path) || ext_of(path) == "webp"
 }
 
 /// Strip Windows extended-length path prefix (`\\?\`) if present.
@@ -153,26 +158,53 @@ fn handle_drop(
     }
 }
 
-/// Send mpv "stop" asynchronously so it doesn't block the UI thread.
-unsafe fn mpv_stop_async(handle: *mut libmpv_sys::mpv_handle) {
-    let cmd = CString::new("stop").unwrap();
-    let args: [*const std::os::raw::c_char; 2] = [cmd.as_ptr(), std::ptr::null()];
-    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+fn mpv_loadfile_args(path: &str) -> [&str; 3] {
+    ["loadfile", path, "replace"]
 }
 
-/// Send mpv "loadfile" asynchronously so it doesn't block the UI thread.
+fn mpv_seek_args(delta_secs: &str) -> [&str; 3] {
+    ["seek", delta_secs, "relative+exact"]
+}
+
+fn mpv_seek_absolute_args(pos_secs: &str) -> [&str; 3] {
+    ["seek", pos_secs, "absolute+exact"]
+}
+
+unsafe fn mpv_command_sync(handle: *mut libmpv_sys::mpv_handle, args: &[&str]) -> i32 {
+    let cstrings: Vec<CString> = args.iter().map(|s| CString::new(*s).unwrap()).collect();
+    let mut ptrs: Vec<*const std::os::raw::c_char> = cstrings.iter().map(|s| s.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    libmpv_sys::mpv_command(handle, ptrs.as_mut_ptr() as *mut _)
+}
+
+unsafe fn mpv_command_async(handle: *mut libmpv_sys::mpv_handle, args: &[&str]) {
+    let cstrings: Vec<CString> = args.iter().map(|s| CString::new(*s).unwrap()).collect();
+    let mut ptrs: Vec<*const std::os::raw::c_char> = cstrings.iter().map(|s| s.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    libmpv_sys::mpv_command_async(handle, 0, ptrs.as_mut_ptr() as *mut _);
+}
+
+unsafe fn mpv_stop_sync(handle: *mut libmpv_sys::mpv_handle) {
+    let rc = mpv_command_sync(handle, &["stop"]);
+    if rc < 0 {
+        eprintln!("mpv stop failed: {}", rc);
+    }
+}
+
 unsafe fn mpv_loadfile_async(handle: *mut libmpv_sys::mpv_handle, path: &str) {
-    let cmd = CString::new("loadfile").unwrap();
-    let p = CString::new(path).unwrap();
-    let args: [*const std::os::raw::c_char; 3] = [cmd.as_ptr(), p.as_ptr(), std::ptr::null()];
-    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+    mpv_command_async(handle, &mpv_loadfile_args(path));
 }
 
-unsafe fn mpv_command_async_2(handle: *mut libmpv_sys::mpv_handle, a0: &str, a1: &str) {
-    let c0 = CString::new(a0).unwrap();
-    let c1 = CString::new(a1).unwrap();
-    let args: [*const std::os::raw::c_char; 3] = [c0.as_ptr(), c1.as_ptr(), std::ptr::null()];
-    libmpv_sys::mpv_command_async(handle, 0, args.as_ptr() as *mut _);
+unsafe fn mpv_cycle_pause_async(handle: *mut libmpv_sys::mpv_handle) {
+    mpv_command_async(handle, &["cycle", "pause"]);
+}
+
+unsafe fn mpv_seek_relative_async(handle: *mut libmpv_sys::mpv_handle, delta_secs: &str) {
+    mpv_command_async(handle, &mpv_seek_args(delta_secs));
+}
+
+unsafe fn mpv_seek_absolute_async(handle: *mut libmpv_sys::mpv_handle, pos_secs: &str) {
+    mpv_command_async(handle, &mpv_seek_absolute_args(pos_secs));
 }
 
 unsafe fn mpv_set_property_i64(handle: *mut libmpv_sys::mpv_handle, name: &str, val: i64) {
@@ -185,6 +217,99 @@ unsafe fn mpv_set_property_i64(handle: *mut libmpv_sys::mpv_handle, name: &str, 
     );
     if rc < 0 {
         eprintln!("mpv_set_property({}) failed: {}", name, rc);
+    }
+}
+
+const OBS_TIME_POS: u64 = 1;
+const OBS_DURATION: u64 = 2;
+const OBS_PAUSE: u64 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MpvPlaybackState {
+    pos: f64,
+    duration: f64,
+    paused: bool,
+    loaded: bool,
+}
+
+impl Default for MpvPlaybackState {
+    fn default() -> Self {
+        Self {
+            pos: 0.0,
+            duration: 0.0,
+            paused: false,
+            loaded: false,
+        }
+    }
+}
+
+impl MpvPlaybackState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn apply_mpv_property_update(
+    state: &mut MpvPlaybackState,
+    property_id: u64,
+    format: libmpv_sys::mpv_format,
+    data: *mut std::os::raw::c_void,
+) {
+    if data.is_null() {
+        return;
+    }
+    unsafe {
+        match property_id {
+            OBS_TIME_POS if format == libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE => {
+                let value = *(data as *const f64);
+                if value.is_finite() {
+                    state.pos = value.max(0.0);
+                }
+            }
+            OBS_DURATION if format == libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE => {
+                let value = *(data as *const f64);
+                if value.is_finite() {
+                    state.duration = value.max(0.0);
+                }
+            }
+            OBS_PAUSE if format == libmpv_sys::mpv_format_MPV_FORMAT_FLAG => {
+                state.paused = *(data as *const i32) != 0;
+            }
+            _ => {}
+        }
+    }
+}
+
+unsafe fn drain_mpv_events(handle: *mut libmpv_sys::mpv_handle, state: &mut MpvPlaybackState) {
+    loop {
+        let ev = libmpv_sys::mpv_wait_event(handle, 0.0);
+        if ev.is_null() {
+            break;
+        }
+        match (*ev).event_id {
+            libmpv_sys::mpv_event_id_MPV_EVENT_NONE => break,
+            libmpv_sys::mpv_event_id_MPV_EVENT_FILE_LOADED => {
+                state.loaded = true;
+            }
+            libmpv_sys::mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
+                let prop = (*ev).data as *const libmpv_sys::mpv_event_property;
+                if !prop.is_null() {
+                    apply_mpv_property_update(
+                        state,
+                        (*ev).reply_userdata,
+                        (*prop).format,
+                        (*prop).data,
+                    );
+                }
+            }
+            libmpv_sys::mpv_event_id_MPV_EVENT_PAUSE => state.paused = true,
+            libmpv_sys::mpv_event_id_MPV_EVENT_UNPAUSE => state.paused = false,
+            libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE => {
+                state.pos = 0.0;
+            }
+            libmpv_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => break,
+            _ => {}
+        }
     }
 }
 
@@ -407,6 +532,61 @@ fn prefetch_file(path: &str) {
 
 #[cfg(not(unix))]
 fn prefetch_file(_path: &str) {}
+
+struct VideoPrefetcher {
+    scheduled: Arc<Mutex<HashSet<String>>>,
+}
+
+impl VideoPrefetcher {
+    fn new() -> Self {
+        Self {
+            scheduled: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    fn is_scheduled(&self, path: &str) -> bool {
+        self.scheduled.lock().unwrap().contains(path)
+    }
+
+    fn schedule(&self, path: String) {
+        {
+            let mut scheduled = self.scheduled.lock().unwrap();
+            if !scheduled.insert(path.clone()) {
+                return;
+            }
+        }
+        std::thread::spawn(move || prefetch_file(&path));
+    }
+}
+
+fn video_prefetch_paths(files: &[FileEntry], cursor: usize, radius: usize) -> Vec<String> {
+    if files.is_empty() || radius == 0 {
+        return Vec::new();
+    }
+    let mut paths = Vec::new();
+    for offset in 1..=radius {
+        if let Some(file) = files.get(cursor + offset) {
+            if is_mpv_media(&file.path) {
+                paths.push(file.path.clone());
+            }
+        }
+        if cursor >= offset {
+            if let Some(file) = files.get(cursor - offset) {
+                if is_mpv_media(&file.path) {
+                    paths.push(file.path.clone());
+                }
+            }
+        }
+    }
+    paths
+}
+
+fn schedule_video_prefetch(prefetcher: &VideoPrefetcher, files: &[FileEntry], cursor: usize) {
+    const VIDEO_PREFETCH_RADIUS: usize = 4;
+    for path in video_prefetch_paths(files, cursor, VIDEO_PREFETCH_RADIUS) {
+        prefetcher.schedule(path);
+    }
+}
 
 #[cfg(debug_assertions)]
 #[derive(Clone)]
@@ -653,15 +833,13 @@ fn main() {
     set_prop("terminal", "no");
     set_prop("image-display-duration", "inf");
     set_prop("keep-open", "yes");
+    set_prop("loop-file", "inf");
     let init_rc = unsafe { libmpv_sys::mpv_initialize(mpv_handle) };
     if init_rc < 0 {
         panic!("mpv_initialize failed: {}", init_rc);
     }
 
     // Observe properties via push events (non-blocking, replaces get_property polling)
-    const OBS_TIME_POS: u64 = 1;
-    const OBS_DURATION: u64 = 2;
-    const OBS_PAUSE: u64 = 3;
     unsafe {
         let tp = CString::new("time-pos").unwrap();
         let dur = CString::new("duration").unwrap();
@@ -702,6 +880,7 @@ fn main() {
     // ── Texture cache + preloader ───────────────────────────────────────
     let mut tex_cache = TextureCache::new(20);
     let preloader = preload::Preloader::new();
+    let video_prefetcher = VideoPrefetcher::new();
 
     // ── Spawn mpv render thread ─────────────────────────────────────────
     let (init_w, init_h) = window.drawable_size();
@@ -730,10 +909,7 @@ fn main() {
     let mut timings: Vec<TimingEntry> = Vec::new();
     let mut needs_display = true;
     let mut volume: i64 = 100;
-    let mut video_pos: f64 = 0.0;
-    let mut video_duration: f64 = 0.0;
-    let mut video_paused: bool = false;
-    let mut video_has_frame: bool = false;
+    let mut mpv_state = MpvPlaybackState::default();
     let mut pending_cold_load: Option<String> = None; // async cold decode in progress
     let mut show_info = false;
     let mut cached_meta: Option<db::FileMeta> = None;
@@ -745,7 +921,8 @@ fn main() {
     let start_time = Instant::now();
     // Debounce video loading: defer mpv loadfile until user stops navigating
     const VIDEO_DEBOUNCE_MS: u128 = 150;
-    let mut pending_video: Option<(String, Instant)> = None;
+    const VIDEO_PREFETCHED_DEBOUNCE_MS: u128 = 0;
+    let mut pending_video: Option<(String, Instant, u128)> = None;
     let mut error_message: Option<(String, String)> = None; // (error, filename)
 
     // Slow frame tracking: aggregate stats over 10s windows
@@ -764,7 +941,12 @@ fn main() {
     let mut borderless_maximized = false;
     let initial_pos = window.position();
     let initial_size = window.size();
-    let mut restore_rect: (i32, i32, i32, i32) = (initial_pos.0, initial_pos.1, initial_size.0 as i32, initial_size.1 as i32);
+    let mut restore_rect: (i32, i32, i32, i32) = (
+        initial_pos.0,
+        initial_pos.1,
+        initial_size.0 as i32,
+        initial_size.1 as i32,
+    );
     let mut window_minimized = false;
     while running {
         let _frame_t0 = Instant::now();
@@ -1146,19 +1328,19 @@ fn main() {
                         // ── space: pause video ──────────────────────────
                         Keycode::Space => {
                             if using_mpv {
-                                unsafe { mpv_command_async_2(mpv_handle, "cycle", "pause") };
+                                unsafe { mpv_cycle_pause_async(mpv_handle) };
                             }
                         }
 
                         // ── video seek / volume ─────────────────────────
                         Keycode::Left => {
                             if using_mpv {
-                                unsafe { mpv_command_async_2(mpv_handle, "seek", "-5") };
+                                unsafe { mpv_seek_relative_async(mpv_handle, "-5") };
                             }
                         }
                         Keycode::Right => {
                             if using_mpv {
-                                unsafe { mpv_command_async_2(mpv_handle, "seek", "15") };
+                                unsafe { mpv_seek_relative_async(mpv_handle, "15") };
                             }
                         }
                         Keycode::Up => {
@@ -1203,9 +1385,7 @@ fn main() {
                 }
 
                 Event::Window {
-                    win_event: WindowEvent::Shown
-                        | WindowEvent::Restored
-                        | WindowEvent::Exposed,
+                    win_event: WindowEvent::Shown | WindowEvent::Restored | WindowEvent::Exposed,
                     ..
                 } => {
                     window_minimized = false;
@@ -1265,20 +1445,38 @@ fn main() {
                     error_message = Some(("File not found".into(), file.filename.clone()));
                     update_title(&window, &files, cursor, &current_dir);
                     lv_db.record_view(file.id);
+                } else if is_mpv_media(path) {
+                    error_message = None;
+                    pending_cold_load = None;
+                    if using_mpv {
+                        unsafe {
+                            mpv_stop_sync(mpv_handle);
+                        }
+                        mpv_shared.has_frame.store(false, Ordering::Release);
+                    }
+                    using_mpv = true;
+                    mpv_state.reset();
+                    let debounce_ms = if video_prefetcher.is_scheduled(path) {
+                        VIDEO_PREFETCHED_DEBOUNCE_MS
+                    } else {
+                        VIDEO_DEBOUNCE_MS
+                    };
+                    prefetch_file(path);
+                    video_prefetcher.schedule(path.clone());
+                    schedule_video_prefetch(&video_prefetcher, &files, cursor);
+                    pending_video = Some((path.clone(), Instant::now(), debounce_ms));
                 } else if is_image(path) {
                     error_message = None;
                     pending_video = None;
                     pending_cold_load = None; // cancel any prior async decode
                     if using_mpv {
                         unsafe {
-                            mpv_stop_async(mpv_handle);
+                            mpv_stop_sync(mpv_handle);
                         }
                         using_mpv = false;
                         mpv_shared.has_frame.store(false, Ordering::Release);
                     }
-                    video_pos = 0.0;
-                    video_duration = 0.0;
-                    video_paused = false;
+                    mpv_state.reset();
 
                     let (_method, _decode_ms, _upload_ms): (&str, Option<f64>, Option<f64>) =
                         if tex_cache.has(path) {
@@ -1319,25 +1517,6 @@ fn main() {
                     }
 
                     schedule_preload(&preloader, &tex_cache, &files, cursor);
-                } else if is_video(path) {
-                    error_message = None;
-                    // Stop current mpv playback (async) so we don't
-                    // show stale video while debouncing
-                    if using_mpv {
-                        unsafe {
-                            mpv_stop_async(mpv_handle);
-                        }
-                        mpv_shared.has_frame.store(false, Ordering::Release);
-                    }
-                    using_mpv = true;
-                    video_has_frame = false;
-                    video_pos = 0.0;
-                    video_duration = 0.0;
-                    video_paused = false;
-                    // Prefetch video data into page cache (helps on network FS)
-                    prefetch_file(path);
-                    // Defer actual loadfile — debounce rapid navigation
-                    pending_video = Some((path.clone(), Instant::now()));
                 } else {
                     // Unknown extension — show error overlay
                     eprintln!("UNSUPPORTED: {}", file.filename);
@@ -1362,8 +1541,8 @@ fn main() {
         let _t3 = Instant::now();
 
         // ── Fire deferred video load after debounce period ──────────────
-        if let Some((ref vpath, ref stamp)) = pending_video {
-            if stamp.elapsed().as_millis() >= VIDEO_DEBOUNCE_MS {
+        if let Some((ref vpath, ref stamp, debounce_ms)) = pending_video {
+            if stamp.elapsed().as_millis() >= debounce_ms {
                 let vpath = vpath.clone();
                 let _t0 = Instant::now();
                 unsafe {
@@ -1397,6 +1576,10 @@ fn main() {
 
         let _t4 = Instant::now();
         let _t_drain = _t4.elapsed();
+
+        unsafe {
+            drain_mpv_events(mpv_handle, &mut mpv_state);
+        }
 
         // Query phase eliminated — properties now arrive via observe_property events above
         let _t_query = std::time::Duration::ZERO;
@@ -1437,7 +1620,7 @@ fn main() {
             gl::Viewport(0, 0, w as i32, content_h as i32);
         }
         let mpv_display_tex = mpv_shared.display_tex.load(Ordering::Acquire);
-        video_has_frame = mpv_shared.has_frame.load(Ordering::Acquire);
+        let video_has_frame = mpv_shared.has_frame.load(Ordering::Acquire);
         if using_mpv && video_has_frame && mpv_display_tex != 0 {
             // Blit texture produced by mpv render thread (sub-1ms)
             quad_renderer.draw_video(mpv_display_tex, w, h, w, content_h);
@@ -1466,7 +1649,7 @@ fn main() {
         imgui_platform.prepare_frame(&mut imgui_ctx, &window, &event_pump);
         let ui = imgui_ctx.new_frame();
 
-        if let Some(file) = files.get(cursor) {
+        let win_action = if let Some(file) = files.get(cursor) {
             let is_turbo = job_engine.stats.turbo.load(Ordering::Relaxed);
             let info = statusbar::StatusInfo {
                 index: cursor + 1,
@@ -1474,57 +1657,14 @@ fn main() {
                 path: &file.path,
                 liked: file.liked,
                 is_video: using_mpv,
-                paused: video_paused,
-                video_pos,
-                video_duration,
+                paused: mpv_state.paused,
+                video_pos: mpv_state.pos,
+                video_duration: mpv_state.duration,
                 volume,
                 turbo: is_turbo,
             };
-            let win_action = statusbar::draw_status_bar(ui, &info, w as f32, h as f32, borderless_maximized);
-            match win_action {
-                statusbar::WindowAction::Close => {
-                    running = false;
-                }
-                statusbar::WindowAction::Minimize => {
-                    window.minimize();
-                }
-                statusbar::WindowAction::Maximize => {
-                    if borderless_maximized {
-                        // Restore to saved geometry
-                        window.set_position(
-                            sdl2::video::WindowPos::Positioned(restore_rect.0),
-                            sdl2::video::WindowPos::Positioned(restore_rect.1),
-                        );
-                        window
-                            .set_size(restore_rect.2 as u32, restore_rect.3 as u32)
-                            .ok();
-                        borderless_maximized = false;
-                    } else {
-                        // Save current geometry for restore
-                        let pos = window.position();
-                        let size = window.size();
-                        restore_rect = (pos.0, pos.1, size.0 as i32, size.1 as i32);
-                        // Maximize to usable display area (respects taskbar)
-                        let display_idx = window.display_index().unwrap_or(0);
-                        let mut bounds = sdl2_sys::SDL_Rect {
-                            x: 0,
-                            y: 0,
-                            w: 0,
-                            h: 0,
-                        };
-                        unsafe {
-                            sdl2_sys::SDL_GetDisplayUsableBounds(display_idx, &mut bounds);
-                        }
-                        window.set_position(
-                            sdl2::video::WindowPos::Positioned(bounds.x),
-                            sdl2::video::WindowPos::Positioned(bounds.y),
-                        );
-                        window.set_size(bounds.w as u32, bounds.h as u32).ok();
-                        borderless_maximized = true;
-                    }
-                }
-                statusbar::WindowAction::None => {}
-            }
+            let win_action =
+                statusbar::draw_status_bar(ui, &info, w as f32, h as f32, borderless_maximized);
 
             // Info sidebar (toggle with 'i')
             if show_info {
@@ -1544,9 +1684,68 @@ fn main() {
                     collection_mode,
                 );
             }
+            win_action
+        } else {
+            statusbar::draw_empty_status_bar(ui, w as f32, borderless_maximized)
+        };
+
+        match win_action {
+            statusbar::WindowAction::Seek(fraction) => {
+                if using_mpv && mpv_state.duration > 0.0 {
+                    let pos = (mpv_state.duration * fraction as f64).clamp(0.0, mpv_state.duration);
+                    unsafe {
+                        mpv_seek_absolute_async(mpv_handle, &format!("{:.3}", pos));
+                    }
+                    mpv_state.pos = pos;
+                }
+            }
+            statusbar::WindowAction::Close => {
+                running = false;
+            }
+            statusbar::WindowAction::Minimize => {
+                window.minimize();
+            }
+            statusbar::WindowAction::Maximize => {
+                if borderless_maximized {
+                    // Restore to saved geometry
+                    window.set_position(
+                        sdl2::video::WindowPos::Positioned(restore_rect.0),
+                        sdl2::video::WindowPos::Positioned(restore_rect.1),
+                    );
+                    window
+                        .set_size(restore_rect.2 as u32, restore_rect.3 as u32)
+                        .ok();
+                    borderless_maximized = false;
+                } else {
+                    // Save current geometry for restore
+                    let pos = window.position();
+                    let size = window.size();
+                    restore_rect = (pos.0, pos.1, size.0 as i32, size.1 as i32);
+                    // Maximize to usable display area (respects taskbar)
+                    let display_idx = window.display_index().unwrap_or(0);
+                    let mut bounds = sdl2_sys::SDL_Rect {
+                        x: 0,
+                        y: 0,
+                        w: 0,
+                        h: 0,
+                    };
+                    unsafe {
+                        sdl2_sys::SDL_GetDisplayUsableBounds(display_idx, &mut bounds);
+                    }
+                    window.set_position(
+                        sdl2::video::WindowPos::Positioned(bounds.x),
+                        sdl2::video::WindowPos::Positioned(bounds.y),
+                    );
+                    window.set_size(bounds.w as u32, bounds.h as u32).ok();
+                    borderless_maximized = true;
+                }
+            }
+            statusbar::WindowAction::None => {}
         }
 
-        if let Some((ref err, ref fname)) = error_message {
+        if files.is_empty() {
+            statusbar::draw_empty_overlay(ui, w as f32, h as f32);
+        } else if let Some((ref err, ref fname)) = error_message {
             statusbar::draw_error_overlay(ui, err, fname, w as f32, h as f32);
         } else if (using_mpv && !video_has_frame) || pending_cold_load.is_some() {
             statusbar::draw_spinner(ui, w as f32, h as f32, start_time.elapsed().as_secs_f32());
@@ -1604,7 +1803,7 @@ fn main() {
     job_engine.stop();
     // Stop mpv playback and signal render thread to exit
     unsafe {
-        mpv_stop_async(mpv_handle);
+        mpv_stop_sync(mpv_handle);
     }
     mpv_shared.quit.store(true, Ordering::Release);
     // Give render thread a short deadline, then move on
@@ -1846,6 +2045,150 @@ mod tests {
         assert!(!is_video("photo.jpg"));
         assert!(!is_video("file.txt"));
         assert!(!is_video("doc.pdf"));
+    }
+
+    #[test]
+    fn webp_routes_to_mpv_without_becoming_video_ext() {
+        assert!(is_image("anim.webp"));
+        assert!(!is_video("anim.webp"));
+        assert!(is_mpv_media("anim.webp"));
+        assert!(is_mpv_media("clip.mp4"));
+        assert!(!is_mpv_media("photo.jpg"));
+    }
+
+    #[test]
+    fn mpv_loadfile_replaces_current_file() {
+        assert_eq!(
+            mpv_loadfile_args("/tmp/a.mp4"),
+            ["loadfile", "/tmp/a.mp4", "replace"]
+        );
+    }
+
+    #[test]
+    fn mpv_seek_commands_are_exact() {
+        assert_eq!(mpv_seek_args("-5"), ["seek", "-5", "relative+exact"]);
+        assert_eq!(mpv_seek_args("15"), ["seek", "15", "relative+exact"]);
+        assert_eq!(
+            mpv_seek_absolute_args("12.500"),
+            ["seek", "12.500", "absolute+exact"]
+        );
+    }
+
+    #[test]
+    fn mpv_state_resets_on_media_switch() {
+        let mut state = MpvPlaybackState {
+            pos: 12.0,
+            duration: 30.0,
+            paused: true,
+            loaded: true,
+        };
+        state.reset();
+        assert_eq!(state, MpvPlaybackState::default());
+    }
+
+    #[test]
+    fn mpv_property_updates_ignore_invalid_values() {
+        let mut state = MpvPlaybackState::default();
+        let mut pos = 42.25;
+        apply_mpv_property_update(
+            &mut state,
+            OBS_TIME_POS,
+            libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
+            &mut pos as *mut f64 as *mut _,
+        );
+        assert_eq!(state.pos, 42.25);
+
+        let mut duration = 90.0;
+        apply_mpv_property_update(
+            &mut state,
+            OBS_DURATION,
+            libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
+            &mut duration as *mut f64 as *mut _,
+        );
+        assert_eq!(state.duration, 90.0);
+
+        let mut paused = 1i32;
+        apply_mpv_property_update(
+            &mut state,
+            OBS_PAUSE,
+            libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
+            &mut paused as *mut i32 as *mut _,
+        );
+        assert!(state.paused);
+
+        let mut nan = f64::NAN;
+        apply_mpv_property_update(
+            &mut state,
+            OBS_TIME_POS,
+            libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
+            &mut nan as *mut f64 as *mut _,
+        );
+        assert_eq!(state.pos, 42.25);
+    }
+
+    fn test_entry(id: i64, path: &str) -> FileEntry {
+        FileEntry {
+            id,
+            path: path.to_string(),
+            dir: "/tmp".to_string(),
+            filename: path.rsplit('/').next().unwrap_or(path).to_string(),
+            meta_id: None,
+            liked: false,
+            temporary: false,
+        }
+    }
+
+    #[test]
+    fn video_prefetch_paths_prioritize_next_then_previous() {
+        let files = vec![
+            test_entry(1, "/tmp/a.mp4"),
+            test_entry(2, "/tmp/b.jpg"),
+            test_entry(3, "/tmp/c.webm"),
+            test_entry(4, "/tmp/d.webp"),
+            test_entry(5, "/tmp/e.mkv"),
+        ];
+
+        assert_eq!(
+            video_prefetch_paths(&files, 2, 2),
+            vec![
+                "/tmp/d.webp".to_string(),
+                "/tmp/e.mkv".to_string(),
+                "/tmp/a.mp4".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn video_prefetch_paths_skip_current_and_images() {
+        let files = vec![
+            test_entry(1, "/tmp/a.jpg"),
+            test_entry(2, "/tmp/b.mp4"),
+            test_entry(3, "/tmp/c.png"),
+            test_entry(4, "/tmp/d.mkv"),
+        ];
+
+        assert_eq!(
+            video_prefetch_paths(&files, 1, 3),
+            vec!["/tmp/d.mkv".to_string()]
+        );
+    }
+
+    #[test]
+    fn video_prefetch_paths_handles_edges() {
+        let files = vec![test_entry(1, "/tmp/a.mp4"), test_entry(2, "/tmp/b.webm")];
+
+        assert_eq!(video_prefetch_paths(&files, 0, 4), vec!["/tmp/b.webm"]);
+        assert!(video_prefetch_paths(&files, 0, 0).is_empty());
+        assert!(video_prefetch_paths(&[], 0, 4).is_empty());
+    }
+
+    #[test]
+    fn video_prefetcher_marks_scheduled_paths() {
+        let prefetcher = VideoPrefetcher::new();
+        assert!(!prefetcher.is_scheduled("/tmp/a.mp4"));
+        prefetcher.schedule("/tmp/a.mp4".to_string());
+        prefetcher.schedule("/tmp/a.mp4".to_string());
+        assert!(prefetcher.is_scheduled("/tmp/a.mp4"));
     }
 
     #[test]

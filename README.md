@@ -46,6 +46,35 @@ src/
 
 ## Build & run
 
+Rust toolchain:
+
+```sh
+rustup default stable
+rustup target add x86_64-unknown-linux-gnu
+```
+
+If Cargo reports missing `stable-x86_64-unknown-linux-gnu`, run:
+
+```sh
+rustup toolchain install stable
+```
+
+Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
+
+On Bazzite, use Homebrew libraries for native checks/tests:
+
+```sh
+brew install sdl2 mpv xorgproto libx11 libxext libxrandr libxfixes
+
+BREW_PREFIX="$(brew --prefix)"
+export PKG_CONFIG_PATH="$BREW_PREFIX/opt/sdl2/lib/pkgconfig:$BREW_PREFIX/opt/mpv/lib/pkgconfig:$BREW_PREFIX/opt/xorgproto/share/pkgconfig:$BREW_PREFIX/opt/libx11/lib/pkgconfig:$BREW_PREFIX/opt/libxext/lib/pkgconfig:$BREW_PREFIX/opt/libxrandr/lib/pkgconfig:$BREW_PREFIX/opt/libxfixes/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LIBRARY_PATH="$BREW_PREFIX/opt/sdl2/lib:$BREW_PREFIX/opt/mpv/lib:${LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$BREW_PREFIX/opt/sdl2/lib:$BREW_PREFIX/opt/mpv/lib:${LD_LIBRARY_PATH:-}"
+
+cargo check
+cargo test
+```
+
 ```sh
 cargo run --release           # GUI
 cargo run -- track ~/Photos   # add directory

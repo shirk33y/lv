@@ -18,3 +18,10 @@
 - [ ] Use libjpeg-turbo directly for JPEG (bypass image crate overhead)
 - [ ] Cache first video frame as texture for instant re-display
 - [ ] Preload strategy: prioritize direction of travel
+- [ ] Extend existing video prefetch into TikTok-style prewarm so next/previous mpv media starts playback instantly without spinner
+- [ ] Investigate dedicated prewarm mpv handle or demux/cache strategy for adjacent videos
+
+## Video playback
+- [ ] Keep libmpv as source of truth for seek, duration, pause, loop, and animated WebP playback
+- [ ] Add richer playback controls that mirror normal mpv status: seekbar, position, duration, paused/playing, volume
+- [ ] Test rapid navigation across video/video, video/image, image/video, missing files, and animated WebP

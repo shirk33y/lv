@@ -2,6 +2,12 @@
 name = "lv"
 version = "0.1.4"
 edition = "2021"
+exclude = [
+    ".flatpak-builder/**",
+    "build/**",
+    "dist/**",
+    "target/**",
+]
 
 [profile.release]
 debug = true

@@ -6,9 +6,10 @@
 use imgui::{Condition, FontConfig, FontGlyphRanges, FontSource, WindowFlags};
 
 /// Action returned when a window-control button in the title bar is clicked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowAction {
     None,
+    Seek(f32),
     Close,
     Minimize,
     Maximize,
@@ -136,6 +137,81 @@ fn middle_ellipsis(ui: &imgui::Ui, s: &str, max_w: f32) -> String {
     format!("{}{}{}", left, ellipsis, right)
 }
 
+fn draw_window_controls(
+    ui: &imgui::Ui,
+    buttons_start_x: f32,
+    btn_w: f32,
+    btn_h: f32,
+    is_maximized: bool,
+) -> WindowAction {
+    let mut action = WindowAction::None;
+    let _style_colors = ui.push_style_color(imgui::StyleColor::Button, [0.0, 0.0, 0.0, 0.0]);
+    let _style_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.4, 0.4, 0.4, 0.5]);
+    let _style_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [0.5, 0.5, 0.5, 0.6]);
+    let _style_pad = ui.push_style_var(imgui::StyleVar::FramePadding([0.0, 0.0]));
+    let _style_rounding = ui.push_style_var(imgui::StyleVar::FrameRounding(0.0));
+
+    let btn_y = 0.0;
+    ui.set_cursor_pos([buttons_start_x, btn_y]);
+    if ui.button_with_size("-", [btn_w, btn_h]) {
+        action = WindowAction::Minimize;
+    }
+    ui.set_cursor_pos([buttons_start_x + btn_w, btn_y]);
+    let max_icon = if is_maximized { "-" } else { "[]" };
+    if ui.button_with_size(max_icon, [btn_w, btn_h]) {
+        action = WindowAction::Maximize;
+    }
+    let _close_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.8, 0.2, 0.2, 0.8]);
+    let _close_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [0.9, 0.1, 0.1, 0.9]);
+    ui.set_cursor_pos([buttons_start_x + btn_w * 2.0, btn_y]);
+    if ui.button_with_size("x", [btn_w, btn_h]) {
+        action = WindowAction::Close;
+    }
+
+    action
+}
+
+pub fn draw_empty_status_bar(ui: &imgui::Ui, display_w: f32, is_maximized: bool) -> WindowAction {
+    let pad = 4.0;
+    let btn_w = 32.0;
+    let btn_h = BAR_HEIGHT;
+    let win_pad_x = 4.0;
+    let buttons_start_x = display_w - btn_w * 3.0 - win_pad_x;
+    let mut action = WindowAction::None;
+
+    if let Some(_win) = ui
+        .window("##statusbar")
+        .position([0.0, 0.0], Condition::Always)
+        .size([display_w, BAR_HEIGHT], Condition::Always)
+        .bg_alpha(0.78)
+        .flags(STATUS_FLAGS)
+        .begin()
+    {
+        if ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+            let mouse = ui.io().mouse_pos;
+            if mouse[1] >= 0.0 && mouse[1] < BAR_HEIGHT && mouse[0] < buttons_start_x {
+                action = WindowAction::Maximize;
+            }
+        }
+
+        let y = ui.cursor_pos()[1];
+        ui.set_cursor_pos([pad, y]);
+        ui.text_colored(BRIGHT, "lv");
+
+        let right_text = "[0/0]";
+        let right_w = ui.calc_text_size(right_text)[0];
+        ui.set_cursor_pos([buttons_start_x - pad - right_w, y]);
+        ui.text_colored(DIM, right_text);
+
+        match draw_window_controls(ui, buttons_start_x, btn_w, btn_h, is_maximized) {
+            WindowAction::None => {}
+            button_action => action = button_action,
+        }
+    }
+
+    action
+}
+
 /// Draw the status bar at the top of the screen (custom title bar).
 /// Layout: [left: dirname/filename ♥] [right: video info | [1/45] | — □ ✕]
 /// Returns a `WindowAction` if a window-control button was clicked.
@@ -240,6 +316,38 @@ pub fn draw_status_bar(
             ui.text_colored(ACCENT, " ♥");
         }
 
+        if info.is_video {
+            let seek_w = (buttons_start_x - pad * 2.0).max(80.0);
+            let seek_h = 3.0;
+            let seek_x = pad;
+            let seek_y = BAR_HEIGHT - seek_h - 1.0;
+            ui.set_cursor_pos([seek_x, seek_y - 4.0]);
+            ui.invisible_button("##seekbar", [seek_w, seek_h + 8.0]);
+            if ui.is_item_active() || ui.is_item_hovered() {
+                let mouse_x = ui.io().mouse_pos[0];
+                let fraction = ((mouse_x - seek_x) / seek_w).clamp(0.0, 1.0);
+                if ui.is_mouse_down(imgui::MouseButton::Left) {
+                    action = WindowAction::Seek(fraction);
+                }
+            }
+            let progress = video_progress_fraction(info.video_pos, info.video_duration);
+            let draw = ui.get_window_draw_list();
+            draw.add_rect(
+                [seek_x, seek_y],
+                [seek_x + seek_w, seek_y + seek_h],
+                [0.24, 0.24, 0.24, 1.0],
+            )
+            .filled(true)
+            .build();
+            draw.add_rect(
+                [seek_x, seek_y],
+                [seek_x + seek_w * progress, seek_y + seek_h],
+                [0.86, 0.86, 0.86, 1.0],
+            )
+            .filled(true)
+            .build();
+        }
+
         // Draw right: video info + [index/total]
         ui.set_cursor_pos([right_x, y]);
         if info.is_video {
@@ -259,37 +367,11 @@ pub fn draw_status_bar(
             ui.text_colored(DIM, &right_text);
         }
 
-        // ── Window control buttons (— □ ✕) ──────────────────────────
-        let style = ui.clone_style();
-        let _style_colors = ui.push_style_color(imgui::StyleColor::Button, [0.0, 0.0, 0.0, 0.0]);
-        let _style_hover =
-            ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.4, 0.4, 0.4, 0.5]);
-        let _style_active =
-            ui.push_style_color(imgui::StyleColor::ButtonActive, [0.5, 0.5, 0.5, 0.6]);
-        let _style_pad = ui.push_style_var(imgui::StyleVar::FramePadding([0.0, 0.0]));
-        let _style_rounding = ui.push_style_var(imgui::StyleVar::FrameRounding(0.0));
-        let _ = style; // keep style alive
-
-        // Minimize  —
-        let btn_y = 0.0;
-        ui.set_cursor_pos([buttons_start_x, btn_y]);
-        if ui.button_with_size("—", [btn_w, btn_h]) {
-            action = WindowAction::Minimize;
-        }
-        // Maximize/Restore
-        ui.set_cursor_pos([buttons_start_x + btn_w, btn_y]);
-        let max_icon = if is_maximized { "−" } else { "□" };
-        if ui.button_with_size(max_icon, [btn_w, btn_h]) {
-            action = WindowAction::Maximize;
-        }
-        // Close  ✕ (red hover)
-        let _close_hover =
-            ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.8, 0.2, 0.2, 0.8]);
-        let _close_active =
-            ui.push_style_color(imgui::StyleColor::ButtonActive, [0.9, 0.1, 0.1, 0.9]);
-        ui.set_cursor_pos([buttons_start_x + btn_w * 2.0, btn_y]);
-        if ui.button_with_size("✕", [btn_w, btn_h]) {
-            action = WindowAction::Close;
+        match draw_window_controls(ui, buttons_start_x, btn_w, btn_h, is_maximized) {
+            WindowAction::None => {}
+            button_action => {
+                action = button_action;
+            }
         }
     }
 
@@ -383,6 +465,40 @@ pub fn draw_error_overlay(
         let fname_w = ui.calc_text_size(filename)[0];
         ui.set_cursor_pos([(display_w - fname_w) / 2.0, start_y + line_h * 2.0]);
         ui.text_colored(ERROR_DIM, filename);
+    }
+}
+
+pub fn empty_library_hint() -> (&'static str, &'static str) {
+    (
+        "No media in library",
+        "Drop media here or run lv track <dir>",
+    )
+}
+
+pub fn draw_empty_overlay(ui: &imgui::Ui, display_w: f32, display_h: f32) {
+    let (title, hint) = empty_library_hint();
+    if let Some(_win) = ui
+        .window("##empty_overlay")
+        .position([0.0, BAR_HEIGHT], Condition::Always)
+        .size(
+            [display_w, (display_h - BAR_HEIGHT).max(1.0)],
+            Condition::Always,
+        )
+        .bg_alpha(0.55)
+        .flags(ERROR_FLAGS)
+        .begin()
+    {
+        let line_h = ui.text_line_height_with_spacing();
+        let block_h = line_h * 2.0;
+        let start_y = ((display_h - BAR_HEIGHT - block_h) / 2.0).max(0.0);
+
+        let title_w = ui.calc_text_size(title)[0];
+        ui.set_cursor_pos([(display_w - title_w) / 2.0, start_y]);
+        ui.text_colored(BRIGHT, title);
+
+        let hint_w = ui.calc_text_size(hint)[0];
+        ui.set_cursor_pos([(display_w - hint_w) / 2.0, start_y + line_h]);
+        ui.text_colored(DIM, hint);
     }
 }
 
@@ -673,6 +789,13 @@ pub fn fmt_time(secs: f64) -> String {
     }
 }
 
+pub fn video_progress_fraction(pos: f64, duration: f64) -> f32 {
+    if !pos.is_finite() || !duration.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    (pos / duration).clamp(0.0, 1.0) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +841,39 @@ mod tests {
         assert_eq!(fmt_time(f64::NAN), "--:--");
         assert_eq!(fmt_time(f64::INFINITY), "--:--");
         assert_eq!(fmt_time(f64::NEG_INFINITY), "--:--");
+    }
+
+    #[test]
+    fn video_progress_fraction_normal() {
+        assert_eq!(video_progress_fraction(25.0, 100.0), 0.25);
+        assert_eq!(video_progress_fraction(100.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn video_progress_fraction_clamps() {
+        assert_eq!(video_progress_fraction(-5.0, 100.0), 0.0);
+        assert_eq!(video_progress_fraction(150.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn video_progress_fraction_rejects_invalid_duration() {
+        assert_eq!(video_progress_fraction(10.0, 0.0), 0.0);
+        assert_eq!(video_progress_fraction(10.0, -1.0), 0.0);
+        assert_eq!(video_progress_fraction(10.0, f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn video_progress_fraction_rejects_invalid_position() {
+        assert_eq!(video_progress_fraction(f64::NAN, 10.0), 0.0);
+        assert_eq!(video_progress_fraction(f64::INFINITY, 10.0), 0.0);
+    }
+
+    #[test]
+    fn empty_library_hint_is_actionable() {
+        let (title, hint) = empty_library_hint();
+        assert_eq!(title, "No media in library");
+        assert!(hint.contains("Drop media"));
+        assert!(hint.contains("lv track"));
     }
 
     #[test]
