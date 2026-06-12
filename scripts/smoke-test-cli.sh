@@ -1,6 +1,6 @@
 #!/bin/bash
 # CLI smoke test: verify lv subcommands work correctly.
-# Expects lv to be installed (e.g. via .deb) and test fixtures generated.
+# Uses target/release/lv when present, or lv from PATH.
 set -eo pipefail
 
 # Allow overriding paths for Docker use
@@ -14,6 +14,16 @@ fi
 TMPDIR_SMOKE="$(mktemp -d /tmp/lv-smoke-cli.XXXXXX)"
 DB_PATH="${LV_DB_PATH:-$TMPDIR_SMOKE/lv-smoke.db}"
 export LV_DB_PATH="$DB_PATH"
+LV_BIN="${LV_BIN:-}"
+if [ -z "$LV_BIN" ]; then
+    if [ -x "target/release/lv" ]; then
+        LV_BIN="target/release/lv"
+    elif [ -x "target/debug/lv" ]; then
+        LV_BIN="target/debug/lv"
+    else
+        LV_BIN="lv"
+    fi
+fi
 
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 
@@ -24,15 +34,15 @@ ok() { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ❌ $1"; }
 
 echo "=== lv CLI smoke tests ==="
-echo "Binary:   $(which lv)"
-echo "Version:  $(lv --help 2>&1 | head -1 || echo unknown)"
+echo "Binary:   $LV_BIN"
+echo "Version:  $("$LV_BIN" --help 2>&1 | head -1 || echo unknown)"
 echo "DB:       $DB_PATH"
 echo "Fixtures: $FIXTURES"
 echo ""
 
 # ── 1. --help works ──────────────────────────────────────────────────
 echo "--- 1. --help ---"
-if lv --help >/dev/null 2>&1; then
+if "$LV_BIN" --help >/dev/null 2>&1; then
     ok "--help exits 0"
 else
     fail "--help failed (exit $?)"
@@ -40,7 +50,7 @@ fi
 
 # ── 2. help output contains expected text ────────────────────────────
 echo "--- 2. help content ---"
-HELP=$(lv --help 2>&1)
+HELP=$("$LV_BIN" --help 2>&1)
 if echo "$HELP" | grep -qi "track\|scan\|watch"; then
     ok "help mentions subcommands"
 else
@@ -49,7 +59,7 @@ fi
 
 # ── 3. track a directory ─────────────────────────────────────────────
 echo "--- 3. track ---"
-if lv track "$FIXTURES" 2>&1; then
+if "$LV_BIN" track "$FIXTURES" 2>&1; then
     ok "track $FIXTURES"
 else
     fail "track failed (exit $?)"
@@ -57,7 +67,7 @@ fi
 
 # ── 4. status shows tracked dir ─────────────────────────────────────
 echo "--- 4. status ---"
-STATUS=$(lv status 2>&1)
+STATUS=$("$LV_BIN" status 2>&1)
 echo "$STATUS" | head -10 | sed 's/^/  /'
 if echo "$STATUS" | grep -qi "track\|dir\|file"; then
     ok "status output looks valid"
@@ -67,7 +77,7 @@ fi
 
 # ── 5. scan discovers files ──────────────────────────────────────────
 echo "--- 5. scan ---"
-if lv scan 2>&1; then
+if "$LV_BIN" scan 2>&1; then
     ok "scan completed"
 else
     fail "scan failed (exit $?)"
@@ -75,7 +85,7 @@ fi
 
 # ── 6. status shows files after scan ─────────────────────────────────
 echo "--- 6. status (after scan) ---"
-STATUS2=$(lv status 2>&1)
+STATUS2=$("$LV_BIN" status 2>&1)
 echo "$STATUS2" | head -10 | sed 's/^/  /'
 if echo "$STATUS2" | grep -qE "files:|hashed:|[0-9]"; then
     ok "status shows file counts"
@@ -85,7 +95,7 @@ fi
 
 # ── 7. scan specific directory ────────────────────────────────────────
 echo "--- 7. scan <dir> ---"
-if lv scan "$FIXTURES" 2>&1; then
+if "$LV_BIN" scan "$FIXTURES" 2>&1; then
     ok "scan $FIXTURES"
 else
     fail "scan dir failed (exit $?)"
@@ -93,12 +103,12 @@ fi
 
 # ── 8. watch / unwatch ────────────────────────────────────────────────
 echo "--- 8. watch/unwatch ---"
-if lv watch "$FIXTURES" 2>&1; then
+if "$LV_BIN" watch "$FIXTURES" 2>&1; then
     ok "watch $FIXTURES"
 else
     fail "watch failed (exit $?)"
 fi
-if lv unwatch "$FIXTURES" 2>&1; then
+if "$LV_BIN" unwatch "$FIXTURES" 2>&1; then
     ok "unwatch $FIXTURES"
 else
     fail "unwatch failed (exit $?)"
@@ -106,7 +116,7 @@ fi
 
 # ── 9. untrack ────────────────────────────────────────────────────────
 echo "--- 9. untrack ---"
-if lv untrack "$FIXTURES" 2>&1; then
+if "$LV_BIN" untrack "$FIXTURES" 2>&1; then
     ok "untrack $FIXTURES"
 else
     fail "untrack failed (exit $?)"
