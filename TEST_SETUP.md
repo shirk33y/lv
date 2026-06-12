@@ -22,26 +22,17 @@ LV_FIXTURES=test/fixtures bash scripts/smoke-test-cli.sh
 ```
 
 ### Flatpak Smoke Tests
-1. Build flatpak locally:
+Build and smoke-test through Make:
    ```bash
-   distrobox-host-exec ./scripts/build-flatpak.sh
+   make flatpak-release
    ```
 
-2. Run smoke tests:
-   ```bash
-   bash scripts/smoke-test-flatpak.sh
-   ```
-
-3. (Optional) Run advanced video tests:
-   ```bash
-   bash scripts/smoke-test-flatpak-video.sh
-   ```
+This builds the bundle, installs it inside the smoke container, verifies libmpv linkage, scans image/video fixtures, launches video playback under Xvfb, and checks that frames advance.
 
 ### Containerized Smoke Tests
 Run flatpak tests in Docker:
 ```bash
-docker build -f docker/Dockerfile.flatpak-smoke -t lv-flatpak-smoke .
-docker run --rm lv-flatpak-smoke
+make flatpak-smoke CONTAINER_RUNTIME=docker
 ```
 
 ## CI/CD Integration
@@ -56,10 +47,8 @@ docker run --rm lv-flatpak-smoke
 - ✅ Build Linux x86_64 (.deb, .AppImage)
 - ✅ Build Linux ARM64
 - ✅ Build Windows
-- ⚠️ Flatpak tests (optional, if `build/lv.flatpak` exists)
-
-**Note:** Full flatpak build requires local nested Docker/Podman setup. It's not performed in GHA.
-Build locally and commit the `.flatpak` bundle to test in the release pipeline.
+- ✅ Build Flatpak x86_64 + ARM64
+- ✅ Smoke-test Flatpak bundles before upload
 
 ## Test Fixtures
 
@@ -92,20 +81,14 @@ Flatpak integration tests:
 - Image processing
 - Video processing
 - Directory scanning
-- Sandbox environment validation
-
-### `scripts/smoke-test-flatpak-video.sh`
-Advanced video tests:
-- FFmpeg extension availability
-- libmpv in sandbox
-- Video metadata extraction
-- Codec support verification
-- Runtime environment checks
+- libmpv bundled and dynamically resolved
+- Video playback opens under Xvfb
+- Captured video frames advance
 
 ## Adding New Tests
 
 1. **CLI tests**: Update `smoke-test-cli.sh`
-2. **Image/video tests**: Update `smoke-test-flatpak.sh` or create new test
+2. **Image/video tests**: Update `smoke-test-flatpak.sh`
 3. **Container tests**: Update `docker/Dockerfile.flatpak-smoke`
 
 ## Debugging Failed Tests
@@ -119,7 +102,7 @@ LV_DB_PATH=/tmp/test.db lv scan test/fixtures/red_800x600.png
 ### Video Issues
 ```bash
 # Check video codec support
-flatpak run com.shirk33y.lv scan test/fixtures/sample_video.mp4 -v
+flatpak run io.github.shirk33y.lv scan test/fixtures/sample_video.mp4 -v
 
 # Check FFmpeg availability
 flatpak list --app | grep ffmpeg

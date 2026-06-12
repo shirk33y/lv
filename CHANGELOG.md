@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.5](https://github.com/shirk33y/lv/compare/lv-v0.1.4...lv-v0.1.5) (2026-06-12)
+
+
+### Features
+
+* add mpv-backed animated image routing for GIF, WebP, APNG, HEIC, JXL, and SVG
+* add Flatpak release bundles for x86_64 and ARM64 through reproducible Make targets
+* expand recognized image and video extensions across scanner, watcher, drops, and prefetch
+
+
+### Bug Fixes
+
+* keep animated/mpv-backed media out of still-image preload path
+* make Flatpak smoke tests verify bundled libmpv and real video playback
+* rename Flatpak app id to `io.github.shirk33y.lv`
+
 ## [0.1.4](https://github.com/shirk33y/lv/compare/lv-v0.1.3...lv-v0.1.4) (2026-04-10)
 
 

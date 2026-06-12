@@ -5,14 +5,7 @@ use walkdir::WalkDir;
 
 use crate::db::Db;
 
-use crate::clean_path;
-
-const MEDIA_EXTENSIONS: &[&str] = &[
-    // images
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "heic", "heif", "ico",
-    // video
-    "mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
-];
+use crate::{clean_path, is_media_extension};
 
 pub fn discover(db: &Db, root: &Path) -> usize {
     let mut count = 0usize;
@@ -33,7 +26,7 @@ pub fn discover(db: &Db, root: &Path) -> usize {
             .unwrap_or("")
             .to_lowercase();
 
-        if !MEDIA_EXTENSIONS.contains(&ext.as_str()) {
+        if !is_media_extension(&ext) {
             continue;
         }
 
@@ -165,7 +158,7 @@ fn is_leap(y: i64) -> bool {
 
 #[allow(dead_code)]
 pub fn is_media_ext(ext: &str) -> bool {
-    MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+    is_media_extension(ext)
 }
 
 #[cfg(test)]
@@ -228,18 +221,21 @@ mod tests {
 
     #[test]
     fn media_ext_images() {
-        for ext in &[
-            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "heic", "heif", "ico",
-        ] {
+        for ext in crate::IMAGE_EXTS {
             assert!(is_media_ext(ext), "{} should be media", ext);
         }
     }
 
     #[test]
     fn media_ext_videos() {
-        for ext in &[
-            "mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
-        ] {
+        for ext in crate::VIDEO_EXTS {
+            assert!(is_media_ext(ext), "{} should be media", ext);
+        }
+    }
+
+    #[test]
+    fn media_ext_mpv_images() {
+        for ext in crate::MPV_IMAGE_EXTS {
             assert!(is_media_ext(ext), "{} should be media", ext);
         }
     }
@@ -250,13 +246,13 @@ mod tests {
         assert!(is_media_ext("Png"));
         assert!(is_media_ext("MKV"));
         assert!(is_media_ext("WebM"));
+        assert!(is_media_ext("JXL"));
     }
 
     #[test]
     fn non_media_ext_rejected() {
         for ext in &[
             "txt", "pdf", "doc", "rs", "html", "css", "json", "xml", "zip", "exe", "sh", "py",
-            "svg", "avif",
         ] {
             assert!(!is_media_ext(ext), "{} should NOT be media", ext);
         }

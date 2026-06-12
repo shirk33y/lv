@@ -6,12 +6,19 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG FLATPAK_BUNDLE=build/lv.flatpak
 
 # Install flatpak and dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     flatpak \
+    xvfb \
+    xauth \
+    xdotool \
+    imagemagick \
+    libgl1 \
+    mesa-utils \
     curl \
     ca-certificates
 
@@ -22,23 +29,12 @@ RUN flatpak remote-modify --user --enable flathub || true
 # Install runtime and SDK
 RUN echo "Installing Freedesktop runtime..." && \
     flatpak install --user --assumeyes \
-    org.freedesktop.Platform/x86_64/24.08 \
-    org.freedesktop.Sdk/x86_64/24.08 || true
+    org.freedesktop.Platform//24.08 \
+    org.freedesktop.Sdk//24.08 || true
 
 # Copy flatpak bundle and test files
-COPY build/lv.flatpak /tmp/lv.flatpak
+COPY ${FLATPAK_BUNDLE} /tmp/lv.flatpak
 COPY test/fixtures /fixtures
 COPY scripts/smoke-test-flatpak.sh /scripts/smoke-test-flatpak.sh
-COPY scripts/smoke-test-flatpak-video.sh /scripts/smoke-test-flatpak-video.sh
 
 RUN chmod +x /scripts/*.sh
-
-# Run smoke tests
-RUN echo "=== Flatpak Smoke Tests ===" && \
-    FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures \
-    bash /scripts/smoke-test-flatpak.sh && \
-    echo "" && \
-    echo "=== Video Tests ===" && \
-    bash /scripts/smoke-test-flatpak-video.sh || echo "⚠️  Video test skipped (non-critical)"
-
-ENTRYPOINT ["/bin/bash"]

@@ -1,11 +1,21 @@
 .PHONY: ci clean dev dev-linux dev-windows \
         configure check test \
         build-linux-intel build-linux-arm build-windows-intel \
-        docker-build docker-smoke smoke-test
+        docker-build docker-smoke smoke-test \
+        flatpak-build flatpak-smoke flatpak-release
 
 CONFIG_MK ?= config.local.mk
 -include $(CONFIG_MK)
 export LV_NATIVE_PREFIXES
+
+FLATPAK_ARCH ?= x86_64
+FLATPAK_PLATFORM_x86_64 := linux/amd64
+FLATPAK_PLATFORM_aarch64 := linux/arm64
+FLATPAK_PLATFORM ?= $(FLATPAK_PLATFORM_$(FLATPAK_ARCH))
+FLATPAK_BUNDLE ?= build/lv-$(FLATPAK_ARCH).flatpak
+CONTAINER_RUNTIME ?= podman
+export CONTAINER_RUNTIME
+export FLATPAK_BUNDLE
 
 # ── Checks ────────────────────────────────────────────────────────────
 ci:
@@ -50,6 +60,23 @@ docker-smoke:
 # ── Test ──────────────────────────────────────────────────────────────
 smoke-test:
 	bash scripts/smoke-test.sh $(ARGS)
+
+# ── Flatpak ───────────────────────────────────────────────────────────
+flatpak-build:
+	CONTAINER_PLATFORM=$(FLATPAK_PLATFORM) bash scripts/build-flatpak.sh --build-only
+
+flatpak-smoke:
+	$(CONTAINER_RUNTIME) build \
+		--platform $(FLATPAK_PLATFORM) \
+		--build-arg FLATPAK_BUNDLE=$(FLATPAK_BUNDLE) \
+		-f docker/Dockerfile.flatpak-smoke \
+		-t lv-flatpak-smoke-$(FLATPAK_ARCH) .
+	$(CONTAINER_RUNTIME) run --rm --privileged \
+		--platform $(FLATPAK_PLATFORM) \
+		lv-flatpak-smoke-$(FLATPAK_ARCH) \
+		bash -lc 'FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures bash /scripts/smoke-test-flatpak.sh'
+
+flatpak-release: flatpak-build flatpak-smoke
 
 # ── Clean ─────────────────────────────────────────────────────────────
 clean:

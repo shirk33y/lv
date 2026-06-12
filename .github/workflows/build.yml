@@ -160,51 +160,46 @@ jobs:
           name: release-windows
           path: dist-windows/
 
-  # ── Flatpak smoke test (requires pre-built bundle) ──────────────────
-  test-flatpak:
+  # ── Flatpak build + smoke test (Docker/Make, same as local) ─────────
+  build-flatpak:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Note on flatpak build
-        run: |
-          echo "Flatpak build requires nested container setup (podman in Docker)"
-          echo "Build locally: distrobox-host-exec ./scripts/build-flatpak.sh"
-          echo "Artifact is ignored at build/lv.flatpak"
-
-      - name: Check for pre-built flatpak
-        id: check-flatpak
-        run: |
-          if [[ -f "build/lv.flatpak" ]]; then
-            echo "has-flatpak=true" >> $GITHUB_OUTPUT
-          else
-            echo "has-flatpak=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Run flatpak smoke tests
-        if: steps.check-flatpak.outputs.has-flatpak == 'true'
-        uses: docker/build-push-action@v6
+      - name: Set up QEMU
+        if: matrix.arch == 'aarch64'
+        uses: docker/setup-qemu-action@v3
         with:
-          context: .
-          file: docker/Dockerfile.flatpak-smoke
-          push: false
-          cache-from: type=gha,scope=flatpak-smoke
-          cache-to: type=gha,mode=max,scope=flatpak-smoke
-          github-token: ${{ github.token }}
+          platforms: arm64
 
-      - name: Upload flatpak if tested
-        if: steps.check-flatpak.outputs.has-flatpak == 'true'
+      - name: Build + smoke test Flatpak
+        env:
+          CONTAINER_RUNTIME: docker
+          FLATPAK_ARCH: ${{ matrix.arch }}
+          FLATPAK_PLATFORM: ${{ matrix.platform }}
+          FLATPAK_BUNDLE: build/lv-${{ matrix.arch }}.flatpak
+        run: make flatpak-release
+
+      - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-flatpak
-          path: build/lv.flatpak
+          name: release-flatpak-${{ matrix.arch }}
+          path: build/lv-${{ matrix.arch }}.flatpak
           retention-days: 7
 
   # ── Upload assets to the release created by release-please ───────────
   publish:
-    needs: [build-linux, build-linux-arm64, build-windows, test-flatpak]
+    needs: [build-linux, build-linux-arm64, build-windows, build-flatpak]
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name }}
@@ -230,6 +225,18 @@ jobs:
           name: release-windows
           path: artifacts/release-windows
 
+      - name: Download Flatpak x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-flatpak-x86_64
+          path: artifacts/release-flatpak-x86_64
+
+      - name: Download Flatpak ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-flatpak-aarch64
+          path: artifacts/release-flatpak-aarch64
+
       - name: Upload assets
         run: |
           find artifacts -type f ! -name 'provenance.json' | xargs gh release upload "$TAG"
@@ -239,6 +246,8 @@ jobs:
           LINUX=$(find artifacts/release-linux -type f -printf '%f\n' | head -5)
           LINUX_ARM64=$(find artifacts/release-linux-arm64 -type f -printf '%f\n' | head -5)
           WINDOWS=$(find artifacts/release-windows -type f -printf '%f\n' | head -5)
+          FLATPAK_X86_64=$(find artifacts/release-flatpak-x86_64 -type f -printf '%f\n' | head -5)
+          FLATPAK_ARM64=$(find artifacts/release-flatpak-aarch64 -type f -printf '%f\n' | head -5)
           REPO="https://github.com/${{ github.repository }}"
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"
@@ -258,4 +267,8 @@ jobs:
             for f in $LINUX_ARM64; do echo "- \`$f\`"; done
             echo "#### Windows"
             for f in $WINDOWS; do echo "- \`$f\`"; done
+            echo "#### Flatpak x86_64"
+            for f in $FLATPAK_X86_64; do echo "- \`$f\`"; done
+            echo "#### Flatpak ARM64"
+            for f in $FLATPAK_ARM64; do echo "- \`$f\`"; done
           } >> "$GITHUB_STEP_SUMMARY"

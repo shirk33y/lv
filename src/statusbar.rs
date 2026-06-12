@@ -395,9 +395,13 @@ pub fn draw_status_bar(
                     None
                 };
                 let progress = video_progress_fraction(info.video_pos, info.video_duration);
-                draw.add_rect([seek_x, seek_y], [seek_x + seek_w, seek_y + seek_h], SEEKBAR_BG)
-                    .filled(true)
-                    .build();
+                draw.add_rect(
+                    [seek_x, seek_y],
+                    [seek_x + seek_w, seek_y + seek_h],
+                    SEEKBAR_BG,
+                )
+                .filled(true)
+                .build();
                 draw.add_rect(
                     [seek_x, seek_y],
                     [seek_x + seek_w * progress, seek_y + seek_h],
@@ -962,6 +966,7 @@ mod tests {
         assert_eq!(seek_fraction_at(50.0, 10.0, f32::NAN), 0.0);
     }
 
+    #[test]
     fn seekbar_window_height_expands_downward() {
         assert_eq!(seekbar_window_height(false), SEEKBAR_IDLE_H);
         assert_eq!(seekbar_window_height(true), SEEKBAR_ACTIVE_H);

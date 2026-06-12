@@ -53,11 +53,15 @@ rustup default stable
 rustup target add x86_64-unknown-linux-gnu
 ```
 
-If Cargo reports missing `stable-x86_64-unknown-linux-gnu`, run:
+If Cargo reports missing `stable-x86_64-unknown-linux-gnu`, install the toolchain first, then add targets:
 
 ```sh
 rustup toolchain install stable
+rustup default stable
+rustup target add x86_64-unknown-linux-gnu
 ```
+
+For release builds, prefer Make targets over ad-hoc Cargo commands. `make configure` writes `config.local.mk` once for native C library prefixes; `make check`, `make test`, and `make flatpak-release` reuse that config.
 
 Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
 
@@ -92,7 +96,7 @@ scripts/ci.sh                 # test + clippy + fmt
 | `scripts/build-linux-arm.sh` | release build for aarch64 Linux |
 | `scripts/build-windows-intel.sh` | release build + NSIS installer for Windows |
 | `scripts/docker-build.sh [target]` | dockerized cross-builds → `dist/` |
-| `scripts/build-flatpak.sh [--install]` | build Flatpak bundle via podman → `build/lv.flatpak` |
+| `scripts/build-flatpak.sh [--install]` | build Flatpak bundle via container runtime |
 | `scripts/clean.sh` | remove build artifacts |
 | `scripts/build-appimage.sh [arch] [binary]` | build AppImage → `build/appimage/` |
 | `scripts/build-deb.sh [arch] [binary]` | build .deb package → `build/deb/` |
@@ -106,22 +110,32 @@ scripts/docker-build.sh linux-intel   # or: all
 
 ### Flatpak
 
-Build Flatpak bundle via podman (containerized, no local deps needed):
+Build and smoke-test Flatpak through Make. This is the same path used by GitHub Actions releases:
 
 ```sh
-./scripts/build-flatpak.sh --build-only         # build bundle to build/lv.flatpak
+make flatpak-release                            # x86_64 bundle + CLI/video smoke tests
+make flatpak-release FLATPAK_ARCH=aarch64       # ARM64 bundle via QEMU-capable runtime
+make flatpak-release CONTAINER_RUNTIME=docker   # use Docker instead of Podman
+```
+
+Lower-level script entry points:
+
+```sh
+./scripts/build-flatpak.sh --build-only         # build bundle
 ./scripts/build-flatpak.sh --install            # build + install for current user
 ./scripts/build-flatpak.sh --no-cache           # clean build (longer)
 ./scripts/build-flatpak.sh --rebuild-image      # rebuild env image (forces runtime re-download)
 ```
 
-**Requirements**: podman on Linux. Debian, Ubuntu, Fedora, and Bazzite hosts all use the same containerized build path. First build takes ~30-40min while runtimes download; later builds use cached runtimes (~5-10min).
+**Requirements**: podman or Docker on Linux. Debian, Ubuntu, Fedora, and Bazzite hosts all use the same containerized build path. First build takes ~30-40min while runtimes download; later builds use cached runtimes (~5-10min).
 
 Flatpak builds run through rootless podman with `--userns=keep-id`, so generated files stay owned by the current user. The build script also disables the OSTree repo percentage free-space guard for the local build repo, which avoids false failures on nearly full filesystems. Build output and Flatpak caches are ignored by Git; do not commit `build/lv.flatpak`, `cargo-sources.json`, or `.flatpak-builder/`.
 
 `--install` uses `flatpak install --user` and creates a user PATH wrapper.
 
-**Manifest**: `extra/flatpak/com.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable)
+Smoke tests install the bundle in a privileged smoke container, verify `libmpv.so` is bundled and dynamically resolved, scan an MP4 fixture, launch the app under Xvfb, and compare captured frames to confirm playback advances.
+
+**Manifest**: `extra/flatpak/io.github.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable), app id `io.github.shirk33y.lv`
 
 ### AppImage & .deb
 

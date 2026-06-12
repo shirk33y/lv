@@ -2,6 +2,7 @@ target/
 target-*/
 dist/
 build/
+!build/*.flatpak
 build-installer/
 AppDir/
 .flatpak-builder/

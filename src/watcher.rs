@@ -13,6 +13,7 @@ use std::time::Duration;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::db::Db;
+use crate::is_media_extension;
 
 /// Extract the parent directory from a path string, handling both `/` and `\` separators.
 /// Needed because `std::path::Path::parent()` doesn't understand `\` on Linux.
@@ -43,7 +44,7 @@ fn has_media_ext(p: &str) -> bool {
     let filename = &p[last_sep..];
     if let Some(dot) = filename.rfind('.') {
         let ext = &filename[dot + 1..];
-        MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+        is_media_extension(ext)
     } else {
         false
     }
@@ -121,11 +122,6 @@ impl Drop for FsWatcher {
         self.stop();
     }
 }
-
-const MEDIA_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "heic", "heif", "ico", "mp4", "avi",
-    "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
-];
 
 fn run_watcher(
     db: Db,
@@ -328,12 +324,17 @@ mod tests {
         assert!(has_media_ext("/a/photo.jpg"));
         assert!(has_media_ext("/a/photo.PNG"));
         assert!(has_media_ext("/a/photo.webp"));
+        assert!(has_media_ext("/a/photo.qoi"));
+        assert!(has_media_ext("/a/photo.exr"));
+        assert!(has_media_ext("/a/photo.svg"));
     }
 
     #[test]
     fn has_media_ext_recognizes_videos() {
         assert!(has_media_ext("/a/clip.mp4"));
         assert!(has_media_ext("/a/clip.MKV"));
+        assert!(has_media_ext("/a/clip.m2ts"));
+        assert!(has_media_ext("/a/clip.ogv"));
     }
 
     #[test]
@@ -1036,6 +1037,7 @@ mod tests {
         assert!(has_media_ext("PHOTO.JPG"));
         assert!(has_media_ext("clip.MkV"));
         assert!(has_media_ext("image.Png"));
+        assert!(has_media_ext("image.Jxl"));
     }
 
     // ── str_parent edge cases ───────────────────────────────────────────

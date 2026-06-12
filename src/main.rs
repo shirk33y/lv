@@ -35,11 +35,16 @@ use std::ffi::CString;
 use db::{Db, FileEntry};
 use preload::TextureCache;
 
-const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "avif", "ico", "svg",
+pub(crate) const IMAGE_EXTS: &[&str] = &[
+    "avif", "jpg", "jpeg", "jfif", "png", "apng", "gif", "webp", "tif", "tiff", "tga", "dds",
+    "bmp", "ico", "hdr", "exr", "pbm", "pam", "ppm", "pgm", "pnm", "ff", "qoi",
 ];
-const VIDEO_EXTS: &[&str] = &[
-    "mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v", "3gp",
+pub(crate) const MPV_IMAGE_EXTS: &[&str] = &["gif", "webp", "apng", "heic", "heif", "jxl", "svg"];
+pub(crate) const VIDEO_EXTS: &[&str] = &[
+    "mp4", "m4v", "mov", "mkv", "mk3d", "webm", "avi", "divx", "flv", "f4v", "wmv", "asf", "mpg",
+    "mpeg", "mpe", "m1v", "m2v", "vob", "ts", "mts", "m2ts", "3gp", "3g2", "ogv", "ogg", "mxf",
+    "rm", "rmvb", "dv", "mjpeg", "mjpg", "nut", "nsv", "swf", "y4m", "roq", "bik", "bink", "smk",
+    "fli", "flc", "flx",
 ];
 
 fn ext_of(path: &str) -> String {
@@ -55,7 +60,19 @@ fn is_video(path: &str) -> bool {
 }
 
 fn is_mpv_media(path: &str) -> bool {
-    is_video(path) || ext_of(path) == "webp"
+    let ext = ext_of(path);
+    is_video(path) || MPV_IMAGE_EXTS.contains(&ext.as_str())
+}
+
+pub(crate) fn is_media_extension(ext: &str) -> bool {
+    let ext = ext.to_lowercase();
+    IMAGE_EXTS.contains(&ext.as_str())
+        || MPV_IMAGE_EXTS.contains(&ext.as_str())
+        || VIDEO_EXTS.contains(&ext.as_str())
+}
+
+fn is_media(path: &str) -> bool {
+    is_media_extension(&ext_of(path))
 }
 
 /// Strip Windows extended-length path prefix (`\\?\`) if present.
@@ -90,7 +107,7 @@ fn handle_drop(
     if path.is_file() {
         // Check if it's a media file
         let path_str = clean_path(&path.to_string_lossy());
-        if !is_image(&path_str) && !is_video(&path_str) {
+        if !is_media(&path_str) {
             eprintln!("drop: not a media file: {}", path_str);
             return false;
         }
@@ -951,6 +968,8 @@ fn main() {
     let mut info_scroll_y: f32 = 0.0;
     let mut last_mouse_move = Instant::now();
     let mut cursor_visible = true;
+    let mut last_mx: i32 = 0;
+    let mut last_my: i32 = 0;
     let start_time = Instant::now();
     // Debounce video loading: defer mpv loadfile until user stops navigating
     const VIDEO_DEBOUNCE_MS: u128 = 150;
@@ -960,11 +979,11 @@ fn main() {
 
     // Resize cursors for borderless window edges
     let resize_cursors = (
-        Cursor::from_system(SystemCursor::Arrow).ok(),
-        Cursor::from_system(SystemCursor::SizeNS).ok(),
-        Cursor::from_system(SystemCursor::SizeWE).ok(),
-        Cursor::from_system(SystemCursor::SizeNWSE).ok(),
-        Cursor::from_system(SystemCursor::SizeNESW).ok(),
+        Cursor::from_system(SystemCursor::Arrow).expect("Arrow cursor"),
+        Cursor::from_system(SystemCursor::SizeNS).expect("SizeNS cursor"),
+        Cursor::from_system(SystemCursor::SizeWE).expect("SizeWE cursor"),
+        Cursor::from_system(SystemCursor::SizeNWSE).expect("SizeNWSE cursor"),
+        Cursor::from_system(SystemCursor::SizeNESW).expect("SizeNESW cursor"),
     );
 
     // Slow frame tracking: aggregate stats over 10s windows
@@ -1062,38 +1081,25 @@ fn main() {
 
                 Event::MouseMotion { x, y, .. } => {
                     last_mouse_move = Instant::now();
+                    last_mx = x;
+                    last_my = y;
                     if !cursor_visible {
                         unsafe {
                             sdl2::sys::SDL_ShowCursor(sdl2::sys::SDL_ENABLE as i32);
                         }
                         cursor_visible = true;
                     }
-                    // Update resize cursor for borderless window edges
-                    let (win_w, win_h) = window.size();
-                    let (mx, my) = (x as i32, y as i32);
-                    const RESIZE_HANDLE: i32 = 6;
-                    let cursor_idx = if my < RESIZE_HANDLE && mx < RESIZE_HANDLE {
-                        3 // nwse ↔ top-left
-                    } else if my < RESIZE_HANDLE && mx >= win_w as i32 - RESIZE_HANDLE {
-                        4 // nesw ↔ top-right
-                    } else if my >= win_h as i32 - RESIZE_HANDLE && mx < RESIZE_HANDLE {
-                        4 // nesw ↔ bottom-left
-                    } else if my >= win_h as i32 - RESIZE_HANDLE && mx >= win_w as i32 - RESIZE_HANDLE {
-                        3 // nwse ↔ bottom-right
-                    } else if my < RESIZE_HANDLE || my >= win_h as i32 - RESIZE_HANDLE {
-                        1 // ns
-                    } else if mx < RESIZE_HANDLE || mx >= win_w as i32 - RESIZE_HANDLE {
-                        2 // we
-                    } else {
-                        0 // arrow
-                    };
-                    let cursors = [&resize_cursors.0, &resize_cursors.1, &resize_cursors.2, &resize_cursors.3, &resize_cursors.4];
-                    if let Some(c) = cursors[cursor_idx] {
-                        c.set();
-                    }
+                    set_resize_cursor(
+                        &resize_cursors.1,
+                        &resize_cursors.2,
+                        &resize_cursors.3,
+                        &resize_cursors.4,
+                        x,
+                        y,
+                        &window,
+                    );
                 }
-                Event::MouseButtonDown { .. }
-                | Event::MouseWheel { .. } => {
+                Event::MouseButtonDown { .. } | Event::MouseWheel { .. } => {
                     last_mouse_move = Instant::now();
                     if !cursor_visible {
                         unsafe {
@@ -1871,6 +1877,18 @@ fn main() {
             }
         }
 
+        if cursor_visible {
+            set_resize_cursor(
+                &resize_cursors.1,
+                &resize_cursors.2,
+                &resize_cursors.3,
+                &resize_cursors.4,
+                last_mx,
+                last_my,
+                &window,
+            );
+        }
+
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
@@ -1972,9 +1990,51 @@ fn schedule_preload(
         if i == cursor {
             continue;
         }
-        if is_image(&file.path) && !cache.has(&file.path) && !preloader.is_pending(&file.path) {
+        if should_preload_image(&file.path)
+            && !cache.has(&file.path)
+            && !preloader.is_pending(&file.path)
+        {
             preloader.schedule(file.path.clone());
         }
+    }
+}
+
+fn should_preload_image(path: &str) -> bool {
+    is_image(path) && !is_mpv_media(path)
+}
+
+fn set_resize_cursor(
+    ns: &Cursor,
+    we: &Cursor,
+    nwse: &Cursor,
+    nesw: &Cursor,
+    mx: i32,
+    my: i32,
+    window: &sdl2::video::Window,
+) {
+    let (win_w, win_h) = window.size();
+    const H: i32 = 6;
+    let idx = if my < H && mx < H {
+        3
+    } else if my < H && mx >= win_w as i32 - H {
+        4
+    } else if my >= win_h as i32 - H && mx < H {
+        4
+    } else if my >= win_h as i32 - H && mx >= win_w as i32 - H {
+        3
+    } else if my < H || my >= win_h as i32 - H {
+        1
+    } else if mx < H || mx >= win_w as i32 - H {
+        2
+    } else {
+        0
+    };
+    match idx {
+        1 => ns.set(),
+        2 => we.set(),
+        3 => nwse.set(),
+        4 => nesw.set(),
+        _ => {}
     }
 }
 
@@ -2105,6 +2165,9 @@ mod tests {
         assert!(is_image("img.webp"));
         assert!(is_image("img.avif"));
         assert!(is_image("img.gif"));
+        assert!(is_image("img.jfif"));
+        assert!(is_image("img.qoi"));
+        assert!(is_image("img.exr"));
         assert!(!is_image("video.mp4"));
         assert!(!is_image("file.txt"));
         assert!(!is_image("file.mkv"));
@@ -2117,18 +2180,35 @@ mod tests {
         assert!(is_video("/tmp/movie.avi"));
         assert!(is_video("file.mov"));
         assert!(is_video("file.webm"));
+        assert!(is_video("file.m2ts"));
+        assert!(is_video("file.ogv"));
         assert!(!is_video("photo.jpg"));
         assert!(!is_video("file.txt"));
         assert!(!is_video("doc.pdf"));
     }
 
     #[test]
-    fn webp_routes_to_mpv_without_becoming_video_ext() {
+    fn animated_images_route_to_mpv_without_becoming_video_ext() {
         assert!(is_image("anim.webp"));
+        assert!(is_image("anim.gif"));
         assert!(!is_video("anim.webp"));
+        assert!(!is_video("anim.gif"));
         assert!(is_mpv_media("anim.webp"));
+        assert!(is_mpv_media("anim.GIF"));
+        assert!(is_mpv_media("anim.apng"));
+        assert!(is_mpv_media("photo.heic"));
+        assert!(is_mpv_media("vector.svg"));
         assert!(is_mpv_media("clip.mp4"));
         assert!(!is_mpv_media("photo.jpg"));
+    }
+
+    #[test]
+    fn still_image_preload_skips_mpv_backed_animated_images() {
+        assert!(should_preload_image("photo.jpg"));
+        assert!(should_preload_image("photo.PNG"));
+        assert!(!should_preload_image("anim.gif"));
+        assert!(!should_preload_image("anim.WEBP"));
+        assert!(!should_preload_image("clip.mp4"));
     }
 
     #[test]
@@ -2220,14 +2300,15 @@ mod tests {
             test_entry(2, "/tmp/b.jpg"),
             test_entry(3, "/tmp/c.webm"),
             test_entry(4, "/tmp/d.webp"),
-            test_entry(5, "/tmp/e.mkv"),
+            test_entry(5, "/tmp/e.gif"),
+            test_entry(6, "/tmp/f.mkv"),
         ];
 
         assert_eq!(
             video_prefetch_paths(&files, 2, 2),
             vec![
                 "/tmp/d.webp".to_string(),
-                "/tmp/e.mkv".to_string(),
+                "/tmp/e.gif".to_string(),
                 "/tmp/a.mp4".to_string()
             ]
         );
@@ -2744,7 +2825,9 @@ mod tests {
         // Files with unknown extensions should not be image or video
         assert!(!is_image("document.pdf"));
         assert!(!is_video("document.pdf"));
+        assert!(!is_media("document.pdf"));
         assert!(!is_image("archive.zip"));
+        assert!(!is_media("archive.zip"));
         assert!(!is_video("archive.zip"));
         assert!(!is_image("binary.exe"));
         assert!(!is_video("binary.exe"));
@@ -3366,7 +3449,7 @@ mod tests {
         let mut error_message: Option<(String, String)> = None;
 
         let path = "document.pdf";
-        if !is_image(path) && !is_video(path) {
+        if !is_media(path) {
             error_message = Some(("Unsupported file type".into(), "document.pdf".into()));
         }
 
@@ -3822,9 +3905,7 @@ mod tests {
         // Dropping a dir with no media should still succeed (it scans the dir)
         // but files list will be empty
         if ok {
-            assert!(
-                files.is_empty() || files.iter().all(|f| is_image(&f.path) || is_video(&f.path))
-            );
+            assert!(files.is_empty() || files.iter().all(|f| is_media(&f.path)));
         }
     }
 
@@ -3881,11 +3962,7 @@ mod tests {
 
         assert_eq!(files.len(), 2, "only media files should be in list");
         for f in &files {
-            assert!(
-                is_image(&f.path) || is_video(&f.path),
-                "non-media file in list: {}",
-                f.filename
-            );
+            assert!(is_media(&f.path), "non-media file in list: {}", f.filename);
         }
     }
 
@@ -5215,12 +5292,7 @@ mod tests {
 
     #[test]
     fn image_exts_subset_of_media() {
-        // Every IMAGE_EXT should be recognized by the scanner
         for ext in IMAGE_EXTS {
-            // svg and avif are in IMAGE_EXTS but not in scanner MEDIA_EXTENSIONS
-            if *ext == "svg" || *ext == "avif" {
-                continue;
-            }
             assert!(
                 scanner::is_media_ext(ext),
                 "IMAGE_EXT '{}' not in scanner MEDIA_EXTENSIONS",
@@ -5235,6 +5307,17 @@ mod tests {
             assert!(
                 scanner::is_media_ext(ext),
                 "VIDEO_EXT '{}' not in scanner MEDIA_EXTENSIONS",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn mpv_image_exts_subset_of_media() {
+        for ext in MPV_IMAGE_EXTS {
+            assert!(
+                scanner::is_media_ext(ext),
+                "MPV_IMAGE_EXT '{}' not in scanner media extensions",
                 ext
             );
         }

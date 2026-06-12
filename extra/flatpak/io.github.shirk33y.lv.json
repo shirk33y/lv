@@ -1,5 +1,5 @@
 {
-  "app-id": "com.shirk33y.lv",
+  "app-id": "io.github.shirk33y.lv",
   "runtime": "org.freedesktop.Platform",
   "runtime-version": "24.08",
   "sdk": "org.freedesktop.Sdk",
@@ -131,9 +131,9 @@
         {"type": "dir", "path": ".",    "dest": "extra/flatpak"}
       ],
       "post-install": [
-        "install -Dm644 extra/linux/lv.desktop /app/share/applications/com.shirk33y.lv.desktop",
-        "install -Dm644 extra/images/lv-256.png /app/share/icons/hicolor/256x256/apps/com.shirk33y.lv.png",
-        "install -Dm644 extra/images/lv.svg /app/share/icons/hicolor/scalable/apps/com.shirk33y.lv.svg"
+        "install -Dm644 extra/linux/lv.desktop /app/share/applications/io.github.shirk33y.lv.desktop",
+        "install -Dm644 extra/images/lv-256.png /app/share/icons/hicolor/256x256/apps/io.github.shirk33y.lv.png",
+        "install -Dm644 extra/images/lv.svg /app/share/icons/hicolor/scalable/apps/io.github.shirk33y.lv.svg"
       ]
     }
   ]

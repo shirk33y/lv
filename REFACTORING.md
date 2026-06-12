@@ -24,7 +24,7 @@ scripts/
 └── dev-windows.sh
 
 root/
-├── com.shirk33y.lv.json
+├── io.github.shirk33y.lv.json
 └── docker/Dockerfile.flatpak
 ```
 
@@ -44,7 +44,7 @@ scripts/
 
 extra/                                   ← Single dir for all platform packaging
 ├── flatpak/
-│   ├── com.shirk33y.lv.json            ← moved from root/
+│   ├── io.github.shirk33y.lv.json            ← moved from root/
 │   └── Dockerfile.flatpak              ← moved from docker/
 ├── linux/
 │   └── lv.desktop                      ← moved from pkg/res/
@@ -79,7 +79,7 @@ res/  ← DELETED
 ### Step 3: Move Files to `extra/`
 - ✅ `res/lv.desktop` → `extra/linux/lv.desktop`
 - ✅ `res/icons/{lv.svg,lv-256.png}` → `extra/images/`
-- ✅ `dist/flatpak/{com.shirk33y.lv.json,Dockerfile.flatpak}` → `extra/flatpak/`
+- ✅ `dist/flatpak/{io.github.shirk33y.lv.json,Dockerfile.flatpak}` → `extra/flatpak/`
 - ✅ `dist/windows/installer.nsi` → `extra/windows/`
 - ✅ `dist/windows/win64/{*.dll,*.lib,*.rc,README.md}` → `extra/windows/` (flattened)
 
