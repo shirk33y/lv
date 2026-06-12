@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a .deb package from the release binary.
-# Usage: ./pkg/deb.sh [arch] [binary]
+# Usage: scripts/build-deb.sh [arch] [binary]
 #   arch    — amd64 | arm64 (default: dpkg --print-architecture)
 #   binary  — path to lv binary (default: target/release/lv)
 # Set LV_VERSION to override the version tag.
@@ -36,10 +36,10 @@ esac
 install -Dm755 "$BINARY" "$STAGING/usr/bin/lv"
 
 # Desktop file
-install -Dm644 pkg/lv.desktop "$STAGING/usr/share/applications/lv.desktop"
+install -Dm644 extra/linux/lv.desktop "$STAGING/usr/share/applications/lv.desktop"
 
 # Icon
-install -Dm644 pkg/lv-256.png "$STAGING/usr/share/icons/hicolor/256x256/apps/lv.png"
+install -Dm644 extra/images/lv-256.png "$STAGING/usr/share/icons/hicolor/256x256/apps/io.github.shirk33y.lv.png"
 
 # Control file
 mkdir -p "$STAGING/DEBIAN"

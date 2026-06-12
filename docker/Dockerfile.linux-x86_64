@@ -71,16 +71,16 @@ RUN cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings \
 FROM build AS package
 
 RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
-    bash pkg/deb.sh amd64 /tmp/lv
+    bash scripts/build-deb.sh amd64 /tmp/lv
 
 RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
-    bash pkg/appimage.sh x86_64 /tmp/lv
+    bash scripts/build-appimage.sh x86_64 /tmp/lv
 
 # ── Stage: smoke-debian12 (Debian 12 bookworm, amd64) ────────────────
 FROM debian:bookworm-slim AS smoke-debian12
 
 ENV DEBIAN_FRONTEND=noninteractive
-COPY --from=package /src/lv_*_amd64.deb /tmp/
+COPY --from=package /src/build/deb/lv_*_amd64.deb /tmp/
 RUN dpkg -i /tmp/lv_*_amd64.deb
 
 COPY test/fixtures/ /fixtures/
@@ -92,7 +92,7 @@ RUN echo "=== Smoke: Debian 12 amd64 ===" \
 FROM ubuntu:22.04 AS smoke-ubuntu2204
 
 ENV DEBIAN_FRONTEND=noninteractive
-COPY --from=package /src/lv_*_amd64.deb /tmp/
+COPY --from=package /src/build/deb/lv_*_amd64.deb /tmp/
 RUN dpkg -i /tmp/lv_*_amd64.deb
 
 COPY test/fixtures/ /fixtures/
@@ -108,5 +108,5 @@ RUN echo "All amd64 smoke tests passed"
 
 # ── Stage: out (extract artifacts) ───────────────────────────────────
 FROM scratch AS out
-COPY --from=package /src/lv_*_amd64.deb /
-COPY --from=package /src/lv-*-x86_64.AppImage /
+COPY --from=package /src/build/deb/lv_*_amd64.deb /
+COPY --from=package /src/build/appimage/lv-*-x86_64.AppImage /

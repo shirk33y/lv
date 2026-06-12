@@ -11,7 +11,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     WIN_TD=$(wslpath -w "$WIN_TARGET_PARENT/target-windows-intel")
     cargo.exe build --target-dir "$WIN_TD"
     echo ":: copying DLLs …"
-    cp -u pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll \
+    cp -u extra/windows/SDL2.dll extra/windows/libmpv-2.dll \
         "$WIN_TARGET_PARENT/target-windows-intel/debug/"
     echo ":: launching …"
     "$WIN_TARGET_PARENT/target-windows-intel/debug/lv.exe" "$@"

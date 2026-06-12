@@ -29,9 +29,9 @@ fn main() {
     // ── Windows link path + icon ─────────────────────────────────────
     if target == "windows" {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let lib_dir = std::path::Path::new(&manifest).join("pkg/win64");
+        let lib_dir = std::path::Path::new(&manifest).join("extra/windows");
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
-        let _ = embed_resource::compile("pkg/win64/lv.rc", embed_resource::NONE);
+        let _ = embed_resource::compile("extra/windows/lv.rc", embed_resource::NONE);
     }
 }

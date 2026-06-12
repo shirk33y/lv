@@ -36,7 +36,7 @@ WORKDIR /src
 FROM base AS deps
 
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY pkg/win64/ pkg/win64/
+COPY extra/windows/ extra/windows/
 # Dummy main.rs so cargo can resolve the crate graph and build deps
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
 RUN cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 \
@@ -56,7 +56,7 @@ FROM build AS package
 RUN LV_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
     && mkdir -p /out \
     && cp /tmp/lv.exe /out/ \
-    && cp pkg/win64/SDL2.dll pkg/win64/libmpv-2.dll pkg/win64/lv.ico pkg/installer.nsi /out/ \
+    && cp extra/windows/SDL2.dll extra/windows/libmpv-2.dll extra/windows/lv.ico extra/windows/installer.nsi /out/ \
     && cd /out && makensis -DLV_VERSION="$LV_VERSION" installer.nsi \
     && mv lv-setup-*.exe lv-setup-windows-x86_64.exe
 

@@ -55,13 +55,13 @@ RUN PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
 FROM build AS package
 
 RUN LV_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') \
-    bash pkg/deb.sh arm64 /tmp/lv
+    bash scripts/build-deb.sh arm64 /tmp/lv
 
 # ── Stage: smoke-debian12 (Debian 12 bookworm, arm64) ────────────────
 FROM --platform=linux/arm64 debian:bookworm-slim AS smoke-debian12
 
 ENV DEBIAN_FRONTEND=noninteractive
-COPY --from=package /src/lv_*_arm64.deb /tmp/
+COPY --from=package /src/build/deb/lv_*_arm64.deb /tmp/
 RUN dpkg -i /tmp/lv_*_arm64.deb
 
 COPY test/fixtures/ /fixtures/
@@ -73,7 +73,7 @@ RUN echo "=== Smoke: Debian 12 arm64 ===" \
 FROM --platform=linux/arm64 debian:trixie-slim AS smoke-debian13
 
 ENV DEBIAN_FRONTEND=noninteractive
-COPY --from=package /src/lv_*_arm64.deb /tmp/
+COPY --from=package /src/build/deb/lv_*_arm64.deb /tmp/
 RUN dpkg -i /tmp/lv_*_arm64.deb
 
 COPY test/fixtures/ /fixtures/
@@ -89,4 +89,4 @@ RUN echo "All arm64 smoke tests passed"
 
 # ── Stage: out (extract artifacts) ───────────────────────────────────
 FROM scratch AS out
-COPY --from=package /src/lv_*_arm64.deb /
+COPY --from=package /src/build/deb/lv_*_arm64.deb /

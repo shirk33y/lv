@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build an AppImage from the release binary.
-# Usage: ./pkg/appimage.sh [arch] [binary]
+# Usage: scripts/build-appimage.sh [arch] [binary]
 #   arch    — x86_64 (default: uname -m)
 #   binary  — path to lv binary (default: target/release/lv)
 # Set LV_VERSION to override the version tag.
@@ -32,12 +32,12 @@ cp "$BINARY" "$APPDIR/usr/bin/lv"
 chmod +x "$APPDIR/usr/bin/lv"
 
 # Desktop + icon
-cp pkg/lv.desktop "$APPDIR/usr/share/applications/lv.desktop"
-cp pkg/lv-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/lv.png"
+cp extra/linux/lv.desktop "$APPDIR/usr/share/applications/lv.desktop"
+cp extra/images/lv-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/io.github.shirk33y.lv.png"
 
 # Root-level symlinks required by AppImage spec
 ln -sf usr/share/applications/lv.desktop "$APPDIR/lv.desktop"
-ln -sf usr/share/icons/hicolor/256x256/apps/lv.png "$APPDIR/lv.png"
+ln -sf usr/share/icons/hicolor/256x256/apps/io.github.shirk33y.lv.png "$APPDIR/io.github.shirk33y.lv.png"
 
 # ── Bundle shared libraries ──────────────────────────────────────────
 echo "==> Bundling shared libraries"

@@ -4,7 +4,7 @@
 # Usage: bash scripts/fetch-mpvlib.sh [output_dir]
 set -euo pipefail
 
-OUT="${1:-pkg/win64}"
+OUT="${1:-extra/windows}"
 DLL="$OUT/libmpv-2.dll"
 
 if [ -f "$DLL" ]; then
