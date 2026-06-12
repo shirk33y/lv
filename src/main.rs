@@ -763,12 +763,13 @@ fn main() {
 
     // ── SDL2 + OpenGL ───────────────────────────────────────────────────
     let sdl = sdl2::init().expect("SDL2 init failed");
-    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        if std::env::var_os("__GLX_VENDOR_LIBRARY_NAME").is_none() {
-            if let Ok(display) = std::env::var("DISPLAY") {
-                if display != ":0" {
-                    std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "mesa");
-                }
+    if std::env::var_os("DISPLAY").is_some()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+        && std::env::var_os("__GLX_VENDOR_LIBRARY_NAME").is_none()
+    {
+        if let Ok(display) = std::env::var("DISPLAY") {
+            if display != ":0" {
+                std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "mesa");
             }
         }
     }
@@ -1314,15 +1315,13 @@ fn main() {
                         }
 
                         // ── y: toggle like ──────────────────────────────
-                        Keycode::Y => {
-                            if cursor < files.len() {
-                                let file_id = files[cursor].id;
-                                let liked = lv_db.toggle_like(file_id);
-                                files[cursor].liked = liked;
-                                let sym = if liked { "♥" } else { "♡" };
-                                eprintln!("{} {}", sym, files[cursor].filename);
-                                update_title(&window, &files, cursor, &current_dir);
-                            }
+                        Keycode::Y if cursor < files.len() => {
+                            let file_id = files[cursor].id;
+                            let liked = lv_db.toggle_like(file_id);
+                            files[cursor].liked = liked;
+                            let sym = if liked { "♥" } else { "♡" };
+                            eprintln!("{} {}", sym, files[cursor].filename);
+                            update_title(&window, &files, cursor, &current_dir);
                         }
 
                         // ── f: toggle fullscreen ────────────────────────
@@ -1349,29 +1348,21 @@ fn main() {
                         }
 
                         // ── info panel scrolling ─────────────────────
-                        Keycode::PageUp => {
-                            if show_info {
-                                info_scroll_y = (info_scroll_y - 200.0).max(0.0);
-                                info_scroll = Some(info_scroll_y);
-                            }
+                        Keycode::PageUp if show_info => {
+                            info_scroll_y = (info_scroll_y - 200.0).max(0.0);
+                            info_scroll = Some(info_scroll_y);
                         }
-                        Keycode::PageDown => {
-                            if show_info {
-                                info_scroll_y += 200.0;
-                                info_scroll = Some(info_scroll_y);
-                            }
+                        Keycode::PageDown if show_info => {
+                            info_scroll_y += 200.0;
+                            info_scroll = Some(info_scroll_y);
                         }
-                        Keycode::Home => {
-                            if show_info {
-                                info_scroll_y = 0.0;
-                                info_scroll = Some(0.0);
-                            }
+                        Keycode::Home if show_info => {
+                            info_scroll_y = 0.0;
+                            info_scroll = Some(0.0);
                         }
-                        Keycode::End => {
-                            if show_info {
-                                info_scroll_y = f32::MAX;
-                                info_scroll = Some(f32::MAX);
-                            }
+                        Keycode::End if show_info => {
+                            info_scroll_y = f32::MAX;
+                            info_scroll = Some(f32::MAX);
                         }
 
                         // ── -: toggle turbo mode ─────────────────────
@@ -1407,34 +1398,24 @@ fn main() {
                         }
 
                         // ── space: pause video ──────────────────────────
-                        Keycode::Space => {
-                            if using_mpv {
-                                unsafe { mpv_cycle_pause_async(mpv_handle) };
-                            }
+                        Keycode::Space if using_mpv => {
+                            unsafe { mpv_cycle_pause_async(mpv_handle) };
                         }
 
                         // ── video seek / volume ─────────────────────────
-                        Keycode::Left => {
-                            if using_mpv {
-                                unsafe { mpv_seek_relative_async(mpv_handle, "-5") };
-                            }
+                        Keycode::Left if using_mpv => {
+                            unsafe { mpv_seek_relative_async(mpv_handle, "-5") };
                         }
-                        Keycode::Right => {
-                            if using_mpv {
-                                unsafe { mpv_seek_relative_async(mpv_handle, "15") };
-                            }
+                        Keycode::Right if using_mpv => {
+                            unsafe { mpv_seek_relative_async(mpv_handle, "15") };
                         }
-                        Keycode::Up => {
-                            if using_mpv {
-                                volume = (volume + 5).min(150);
-                                unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
-                            }
+                        Keycode::Up if using_mpv => {
+                            volume = (volume + 5).min(150);
+                            unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                         }
-                        Keycode::Down => {
-                            if using_mpv {
-                                volume = (volume - 5).max(0);
-                                unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
-                            }
+                        Keycode::Down if using_mpv => {
+                            volume = (volume - 5).max(0);
+                            unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                         }
 
                         // ── p: print timing report ──────────────────────
@@ -2014,20 +1995,16 @@ fn set_resize_cursor(
 ) {
     let (win_w, win_h) = window.size();
     const H: i32 = 6;
-    let idx = if my < H && mx < H {
-        3
-    } else if my < H && mx >= win_w as i32 - H {
-        4
-    } else if my >= win_h as i32 - H && mx < H {
-        4
-    } else if my >= win_h as i32 - H && mx >= win_w as i32 - H {
-        3
-    } else if my < H || my >= win_h as i32 - H {
-        1
-    } else if mx < H || mx >= win_w as i32 - H {
-        2
-    } else {
-        0
+    let top = my < H;
+    let bottom = my >= win_h as i32 - H;
+    let left = mx < H;
+    let right = mx >= win_w as i32 - H;
+    let idx = match (top, bottom, left, right) {
+        (true, false, true, false) | (false, true, false, true) => 3,
+        (true, false, false, true) | (false, true, true, false) => 4,
+        (true, false, false, false) | (false, true, false, false) => 1,
+        (false, false, true, false) | (false, false, false, true) => 2,
+        _ => 0,
     };
     match idx {
         1 => ns.set(),
