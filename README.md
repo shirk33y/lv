@@ -114,7 +114,7 @@ Build and smoke-test Flatpak through Make. This is the same path used by GitHub 
 
 ```sh
 make flatpak-release                            # x86_64 bundle + CLI/video smoke tests
-make flatpak-release FLATPAK_ARCH=aarch64       # ARM64 bundle via QEMU-capable runtime
+make flatpak-release FLATPAK_ARCH=aarch64       # ARM64 bundle on native ARM64 Linux
 make flatpak-release CONTAINER_RUNTIME=docker   # use Docker instead of Podman
 ```
 
@@ -128,6 +128,8 @@ Lower-level script entry points:
 ```
 
 **Requirements**: podman or Docker on Linux. Debian, Ubuntu, Fedora, and Bazzite hosts all use the same containerized build path. First build takes ~30-40min while runtimes download; later builds use cached runtimes (~5-10min).
+
+Flatpak release builds are native per CPU architecture. Build `x86_64` on x86_64 Linux and `aarch64` on ARM64 Linux. Cross-arch Flatpak builds through QEMU are blocked by default because Flatpak uses bubblewrap namespaces, which are unreliable under container emulation. Set `LV_ALLOW_FLATPAK_EMULATION=1` only for experimental debugging.
 
 Flatpak builds run through rootless podman with `--userns=keep-id`, so generated files stay owned by the current user. The build script also disables the OSTree repo percentage free-space guard for the local build repo, which avoids false failures on nearly full filesystems. Build output and Flatpak caches are ignored by Git; do not commit `build/lv.flatpak`, `cargo-sources.json`, or `.flatpak-builder/`.
 

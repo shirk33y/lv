@@ -43,6 +43,20 @@ CONTAINER_PLATFORM_ARGS=()
 if [ -n "$CONTAINER_PLATFORM" ]; then
     CONTAINER_PLATFORM_ARGS=(--platform "$CONTAINER_PLATFORM")
 fi
+HOST_ARCH="$(uname -m)"
+TARGET_ARCH="$HOST_ARCH"
+case "$CONTAINER_PLATFORM" in
+    linux/amd64) TARGET_ARCH="x86_64" ;;
+    linux/arm64) TARGET_ARCH="aarch64" ;;
+esac
+if [ "$TARGET_ARCH" != "$HOST_ARCH" ] && [ "${LV_ALLOW_FLATPAK_EMULATION:-0}" != "1" ]; then
+    cat >&2 <<EOF
+Refusing cross-arch Flatpak build: host=$HOST_ARCH target=$TARGET_ARCH.
+Flatpak uses bubblewrap namespaces, which are unreliable under Docker/Podman + QEMU.
+Use native $TARGET_ARCH Linux, or set LV_ALLOW_FLATPAK_EMULATION=1 to force experimental emulation.
+EOF
+    exit 1
+fi
 CONTAINER_USER_ARGS=(--user "$HOST_UID:$HOST_GID")
 if [ "$CONTAINER_RUNTIME" = "podman" ]; then
     CONTAINER_USER_ARGS=(--userns=keep-id --user "$HOST_UID:$HOST_GID" --group-add keep-groups)

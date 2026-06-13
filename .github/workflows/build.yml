@@ -7,247 +7,160 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
-  # ── Linux build + package (Docker multi-stage) ───────────────────────
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compile dependencies
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: deps
-          push: false
-          cache-from: type=gha,scope=linux-x86_64
-          cache-to: type=gha,mode=max,scope=linux-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Build + smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: smoke
-          push: false
-          cache-from: type=gha,scope=linux-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Extract artifacts
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-x86_64
-          target: out
-          push: false
-          outputs: type=local,dest=dist-linux
-          cache-from: type=gha,scope=linux-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux
-          path: dist-linux/
-
-  # ── Linux ARM64 cross-compile + package (Docker multi-stage) ────────
-  build-linux-arm64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Set up QEMU (for arm64 smoke test)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compile dependencies
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-aarch64
-          target: deps
-          push: false
-          cache-from: type=gha,scope=linux-aarch64
-          cache-to: type=gha,mode=max,scope=linux-aarch64
-          github-token: ${{ github.token }}
-
-      - name: Build + smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-aarch64
-          target: smoke
-          push: false
-          cache-from: type=gha,scope=linux-aarch64
-          github-token: ${{ github.token }}
-
-      - name: Extract artifacts
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-aarch64
-          target: out
-          push: false
-          outputs: type=local,dest=dist-linux-arm64
-          cache-from: type=gha,scope=linux-aarch64
-          github-token: ${{ github.token }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-arm64
-          path: dist-linux-arm64/
-
-  # ── Windows cross-compile + package (Docker multi-stage) ─────────────
-  build-windows:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compile dependencies
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.windows-x86_64
-          target: deps
-          push: false
-          cache-from: type=gha,scope=windows-x86_64
-          cache-to: type=gha,mode=max,scope=windows-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Build + smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.windows-x86_64
-          target: smoke
-          push: false
-          cache-from: type=gha,scope=windows-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Extract artifacts
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.windows-x86_64
-          target: out
-          push: false
-          outputs: type=local,dest=dist-windows
-          cache-from: type=gha,scope=windows-x86_64
-          github-token: ${{ github.token }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: dist-windows/
-
-  # ── Flatpak build + smoke test (Docker/Make, same as local) ─────────
   build-flatpak:
-    runs-on: ubuntu-latest
+    name: build-flatpak (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
             platform: linux/amd64
+            runner: ubuntu-latest
+            timeout: 90
           - arch: aarch64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            timeout: 120
+    env:
+      CONTAINER_RUNTIME: docker
+      FLATPAK_ARCH: ${{ matrix.arch }}
+      FLATPAK_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Set up QEMU
-        if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build + smoke test Flatpak
+      - name: Build Flatpak
         env:
-          CONTAINER_RUNTIME: docker
-          FLATPAK_ARCH: ${{ matrix.arch }}
-          FLATPAK_PLATFORM: ${{ matrix.platform }}
-          FLATPAK_BUNDLE: build/lv-${{ matrix.arch }}.flatpak
-        run: make flatpak-release
+          FLATPAK_BUNDLE: build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
+        run: make flatpak-build
+
+      - name: Create checksum
+        run: |
+          cd build
+          sha256sum lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak > lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
 
       - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-flatpak-${{ matrix.arch }}
-          path: build/lv-${{ matrix.arch }}.flatpak
+          name: flatpak-${{ matrix.arch }}
+          path: |
+            build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
+            build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
           retention-days: 7
 
-  # ── Upload assets to the release created by release-please ───────────
+  smoke-flatpak:
+    name: smoke-flatpak (${{ matrix.arch }})
+    needs: build-flatpak
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-latest
+            timeout: 35
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            timeout: 45
+    env:
+      CONTAINER_RUNTIME: docker
+      FLATPAK_ARCH: ${{ matrix.arch }}
+      FLATPAK_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download Flatpak artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: build
+
+      - name: Verify checksum
+        run: |
+          cd build
+          sha256sum -c lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
+
+      - name: Smoke test Flatpak
+        env:
+          FLATPAK_BUNDLE: build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
+          LV_SMOKE_LOG_DIR: build/flatpak-smoke-logs/${{ matrix.arch }}
+        run: make flatpak-smoke
+
+      - name: Upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-smoke-logs-${{ matrix.arch }}
+          path: build/flatpak-smoke-logs/${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 7
+
   publish:
-    needs: [build-linux, build-linux-arm64, build-windows, build-flatpak]
+    name: publish-flatpaks
+    needs: smoke-flatpak
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-linux
-          path: artifacts/release-linux
-
-      - name: Download Linux ARM64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-linux-arm64
-          path: artifacts/release-linux-arm64
-
-      - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-windows
-          path: artifacts/release-windows
-
-      - name: Download Flatpak x86_64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: release-flatpak-x86_64
-          path: artifacts/release-flatpak-x86_64
-
-      - name: Download Flatpak ARM64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: release-flatpak-aarch64
-          path: artifacts/release-flatpak-aarch64
-
-      - name: Upload assets
+      - name: Get version
+        id: version
         run: |
-          find artifacts -type f ! -name 'provenance.json' | xargs gh release upload "$TAG"
+          VERSION=$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download Flatpak artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: flatpak-*
+          path: artifacts
+
+      - name: Upload release assets
+        run: |
+          find artifacts -type f \( -name '*.flatpak' -o -name '*.sha256' \) -print0 \
+            | xargs -0 gh release upload "$TAG"
+
+      - name: Verify release assets
+        run: |
+          gh release view "$TAG" --json assets --jq '.assets[].name' | tee assets.txt
+          grep -Fx "lv-${{ steps.version.outputs.version }}-x86_64.flatpak" assets.txt
+          grep -Fx "lv-${{ steps.version.outputs.version }}-x86_64.flatpak.sha256" assets.txt
+          grep -Fx "lv-${{ steps.version.outputs.version }}-aarch64.flatpak" assets.txt
+          grep -Fx "lv-${{ steps.version.outputs.version }}-aarch64.flatpak.sha256" assets.txt
 
       - name: Summary
         run: |
-          LINUX=$(find artifacts/release-linux -type f -printf '%f\n' | head -5)
-          LINUX_ARM64=$(find artifacts/release-linux-arm64 -type f -printf '%f\n' | head -5)
-          WINDOWS=$(find artifacts/release-windows -type f -printf '%f\n' | head -5)
-          FLATPAK_X86_64=$(find artifacts/release-flatpak-x86_64 -type f -printf '%f\n' | head -5)
-          FLATPAK_ARM64=$(find artifacts/release-flatpak-aarch64 -type f -printf '%f\n' | head -5)
           REPO="https://github.com/${{ github.repository }}"
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"
@@ -260,15 +173,6 @@ jobs:
             echo "| **Tag** | [\`$TAG\`]($REPO/tree/$TAG) |"
             echo "| **Commit** | [\`$SHORT_SHA\`]($REPO/commit/$SHA) |"
             echo ""
-            echo "### Artifacts"
-            echo "#### Linux x86_64"
-            for f in $LINUX; do echo "- \`$f\`"; done
-            echo "#### Linux ARM64"
-            for f in $LINUX_ARM64; do echo "- \`$f\`"; done
-            echo "#### Windows"
-            for f in $WINDOWS; do echo "- \`$f\`"; done
-            echo "#### Flatpak x86_64"
-            for f in $FLATPAK_X86_64; do echo "- \`$f\`"; done
-            echo "#### Flatpak ARM64"
-            for f in $FLATPAK_ARM64; do echo "- \`$f\`"; done
+            echo "### Flatpak assets"
+            find artifacts -type f \( -name '*.flatpak' -o -name '*.sha256' \) -printf '- `%f`\n' | sort
           } >> "$GITHUB_STEP_SUMMARY"

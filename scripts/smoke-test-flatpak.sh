@@ -6,6 +6,7 @@ set -eo pipefail
 FLATPAK_BUNDLE="${FLATPAK_BUNDLE:-build/lv.flatpak}"
 FIXTURES="${LV_FIXTURES:-test/fixtures}"
 SANDBOX_FIXTURES="${LV_SANDBOX_FIXTURES:-$HOME/lv-flatpak-fixtures}"
+SMOKE_LOG_DIR="${LV_SMOKE_LOG_DIR:-}"
 TMPDB=""
 TMPDB2=""
 TMPDB3=""
@@ -30,7 +31,9 @@ cleanup() {
     [ -n "$TMPDB" ] && rm -f "$TMPDB"
     [ -n "$TMPDB2" ] && rm -f "$TMPDB2"
     [ -n "$TMPDB3" ] && rm -f "$TMPDB3"
-    [ -n "$TMPDIR_GUI" ] && rm -rf "$TMPDIR_GUI"
+    if [ -n "$TMPDIR_GUI" ] && [ -z "$SMOKE_LOG_DIR" ]; then
+        rm -rf "$TMPDIR_GUI"
+    fi
 }
 trap cleanup EXIT
 
@@ -38,6 +41,10 @@ echo "=== lv Flatpak Smoke Tests ==="
 echo "Bundle:   $FLATPAK_BUNDLE"
 echo "Fixtures: $FIXTURES"
 echo "Sandbox:  $SANDBOX_FIXTURES"
+if [ -n "$SMOKE_LOG_DIR" ]; then
+    mkdir -p "$SMOKE_LOG_DIR"
+    echo "Logs:     $SMOKE_LOG_DIR"
+fi
 echo ""
 
 # Verify bundle exists
@@ -169,7 +176,13 @@ for cmd in xvfb-run xdotool import compare; do
     fi
 done
 
-TMPDIR_GUI=$(mktemp -d /tmp/lv-flatpak-video-gui.XXXXXX)
+if [ -n "$SMOKE_LOG_DIR" ]; then
+    TMPDIR_GUI="$SMOKE_LOG_DIR/video-gui"
+    rm -rf "$TMPDIR_GUI"
+    mkdir -p "$TMPDIR_GUI"
+else
+    TMPDIR_GUI=$(mktemp -d /tmp/lv-flatpak-video-gui.XXXXXX)
+fi
 export LV_DB_PATH="$TMPDB2"
 
 xvfb-run -a --server-args="-screen 0 1280x720x24" bash -c '
