@@ -8,9 +8,9 @@ The release pipeline must run through GitHub Actions. Do not publish releases fr
 
 1. **Conventional commits**: All commits to `main` must be release-please friendly.
 
-2. **release-please** (`.github/workflows/release.yml`): Runs on every push to `main`. Scans commits since last release, maintains a Release PR with the version bump + release notes. When the Release PR is merged, it creates the `vX.Y.Z` tag + GitHub Release.
+2. **release-please** (`.github/workflows/release.yml`): Runs on every push to `main`. Scans commits since last release and maintains a Release PR with the version bump + release notes. It does not publish the release.
 
-3. **Flatpak build** (`.github/workflows/build.yml`): Triggered on release `published`. Builds Flatpak for x86_64 + aarch64, smokes them, attaches assets to the release.
+3. **Flatpak build** (`.github/workflows/build.yml`): Triggered on the merged release commit on `main`. Builds Flatpak for x86_64 + aarch64, smokes them, then creates the GitHub Release and attaches assets.
 
 ### Commit messages
 
@@ -53,16 +53,15 @@ Do not hand-edit generated release notes unless correcting scope or wording befo
 
 1. Ensure all changes on `main` use release-please friendly conventional commit messages.
 2. Push to `main` - release-please creates/updates a Release PR.
-3. Review and merge the Release PR - release-please tags and creates the GitHub Release.
-4. `build.yml` runs automatically: builds Flatpaks, smokes tests, publishes assets.
-5. Verify both smoke jobs pass for x86_64 + aarch64.
+3. Review and merge the Release PR - release-please updates `main`, but no public release exists yet.
+4. `build.yml` runs automatically: builds Flatpaks, smokes tests, then creates the GitHub Release and publishes assets.
+5. Verify both smoke jobs pass for x86_64 + aarch64 before treating the release as published.
 6. Verify release notes are specific to changes since the previous release. Keep docs/test/chore noise out unless it affects users or packaging.
-7. If release workflow fails, inspect job logs with `gh run view <run-id> --log`, push fix to `main`, then rerun or recreate the GitHub Release so `build.yml` publishes assets from CI.
+7. If release workflow fails, inspect job logs with `gh run view <run-id> --log`, push fix to `main`, then rerun the build workflow so CI publishes the release after smoke passes.
 
 ### Manual release (fallback)
 
 Only if release-please is broken, use GitHub CI as the builder:
 1. Commit version updates on `main` (`Cargo.toml`, `Cargo.lock`, `.release-please-manifest.json`).
-2. Create a GitHub Release with tag `vX.Y.Z`, target `main`, and concise notes.
-3. Let `build.yml` build, smoke, and attach Flatpak assets.
-4. Verify release assets and checksums are attached by CI.
+2. Let `build.yml` create the GitHub Release only after the Flatpak builds and smoke tests pass.
+3. Verify release assets and checksums are attached by CI.

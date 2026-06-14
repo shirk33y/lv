@@ -1,19 +1,77 @@
 name: build
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .release-please-manifest.json
+      - .github/workflows/release.yml
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to republish, for example v0.1.7.
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-assets-${{ github.event.release.tag_name }}
+  group: release-assets-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release_meta:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.meta.outputs.release }}
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      pr_number: ${{ steps.meta.outputs.pr_number }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Detect release commit
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          FORCE_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$FORCE_RELEASE_TAG" ]; then
+            VERSION=${FORCE_RELEASE_TAG#v}
+            test -n "$VERSION"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$FORCE_RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR_NUMBER=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq 'map(select(.merged_at != null and (.title | startswith("chore(main): release")))) | first | .number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VERSION=$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)
+          test -n "$VERSION"
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
   build-flatpak:
     name: build-flatpak (${{ matrix.arch }})
+    needs: release_meta
+    if: needs.release_meta.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -78,7 +136,8 @@ jobs:
 
   smoke-flatpak:
     name: smoke-flatpak (${{ matrix.arch }})
-    needs: build-flatpak
+    needs: [release_meta, build-flatpak]
+    if: needs.release_meta.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -115,9 +174,6 @@ jobs:
           name: flatpak-${{ matrix.arch }}
           path: build
 
-      - name: Install smoke deps
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Verify checksum
         run: |
           cd build
@@ -140,11 +196,12 @@ jobs:
 
   publish:
     name: publish-flatpaks
-    needs: smoke-flatpak
+    needs: [release_meta, smoke-flatpak]
+    if: needs.release_meta.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ needs.release_meta.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
@@ -162,10 +219,41 @@ jobs:
           pattern: flatpak-*
           path: artifacts
 
+      - name: Prepare release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq 'map(select(.merged_at != null and (.title | startswith("chore(main): release")))) | first | .number')
+          gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.body' > /tmp/release-pr-body.txt
+          awk '
+            /^---$/ {
+              if (seen == 0) {
+                seen = 1
+                next
+              }
+              exit
+            }
+            seen { print }
+          ' /tmp/release-pr-body.txt > release-notes.md
+          test -s release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+          else
+            gh release create "$TAG" --title "$TAG" --target "${{ github.sha }}" --notes-file release-notes.md
+          fi
+
       - name: Upload release assets
         run: |
           find artifacts -type f \( -name '*.flatpak' -o -name '*.sha256' \) -print0 \
-            | xargs -0 gh release upload "$TAG"
+            | xargs -0 gh release upload "$TAG" --clobber
 
       - name: Verify release assets
         run: |

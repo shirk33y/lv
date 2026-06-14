@@ -16,6 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     xvfb \
     xauth \
     xdotool \
+    ffmpeg \
     imagemagick \
     libgl1 \
     mesa-utils \
