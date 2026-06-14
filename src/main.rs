@@ -703,10 +703,8 @@ enum Commands {
     #[command(alias = "untrack")]
     Remove { path: PathBuf },
     /// Enable live filesystem monitoring on a tracked directory
-    #[command(alias = "watch")]
     Watch { path: PathBuf },
     /// Disable live filesystem monitoring
-    #[command(alias = "unwatch")]
     Unwatch { path: PathBuf },
     /// Re-scan tracked directories (or a specific path)
     #[command(alias = "scan")]
@@ -714,7 +712,6 @@ enum Commands {
     /// Show library statistics
     Status,
     /// Run headless job worker until done
-    #[command(alias = "worker")]
     Worker,
     /// Get directory property(ies)
     Get {
@@ -727,6 +724,32 @@ enum Commands {
         path: PathBuf,
         #[arg(required = true, num_args = 1.., value_name = "KEY=VAL")]
         props: Vec<String>,
+    },
+    /// Find files with flexible filters (glob default)
+    Find {
+        /// Glob pattern to match against filename
+        pattern: Option<String>,
+        /// Size filter: +10M, -500K, =1G
+        #[arg(short = 's', long)]
+        size: Option<String>,
+        /// Duration filter: +30s, -5m, =1h
+        #[arg(short = 'd', long)]
+        duration: Option<String>,
+        /// Resolution filter: thumb|vga|sd|hd|4k|8k|photo or +/-<px>
+        #[arg(short = 'r', long)]
+        resolution: Option<String>,
+        /// Filter by tag (may be repeated)
+        #[arg(short = 't', long)]
+        tag: Vec<String>,
+        /// Sort key: name|size|duration|resolution|random
+        #[arg(long)]
+        sort: Option<String>,
+        /// Only print file count
+        #[arg(short = 'n', long)]
+        count: bool,
+        /// NUL-separated output (for xargs)
+        #[arg(long)]
+        print0: bool,
     },
 }
 
@@ -755,6 +778,18 @@ fn main() {
             Commands::Worker => cli::worker(&lv_db),
             Commands::Get { path, keys } => cli::get_props(&lv_db, &path, &keys),
             Commands::Set { path, props } => cli::set_props(&lv_db, &path, &props),
+            Commands::Find {
+                pattern,
+                size,
+                duration,
+                resolution,
+                tag,
+                sort,
+                count,
+                print0,
+            } => cli::find_files(
+                &lv_db, pattern, size, duration, resolution, &tag, sort, count, print0,
+            ),
         }
         return;
     }

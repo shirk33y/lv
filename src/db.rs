@@ -1326,7 +1326,7 @@ impl Db {
     }
 }
 
-fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
+pub(crate) fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
     Ok(FileEntry {
         id: row.get(0)?,
         path: row.get(1)?,
