@@ -1015,13 +1015,11 @@ fn main() {
         let v = CString::new(val).unwrap();
         let rc = unsafe { libmpv_sys::mpv_set_property_string(mpv_handle, n.as_ptr(), v.as_ptr()) };
         if rc < 0 {
-            panic!("mpv_set_property_string failed: {}", rc);
+            panic!("mpv_set_property_string({name}={val}) failed: {}", rc);
         }
     };
-    set_prop("vo", "libmpv");
     set_prop("hwdec", "auto");
     set_prop("terminal", "no");
-    set_prop("audio", "yes");
     set_prop("mute", "no");
     set_prop("volume", "100");
     set_prop("image-display-duration", "inf");
