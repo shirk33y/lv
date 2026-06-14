@@ -1,58 +1,30 @@
 # lv TODO
 
-## Done (v0.7)
-- [x] `meta_tags` junction table replacing JSON column for tags
-- [x] Batch migration from JSON to `meta_tags` (backup first, progress via statics)
-- [x] `LIKE '%"tag"%'` → `EXISTS (SELECT 1 FROM meta_tags ...)` across all queries
-- [x] Keybinding: `y`=like, `shift+y`=unlike, `2`-`9`=add c2-c9, `shift+2-9`=remove c2-c9
-- [x] Full-width bottom seekbar (idle 3px, hover 24px, opacity art)
-- [x] Window resize handles (6px edges+corners) via hit-test
-- [x] `make dev`/`check`/`test` targets, `scripts/configure.sh`, `.cargo/config.toml` generation
-- [x] `RESIZING_WINDOW.md`: Wayland cursor-shape-v1 limitation documented
+## ✓ Phase 1: meta_tags junction table
+- [x] Schema migration + backward compat
+- [x] All 11 query sites using EXISTS subquery
+- [x] Keybinding: `y`=like, `shift+y`=unlike, `2`-`9`=add/remove c2-c9
 
-## Phase 2: Property system + new CLI
-- [ ] `dir_properties` table (key-value, ZFS-style)
-  ```sql
-  CREATE TABLE dir_properties (
-      dir_id INTEGER NOT NULL REFERENCES directories(id) ON DELETE CASCADE,
-      key TEXT NOT NULL,
-      value TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (dir_id, key)
-  );
-  ```
-- [ ] Migrate `watched` flag → `watch_mode` property (notify/auto)
-- [ ] Migrate `recursive` flag → `recursive` property
-- [ ] New flat CLI:
-  ```
-  lv add PATH           add dir, scan, auto-watch
-  lv remove PATH        remove from library
-  lv sync [PATH]        one-shot scan + jobs
-  lv status             library stats
-  lv get PATH [prop]    get dir property(ies)
-  lv set PATH K=V [K=V] set dir properties
-  ```
-- [ ] Deprecation aliases: `track`→`add`, `untrack`→`remove`, `watch`→`set`, etc.
-- [ ] Remove old `track`/`untrack`/`watch`/`unwatch`/`scan`/`worker` commands
+## ✓ Phase 2: Property columns + new CLI
+- [x] 6 columns on directories table (watch_mode, poll_interval, max_depth, include_ext, label)
+- [x] dir_properties KV table removed
+- [x] watcher, CLI commands updated
+- [x] make configure, pre-commit hook
+- [x] Fix duplicate clap aliases
 
-## Phase 3: lv find
-- [ ] `lv find [OPTIONS] [pattern]` with fd-style filtering
-- [ ] Glob match by default, `--regex` opt-in
-- [ ] Size specs: `+10M`, `-500K`
-- [ ] Duration specs: `+30s`, `-5m`
-- [ ] Resolution presets: `thumb|vga|sd|hd|4k|8k|photo`
-- [ ] Resolution specs: `+1920`, `-1080`
-- [ ] Tag filter: `--tag like`, `--tag c3`
-- [ ] `--sort name|size|duration|resolution|random`
-- [ ] `--count`, `--list`, `--print0`
-- [ ] Same flags usable as `lv` pre-filter in GUI
+## ✓ Phase 3: lv find
+- [x] Glob→SQL LIKE filtering, --count, --print0
+- [x] Size/duration/resolution/tag filters
+- [x] --sort name|size|duration|resolution|random
+- [x] 55 unit tests
 
-## Phase 4: Daemon
-- [ ] `lv sync -b` = headless daemon
-- [ ] IPC via shared SQLite + `PRAGMA data_version` polling
-- [ ] Daemon loop: poll DB every 100ms, adjust watchers, process jobs
-- [ ] `commands` table for GUI→daemon signalling
-- [ ] Systemd user service
-- [ ] `r` key triggers sync request via commands table (once daemon exists)
+## ✓ Phase 4: Daemon
+- [x] `lv sync -b` headless daemon
+- [x] IPC via PRAGMA data_version polling (500ms)
+- [x] commands table (scan/shutdown)
+- [x] Dynamic watcher sync on DB changes
+- [x] `r` key writes scan command to commands table
+- [ ] Systemd user service (scripts/lv-daemon.service)
 
 ## Indexing / metadata
 - [ ] Populate `duration_ms`, `bitrate`, `codecs` from ffprobe during thumbnail job

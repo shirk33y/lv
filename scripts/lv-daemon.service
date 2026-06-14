@@ -1,0 +1,12 @@
+[Unit]
+Description=lv media library background daemon
+Documentation=https://github.com/anomalyco/lv
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/lv sync -b
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
