@@ -81,8 +81,10 @@ pub struct CollectionStats {
 
 /// Extended metadata for the info sidebar.
 pub struct FileMeta {
+    #[allow(dead_code)]
     pub filename: String,
     pub size: Option<i64>,
+    pub created_at: Option<String>,
     pub modified_at: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
@@ -894,11 +896,12 @@ impl Db {
         filename: &str,
         size: Option<i64>,
         modified_at: Option<&str>,
+        created_at: Option<&str>,
     ) -> Option<i64> {
         let db = self.conn();
         db.execute(
-            "INSERT OR IGNORE INTO files (path, dir, filename, size, modified_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![path, dir, filename, size, modified_at],
+            "INSERT OR IGNORE INTO files (path, dir, filename, size, modified_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![path, dir, filename, size, modified_at, created_at],
         )
         .ok()?;
         Some(db.last_insert_rowid())
@@ -1072,6 +1075,7 @@ impl Db {
         let (
             filename,
             size,
+            created_at,
             modified_at,
             meta_id,
             width,
@@ -1083,7 +1087,7 @@ impl Db {
             pnginfo,
         ) = db
             .query_row(
-                "SELECT f.filename, f.size, f.modified_at,
+                "SELECT f.filename, f.size, f.created_at, f.modified_at,
                         f.meta_id,
                         m.width, m.height, m.format, m.duration_ms, m.bitrate, m.codecs,
                         m.pnginfo
@@ -1095,14 +1099,15 @@ impl Db {
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<i64>>(4)?,
                         row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                         row.get::<_, Option<i64>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<i64>>(9)?,
                         row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
                     ))
                 },
             )
@@ -1125,6 +1130,7 @@ impl Db {
         Some(FileMeta {
             filename,
             size,
+            created_at,
             modified_at,
             width,
             height,
@@ -1320,6 +1326,54 @@ impl Db {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok()
+    }
+
+    pub fn next_missing_ffprobe(&self) -> Option<(i64, String)> {
+        self.conn()
+            .query_row(
+                "SELECT f.id, f.path FROM files f
+                 JOIN meta m ON f.meta_id = m.id
+                 WHERE m.duration_ms IS NULL
+                 AND f.id NOT IN (SELECT file_id FROM job_fails WHERE layer = 'ffprobe')
+                 AND (LOWER(f.path) LIKE '%.mp4' OR LOWER(f.path) LIKE '%.m4v'
+                   OR LOWER(f.path) LIKE '%.mov' OR LOWER(f.path) LIKE '%.mkv'
+                   OR LOWER(f.path) LIKE '%.webm' OR LOWER(f.path) LIKE '%.avi'
+                   OR LOWER(f.path) LIKE '%.flv' OR LOWER(f.path) LIKE '%.wmv'
+                   OR LOWER(f.path) LIKE '%.mpg' OR LOWER(f.path) LIKE '%.mpeg'
+                   OR LOWER(f.path) LIKE '%.ts' OR LOWER(f.path) LIKE '%.mts'
+                   OR LOWER(f.path) LIKE '%.m2ts' OR LOWER(f.path) LIKE '%.3gp'
+                   OR LOWER(f.path) LIKE '%.ogv' OR LOWER(f.path) LIKE '%.ogg'
+                   OR LOWER(f.path) LIKE '%.mxf' OR LOWER(f.path) LIKE '%.rm'
+                   OR LOWER(f.path) LIKE '%.dv' OR LOWER(f.path) LIKE '%.bik'
+                   OR LOWER(f.path) LIKE '%.smk')
+                 ORDER BY RANDOM() LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    pub fn meta_set_ffprobe(
+        &self,
+        file_id: i64,
+        duration_ms: Option<i64>,
+        bitrate: Option<i64>,
+        codecs: Option<&str>,
+    ) {
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        if let Some(mid) = meta_id {
+            db.execute(
+                "UPDATE meta SET duration_ms = ?1, bitrate = ?2, codecs = ?3 WHERE id = ?5",
+                rusqlite::params![duration_ms, bitrate, codecs, mid],
+            )
+            .ok();
+        }
     }
 
     pub fn record_job_fail(&self, file_id: i64, layer: &str, error: &str) {
@@ -2217,6 +2271,7 @@ mod tests {
             "1.jpg",
             Some(1024),
             Some("2024-01-01T00:00:00Z"),
+            None,
         );
         assert!(id.is_some());
 
@@ -2237,8 +2292,8 @@ mod tests {
     #[test]
     fn file_insert_duplicate_ignored() {
         let db = test_db();
-        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
-        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(200), None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None, None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(200), None, None);
         // Only one file
         assert_eq!(db.file_count(), 1);
         // Size is still original (INSERT OR IGNORE)
@@ -2250,7 +2305,14 @@ mod tests {
     fn file_update_meta_changes_size_and_mtime() {
         let db = test_db();
         let id = db
-            .file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), Some("2024-01-01"))
+            .file_insert(
+                "/a/1.jpg",
+                "/a",
+                "1.jpg",
+                Some(100),
+                Some("2024-01-01"),
+                None,
+            )
             .unwrap();
 
         db.file_update_meta(id, Some(200), Some("2024-06-15"));
@@ -2263,10 +2325,74 @@ mod tests {
     #[test]
     fn file_insert_with_null_size_and_mtime() {
         let db = test_db();
-        db.file_insert("/a/1.jpg", "/a", "1.jpg", None, None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", None, None, None);
         let (_, size, mtime) = db.file_lookup("/a/1.jpg").unwrap();
         assert_eq!(size, None);
         assert_eq!(mtime, None);
+    }
+
+    #[test]
+    fn file_insert_with_created_at() {
+        let db = test_db();
+        db.file_insert(
+            "/a/1.jpg",
+            "/a",
+            "1.jpg",
+            Some(100),
+            None,
+            Some("2025-01-15T12:00:00Z"),
+        );
+        let val: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT created_at FROM files WHERE path = ?1",
+                ["/a/1.jpg"],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(val, Some("2025-01-15T12:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn file_insert_without_created_at_stores_null() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None, None);
+        let val: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT created_at FROM files WHERE path = ?1",
+                ["/a/1.jpg"],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        assert!(val.is_none(), "NULL created_at stores as NULL, not DEFAULT");
+    }
+
+    #[test]
+    fn get_file_metadata_returns_created_at() {
+        let db = test_db();
+        db.file_insert(
+            "/a/1.jpg",
+            "/a",
+            "1.jpg",
+            Some(100),
+            None,
+            Some("2025-06-01T00:00:00Z"),
+        );
+        let id = db.file_lookup("/a/1.jpg").unwrap().0;
+        let meta = db.get_file_metadata(id).unwrap();
+        assert_eq!(meta.created_at, Some("2025-06-01T00:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn get_file_metadata_created_at_none_when_not_set() {
+        let db = test_db();
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None, None);
+        let id = db.file_lookup("/a/1.jpg").unwrap().0;
+        let meta = db.get_file_metadata(id).unwrap();
+        // NULL created_at stored as NULL (DEFAULT only fires on column omission)
+        assert!(meta.created_at.is_none());
     }
 
     // ── newest_file ─────────────────────────────────────────────────────
@@ -2342,7 +2468,7 @@ mod tests {
     #[test]
     fn file_set_hash_creates_meta_and_links() {
         let db = test_db();
-        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None, None);
         let (fid, _, _) = db.file_lookup("/a/1.jpg").unwrap();
 
         db.file_set_hash_meta(fid, "abc123");
@@ -2369,8 +2495,8 @@ mod tests {
     #[test]
     fn file_set_hash_deduplicates_meta() {
         let db = test_db();
-        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None);
-        db.file_insert("/b/1_copy.jpg", "/b", "1_copy.jpg", Some(100), None);
+        db.file_insert("/a/1.jpg", "/a", "1.jpg", Some(100), None, None);
+        db.file_insert("/b/1_copy.jpg", "/b", "1_copy.jpg", Some(100), None, None);
         let (id1, _, _) = db.file_lookup("/a/1.jpg").unwrap();
         let (id2, _, _) = db.file_lookup("/b/1_copy.jpg").unwrap();
 
@@ -2725,7 +2851,7 @@ mod tests {
         let path = format!("/{}/photo.jpg", deep);
         let dir = format!("/{}", deep);
 
-        db.file_insert(&path, &dir, "photo.jpg", Some(100), None);
+        db.file_insert(&path, &dir, "photo.jpg", Some(100), None, None);
         assert!(db.file_lookup(&path).is_some());
         assert_eq!(db.files_by_dir(&dir).len(), 1);
     }
@@ -2756,7 +2882,14 @@ mod tests {
         // Insert files from main thread
         for i in 0..20 {
             let path = format!("/t/file{:03}.jpg", i);
-            db.file_insert(&path, "/t", &format!("file{:03}.jpg", i), Some(100), None);
+            db.file_insert(
+                &path,
+                "/t",
+                &format!("file{:03}.jpg", i),
+                Some(100),
+                None,
+                None,
+            );
         }
 
         // Spawn threads that read and write concurrently
@@ -2816,7 +2949,7 @@ mod tests {
         // Pre-insert files
         for i in 0..10 {
             let path = format!("/c/f{}.jpg", i);
-            db.file_insert(&path, "/c", &format!("f{}.jpg", i), Some(100), None);
+            db.file_insert(&path, "/c", &format!("f{}.jpg", i), Some(100), None, None);
         }
 
         // One thread deletes, another reads
@@ -2851,9 +2984,30 @@ mod tests {
         // Simulate the full worker pipeline: hash → exif → pnginfo
         // Use file_insert (not insert_file helper) so files start without hash/meta
         let db = test_db();
-        db.file_insert("/pics/photo.png", "/pics", "photo.png", Some(100), None);
-        db.file_insert("/pics/video.mp4", "/pics", "video.mp4", Some(200), None);
-        db.file_insert("/pics/broken.jpg", "/pics", "broken.jpg", Some(50), None);
+        db.file_insert(
+            "/pics/photo.png",
+            "/pics",
+            "photo.png",
+            Some(100),
+            None,
+            None,
+        );
+        db.file_insert(
+            "/pics/video.mp4",
+            "/pics",
+            "video.mp4",
+            Some(200),
+            None,
+            None,
+        );
+        db.file_insert(
+            "/pics/broken.jpg",
+            "/pics",
+            "broken.jpg",
+            Some(50),
+            None,
+            None,
+        );
         let files = db.files_by_dir("/pics");
         let id_png = files.iter().find(|f| f.filename == "photo.png").unwrap().id;
         let id_mp4 = files.iter().find(|f| f.filename == "video.mp4").unwrap().id;
@@ -3085,7 +3239,7 @@ mod tests {
     #[test]
     fn toggle_like_without_meta_creates_meta() {
         let db = test_db();
-        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None);
+        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None, None);
         let files = db.files_by_dir("/a");
         assert!(db.toggle_like(files[0].id));
 
@@ -3107,7 +3261,7 @@ mod tests {
     #[test]
     fn toggle_like_without_meta_survives_later_hash_link() {
         let db = test_db();
-        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None);
+        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None, None);
         let file_id = db.files_by_dir("/a")[0].id;
 
         assert!(db.toggle_like(file_id));
@@ -3152,9 +3306,9 @@ mod tests {
     fn collection_count_size_with_temporary() {
         let db = test_db();
         // Use file_insert to set size (insert_file helper doesn't set size)
-        db.file_insert("/a/a.jpg", "/a", "a.jpg", Some(100), None);
-        db.file_insert("/a/b.jpg", "/a", "b.jpg", Some(100), None);
-        db.file_insert("/a/c.jpg", "/a", "c.jpg", Some(100), None);
+        db.file_insert("/a/a.jpg", "/a", "a.jpg", Some(100), None, None);
+        db.file_insert("/a/b.jpg", "/a", "b.jpg", Some(100), None, None);
+        db.file_insert("/a/c.jpg", "/a", "c.jpg", Some(100), None, None);
 
         let (count, size) = db.collection_count_size(0);
         assert_eq!(count, 3);
@@ -3208,9 +3362,30 @@ mod tests {
     #[test]
     fn newest_file_by_mtime() {
         let db = test_db();
-        db.file_insert("/a/old.jpg", "/a", "old.jpg", Some(100), Some("2020-01-01"));
-        db.file_insert("/a/new.jpg", "/a", "new.jpg", Some(100), Some("2025-12-31"));
-        db.file_insert("/a/mid.jpg", "/a", "mid.jpg", Some(100), Some("2023-06-15"));
+        db.file_insert(
+            "/a/old.jpg",
+            "/a",
+            "old.jpg",
+            Some(100),
+            Some("2020-01-01"),
+            None,
+        );
+        db.file_insert(
+            "/a/new.jpg",
+            "/a",
+            "new.jpg",
+            Some(100),
+            Some("2025-12-31"),
+            None,
+        );
+        db.file_insert(
+            "/a/mid.jpg",
+            "/a",
+            "mid.jpg",
+            Some(100),
+            Some("2023-06-15"),
+            None,
+        );
 
         let newest = db.newest_file().unwrap();
         assert_eq!(newest.filename, "new.jpg");
@@ -3250,6 +3425,7 @@ mod tests {
             "photo.png",
             Some(5000),
             Some("2025-01-15"),
+            None,
         );
         let files = db.files_by_dir("/a");
         let fid = files[0].id;

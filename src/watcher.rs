@@ -261,7 +261,13 @@ pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::E
                         .ok()
                         .map(|d| format!("{}", d.as_secs()))
                 });
+                let ctime = meta.as_ref().and_then(|m| m.created().ok()).and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| format!("{}", d.as_secs()))
+                });
                 let mtime_ref = mtime.as_deref();
+                let ctime_ref = ctime.as_deref();
 
                 if let Some((file_id, db_size, db_mtime)) = db.file_lookup(&abs_str) {
                     let changed = db_size != size || db_mtime.as_deref() != mtime_ref;
@@ -270,7 +276,7 @@ pub(crate) fn handle_event(db: &Db, tx: &mpsc::Sender<FsEvent>, event: notify::E
                         eprintln!("watcher: updated {}", filename);
                     }
                 } else {
-                    db.file_insert(&abs_str, &dir, &filename, size, mtime_ref);
+                    db.file_insert(&abs_str, &dir, &filename, size, mtime_ref, ctime_ref);
                     eprintln!("watcher: added {}", filename);
                 }
 
@@ -711,7 +717,7 @@ mod tests {
         let clean = r"C:\Users\test\photo.jpg";
         let dir = r"C:\Users\test";
         db.dir_track(dir, false);
-        db.file_insert(clean, dir, "photo.jpg", Some(100), None);
+        db.file_insert(clean, dir, "photo.jpg", Some(100), None, None);
         assert!(db.file_lookup(clean).is_some());
 
         let (tx, rx) = mpsc::channel();
@@ -751,7 +757,7 @@ mod tests {
         let path_str = file_path.to_string_lossy().to_string();
 
         db.dir_track(&dir_str, false);
-        db.file_insert(&path_str, &dir_str, "photo.jpg", Some(100), None);
+        db.file_insert(&path_str, &dir_str, "photo.jpg", Some(100), None, None);
 
         let (tx, rx) = mpsc::channel();
         let event = make_event(
@@ -875,6 +881,47 @@ mod tests {
     }
 
     #[test]
+    fn handle_event_create_populates_created_at() {
+        use crate::db::Db;
+
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
+        db.dir_track(&dir_str, false);
+
+        let file_path = dir.path().join("new.jpg");
+        std::fs::write(&file_path, b"image data").unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let event = make_event(
+            EventKind::Create(notify::event::CreateKind::File),
+            vec![file_path.clone()],
+        );
+        handle_event(&db, &tx, event);
+
+        let canonical = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        let (fid, _, _) = db.file_lookup(&canonical_str).unwrap();
+
+        let ctime: Option<String> = db
+            .conn()
+            .query_row("SELECT created_at FROM files WHERE id = ?1", [fid], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        assert!(
+            ctime.is_some(),
+            "created_at should be set after watcher create"
+        );
+        if let Some(ref ts) = ctime {
+            assert!(ts.len() >= 10, "created_at should be a valid timestamp");
+        }
+    }
+
+    #[test]
     fn handle_event_modify_updates_existing() {
         // Modify event for an existing media file should update meta in DB
         use crate::db::Db;
@@ -891,7 +938,7 @@ mod tests {
         // Insert with old size
         let canonical = std::fs::canonicalize(&file_path).unwrap();
         let canonical_str = canonical.to_string_lossy().to_string();
-        db.file_insert(&canonical_str, &dir_str, "photo.jpg", Some(1), None);
+        db.file_insert(&canonical_str, &dir_str, "photo.jpg", Some(1), None, None);
 
         // Modify the file
         std::fs::write(&file_path, b"modified content that is longer").unwrap();
@@ -1085,7 +1132,7 @@ mod tests {
         std::fs::write(&a_path, b"image data").unwrap();
         let a_canonical = std::fs::canonicalize(&a_path).unwrap();
         let a_str = a_canonical.to_string_lossy().to_string();
-        db.file_insert(&a_str, &dir_str, "a.jpg", Some(10), None);
+        db.file_insert(&a_str, &dir_str, "a.jpg", Some(10), None, None);
 
         let (tx, _rx) = mpsc::channel();
 
@@ -1140,6 +1187,7 @@ mod tests {
             "photo.jpg",
             Some(11),
             Some("1000"),
+            None,
         );
 
         // Atomically replace: write new content
@@ -1183,7 +1231,7 @@ mod tests {
         // Insert the canonical path (which resolves to real.jpg)
         let canonical = std::fs::canonicalize(&link).unwrap();
         let canonical_str = canonical.to_string_lossy().to_string();
-        db.file_insert(&canonical_str, &dir_str, "real.jpg", Some(5), None);
+        db.file_insert(&canonical_str, &dir_str, "real.jpg", Some(5), None, None);
 
         // Delete the target
         std::fs::remove_file(&target).unwrap();
@@ -1299,7 +1347,7 @@ mod tests {
 
         let canonical = std::fs::canonicalize(&file_path).unwrap();
         let canonical_str = crate::clean_path(&canonical.to_string_lossy());
-        db.file_insert(&canonical_str, &dir_str, "photo.png", Some(11), None);
+        db.file_insert(&canonical_str, &dir_str, "photo.png", Some(11), None, None);
 
         // Modify the file
         std::fs::write(&file_path, b"new content longer").unwrap();

@@ -52,9 +52,15 @@ pub fn discover(db: &Db, root: &Path) -> usize {
                     .ok()
                     .map(|d| iso_lite(d.as_secs()))
             });
+        let created_at = fmeta.as_ref().and_then(|m| m.created().ok()).and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| iso_lite(d.as_secs()))
+        });
 
         let path_str = clean_path(&abs.to_string_lossy());
         let mtime_ref = modified_at.as_deref();
+        let ctime_ref = created_at.as_deref();
 
         if let Some((file_id, db_size, db_mtime)) = db.file_lookup(&path_str) {
             let changed = db_size != size || db_mtime.as_deref() != mtime_ref;
@@ -66,7 +72,7 @@ pub fn discover(db: &Db, root: &Path) -> usize {
         }
 
         if db
-            .file_insert(&path_str, &dir, &filename, size, mtime_ref)
+            .file_insert(&path_str, &dir, &filename, size, mtime_ref, ctime_ref)
             .is_some()
         {
             count += 1;
@@ -694,5 +700,81 @@ mod tests {
         let added = discover(&db, dir.path());
         assert_eq!(added, 0);
         assert!(db.files_by_dir(&dir_str).is_empty());
+    }
+
+    #[test]
+    fn discover_populates_created_at_from_btime() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"data").unwrap();
+
+        discover(&db, dir.path());
+
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let files = db.files_by_dir(&dir_str);
+        assert_eq!(files.len(), 2);
+
+        for f in &files {
+            let ctime: Option<String> = db
+                .conn()
+                .query_row("SELECT created_at FROM files WHERE id = ?1", [f.id], |r| {
+                    r.get(0)
+                })
+                .ok()
+                .flatten();
+            assert!(
+                ctime.is_some(),
+                "created_at should be set after discover for {}",
+                f.filename
+            );
+            if let Some(ref ts) = ctime {
+                assert!(ts.len() >= 10, "created_at should be a valid timestamp");
+            }
+        }
+    }
+
+    #[test]
+    fn discover_does_not_overwrite_created_at_on_rescan() {
+        // When rescan finds an unchanged file, created_at should keep original value
+        let db = Db::open_memory();
+        db.ensure_schema();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"img").unwrap();
+
+        discover(&db, dir.path());
+        let dir_str = clean_path(&dir.path().canonicalize().unwrap().to_string_lossy());
+        let first_id = db.files_by_dir(&dir_str)[0].id;
+
+        let orig_ctime: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT created_at FROM files WHERE id = ?1",
+                [first_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+
+        // Second discover — no changes
+        discover(&db, dir.path());
+
+        let after_ctime: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT created_at FROM files WHERE id = ?1",
+                [first_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+
+        assert_eq!(
+            orig_ctime, after_ctime,
+            "created_at should not change on no-op rescan"
+        );
     }
 }

@@ -634,9 +634,11 @@ pub fn draw_info_panel(
         let label_w = 90.0;
 
         let mut rows: Vec<(&str, String)> = Vec::new();
-        rows.push(("Filename", meta.filename.clone()));
         if let Some(size) = meta.size {
             rows.push(("Size", format_size(size)));
+        }
+        if let Some(ref dt) = meta.created_at {
+            rows.push(("Created", dt.clone()));
         }
         if let Some(ref ts) = meta.modified_at {
             rows.push(("Modified", ts.clone()));

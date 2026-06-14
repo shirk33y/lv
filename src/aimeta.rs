@@ -216,6 +216,151 @@ mod tests {
         assert_eq!(ai.model, "sd_xl_base");
     }
 
+    fn read_fixture(name: &str) -> String {
+        let path = format!("{}/test/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
+        std::fs::read_to_string(&path).expect("fixture not found")
+    }
+
+    #[test]
+    fn workflow_basic_t2i() {
+        let json = read_fixture("workflow_basic_t2i.json");
+        let ai = parse_comfyui(&json).expect("should parse basic t2i");
+        assert_eq!(
+            ai.prompt,
+            "beautiful scenery nature glass bottle landscape, purple galaxy bottle,"
+        );
+        assert_eq!(ai.model, "v1-5-pruned-emaonly-fp16.safetensors");
+    }
+
+    #[test]
+    fn workflow_flux_t2i() {
+        let json = read_fixture("workflow_flux_t2i.json");
+        let ai = parse_comfyui(&json).expect("should parse flux t2i");
+        assert!(ai.prompt.contains("anime"));
+        assert_eq!(ai.model, "flux_dev_bf16.safetensors");
+    }
+
+    #[test]
+    fn workflow_prompt_only_no_model() {
+        let json = read_fixture("workflow_prompt_only.json");
+        let ai = parse_comfyui(&json).expect("should parse even without model");
+        assert_eq!(ai.prompt, "a cute cat");
+        assert!(ai.model.is_empty());
+    }
+
+    #[test]
+    fn workflow_z_image_turbo() {
+        let json = read_fixture("workflow_z_image_turbo.json");
+        let ai = parse_comfyui(&json).expect("should parse z-image-turbo workflow");
+        assert!(ai.prompt.contains("anime"));
+        assert!(ai.model.contains("z_image_turbo"));
+        assert!(ai.model.contains("safetensors"));
+    }
+
+    #[test]
+    fn workflow_invalid_json() {
+        let json = read_fixture("workflow_invalid.json");
+        assert!(parse_comfyui(&json).is_none());
+    }
+
+    #[test]
+    fn parse_comfyui_empty_object() {
+        assert!(parse_comfyui("{}").is_none());
+    }
+
+    #[test]
+    fn parse_comfyui_no_recognized_nodes() {
+        let json =
+            r#"{"1":{"inputs":{"seed":123},"class_type":"KSampler","_meta":{"title":"KSampler"}}}"#;
+        assert!(parse_comfyui(json).is_none());
+    }
+
+    #[test]
+    fn parse_comfyui_non_string_text_skips_node() {
+        let json = r#"{"6":{"inputs":{"text":123},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode"}},"16":{"inputs":{"unet_name":"model.safetensors"},"class_type":"UNETLoader"}}"#;
+        let ai = parse_comfyui(json).unwrap();
+        assert!(ai.prompt.is_empty(), "non-string text should be skipped");
+        assert_eq!(ai.model, "model.safetensors");
+    }
+
+    #[test]
+    fn parse_comfyui_ckpt_name() {
+        let json = r#"{"6":{"inputs":{"text":"hello"},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Positive)"}},"3":{"inputs":{"ckpt_name":"sd_xl.safetensors"},"class_type":"CheckpointLoaderSimple"}}"#;
+        let ai = parse_comfyui(json).unwrap();
+        assert_eq!(ai.prompt, "hello");
+        assert_eq!(ai.model, "sd_xl.safetensors");
+    }
+
+    #[test]
+    fn parse_comfyui_multiple_positives_uses_first() {
+        let json = r#"{"5":{"inputs":{"text":"first prompt"},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Positive)"}},"10":{"inputs":{"text":"second prompt"},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode"}},"16":{"inputs":{"unet_name":"m.safetensors"},"class_type":"UNETLoader"}}"#;
+        let ai = parse_comfyui(json).unwrap();
+        assert_eq!(ai.prompt, "first prompt");
+    }
+
+    #[test]
+    fn parse_comfyui_multiple_positives_has_positive_title_second() {
+        let json = r#"{"5":{"inputs":{"text":"first prompt"},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode"}},"10":{"inputs":{"text":"second prompt"},"class_type":"CLIPTextEncode","_meta":{"title":"Positive Prompt"}},"16":{"inputs":{"unet_name":"m.safetensors"},"class_type":"UNETLoader"}}"#;
+        let ai = parse_comfyui(json).unwrap();
+        assert_eq!(ai.prompt, "second prompt");
+    }
+
+    #[test]
+    fn parse_comfyui_empty_model_name() {
+        let json = r#"{"6":{"inputs":{"text":"hi"},"class_type":"CLIPTextEncode"},"16":{"inputs":{"unet_name":""},"class_type":"UNETLoader"}}"#;
+        let ai = parse_comfyui(json).unwrap();
+        assert_eq!(ai.prompt, "hi");
+        assert_eq!(ai.model, "");
+    }
+
+    #[test]
+    fn parse_a1111_no_model() {
+        let params =
+            "a scenic view\nNegative prompt: clutter\nSteps: 20, Sampler: Euler a, CFG scale: 7";
+        let ai = parse_a1111(params);
+        assert_eq!(ai.prompt, "a scenic view");
+        assert_eq!(ai.model, "");
+    }
+
+    #[test]
+    fn parse_a1111_no_negative() {
+        let params = "just a cat\nSteps: 10, Sampler: DPM++ 2M, Model: catgen_v2";
+        let ai = parse_a1111(params);
+        assert_eq!(ai.prompt, "just a cat");
+        assert_eq!(ai.model, "catgen_v2");
+    }
+
+    #[test]
+    fn parse_a1111_multiline_prompt() {
+        let params =
+            "line one\nline two\nline three\nNegative prompt: bad\nSteps: 20, Model: m.safetensors";
+        let ai = parse_a1111(params);
+        assert_eq!(ai.prompt, "line one\nline two\nline three");
+    }
+
+    #[test]
+    fn parse_a1111_model_only_params_line() {
+        let params = "prompt text\nNegative prompt: bad\nSteps: 20, Sampler: Euler, Model: my_model.safetensors, Seed: 42";
+        let ai = parse_a1111(params);
+        assert_eq!(ai.prompt, "prompt text");
+        assert_eq!(ai.model, "my_model.safetensors");
+    }
+
+    #[test]
+    fn extract_png_not_a_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake.txt");
+        std::fs::write(&path, b"not a png").unwrap();
+        let result = extract_png(&path.to_string_lossy());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_png_nonexistent_file() {
+        let result = extract_png("/nonexistent/test.png");
+        assert!(result.is_err());
+    }
+
     #[test]
     fn extract_test_png() {
         let path = concat!(

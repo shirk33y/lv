@@ -1,9 +1,10 @@
 //! Background job engine with independent metadata layers.
 //!
-//! Layers: Hash, Exif (more to come: xattr, tiny_thumb).
+//! Layers: Hash, Exif, Ffprobe, AiBasic.
 //! Workers process missing layers lazily, with resource throttling
 //! and permanent-failure debounce.
 
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -17,6 +18,7 @@ use crate::db::Db;
 pub enum Layer {
     Hash,
     Exif,
+    Ffprobe,
     AiBasic,
 }
 
@@ -25,12 +27,13 @@ impl Layer {
         match self {
             Layer::Hash => "hash",
             Layer::Exif => "exif",
+            Layer::Ffprobe => "ffprobe",
             Layer::AiBasic => "ai_basic",
         }
     }
 }
 
-const LAYERS: &[Layer] = &[Layer::Hash, Layer::Exif, Layer::AiBasic];
+const LAYERS: &[Layer] = &[Layer::Hash, Layer::Exif, Layer::Ffprobe, Layer::AiBasic];
 
 // ── Stats (shared with UI via Arc) ──────────────────────────────────────
 
@@ -181,7 +184,52 @@ fn interruptible_sleep(dur: Duration, quit: &AtomicBool) {
     }
 }
 
+/// Wrapper so mpv_handle pointer can be passed across threads.
+/// mpv client handles are thread-safe per the API docs.
+struct ProbeHandle(*mut libmpv_sys::mpv_handle);
+unsafe impl Send for ProbeHandle {}
+
+fn create_probe_handle() -> Result<ProbeHandle, String> {
+    let handle = unsafe { libmpv_sys::mpv_create() };
+    if handle.is_null() {
+        return Err("mpv_create failed".into());
+    }
+    let set_str = |name: &str, val: &str| {
+        let n = CString::new(name).unwrap();
+        let v = CString::new(val).unwrap();
+        unsafe { libmpv_sys::mpv_set_property_string(handle, n.as_ptr(), v.as_ptr()) };
+    };
+    set_str("vo", "null");
+    set_str("audio", "null");
+    set_str("terminal", "no");
+    set_str("load-auto-profiles", "no");
+    set_str("load-scripts", "no");
+    let rc = unsafe { libmpv_sys::mpv_initialize(handle) };
+    if rc < 0 {
+        unsafe { libmpv_sys::mpv_terminate_destroy(handle) };
+        return Err(format!("mpv_initialize failed: {}", rc));
+    }
+    Ok(ProbeHandle(handle))
+}
+
+fn destroy_probe_handle(h: ProbeHandle) {
+    unsafe { libmpv_sys::mpv_terminate_destroy(h.0) };
+}
+
 fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: usize) {
+    // Create one mpv probe handle for this worker's lifetime
+    let probe = match create_probe_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!(
+                "worker {}: probe handle init failed: {}, disabling ffprobe",
+                worker_id, e
+            );
+            // Create a dummy null handle — process_layer will skip ffprobe
+            ProbeHandle(std::ptr::null_mut())
+        }
+    };
+
     // Worker 0 always runs. Workers 1+ only run in turbo mode.
     loop {
         if quit.load(Ordering::Relaxed) {
@@ -203,7 +251,7 @@ fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: u
             stats.active.fetch_add(1, Ordering::Relaxed);
             let t0 = Instant::now();
 
-            let result = process_layer(&db, file_id, layer, &path);
+            let result = process_layer(&db, file_id, layer, &path, &probe);
 
             let elapsed = t0.elapsed();
             stats.active.fetch_sub(1, Ordering::Relaxed);
@@ -232,6 +280,8 @@ fn worker_loop(db: Db, stats: Arc<JobStats>, quit: Arc<AtomicBool>, worker_id: u
             interruptible_sleep(idle, &quit);
         }
     }
+
+    destroy_probe_handle(probe);
 }
 
 fn find_work(db: &Db) -> Option<(i64, Layer, String)> {
@@ -239,6 +289,7 @@ fn find_work(db: &Db) -> Option<(i64, Layer, String)> {
         let result = match layer {
             Layer::Hash => db.next_missing_hash(),
             Layer::Exif => db.next_missing_exif(),
+            Layer::Ffprobe => db.next_missing_ffprobe(),
             Layer::AiBasic => db.next_missing_pnginfo(),
         };
         if let Some((file_id, path)) = result {
@@ -250,10 +301,17 @@ fn find_work(db: &Db) -> Option<(i64, Layer, String)> {
 
 // ── Layer processors ────────────────────────────────────────────────────
 
-fn process_layer(db: &Db, file_id: i64, layer: Layer, path: &str) -> Result<(), String> {
+fn process_layer(
+    db: &Db,
+    file_id: i64,
+    layer: Layer,
+    path: &str,
+    probe: &ProbeHandle,
+) -> Result<(), String> {
     match layer {
         Layer::Hash => process_hash(db, file_id, path),
         Layer::Exif => process_exif(db, file_id, path),
+        Layer::Ffprobe => process_ffprobe(db, file_id, path, probe),
         Layer::AiBasic => process_ai_basic(db, file_id, path),
     }
 }
@@ -380,6 +438,114 @@ fn process_exif(db: &Db, file_id: i64, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── Ffprobe layer (media properties via mpv) ──────────────────────────
+
+fn process_ffprobe(db: &Db, file_id: i64, path: &str, probe: &ProbeHandle) -> Result<(), String> {
+    let handle = probe.0;
+    if handle.is_null() {
+        return Err("probe handle unavailable".into());
+    }
+
+    // Unload previous file then load the new one
+    let cmd = |args: &[&str]| {
+        let cstrs: Vec<CString> = args.iter().map(|s| CString::new(*s).unwrap()).collect();
+        let mut ptrs: Vec<*const std::os::raw::c_char> = cstrs.iter().map(|s| s.as_ptr()).collect();
+        ptrs.push(std::ptr::null());
+        unsafe { libmpv_sys::mpv_command(handle, ptrs.as_mut_ptr() as *mut _) }
+    };
+
+    cmd(&["stop"]);
+    // Drain any stale events before the new loadfile
+    loop {
+        unsafe {
+            let ev = libmpv_sys::mpv_wait_event(handle, 0.001);
+            if ev.is_null() || (*ev).event_id == libmpv_sys::mpv_event_id_MPV_EVENT_NONE {
+                break;
+            }
+        }
+    }
+
+    let rc = cmd(&["loadfile", path]);
+    if rc < 0 {
+        return Err(format!("loadfile failed: {}", rc));
+    }
+
+    // Wait for FILE_LOADED event (up to 5s)
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if Instant::now() > deadline {
+            return Err("timeout waiting for file load".into());
+        }
+        unsafe {
+            let ev = libmpv_sys::mpv_wait_event(handle, 0.05);
+            if !ev.is_null() {
+                match (*ev).event_id {
+                    libmpv_sys::mpv_event_id_MPV_EVENT_FILE_LOADED => break,
+                    libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE => {
+                        return Err("mpv failed to load file".into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Read properties
+    let get_double = |name: &str| -> Option<f64> {
+        let n = CString::new(name).unwrap();
+        let mut val: f64 = 0.0;
+        let rc = unsafe {
+            libmpv_sys::mpv_get_property(
+                handle,
+                n.as_ptr(),
+                libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
+                &mut val as *mut f64 as *mut _,
+            )
+        };
+        if rc >= 0 {
+            Some(val)
+        } else {
+            None
+        }
+    };
+
+    let get_string = |name: &str| -> Option<String> {
+        let n = CString::new(name).unwrap();
+        let ptr = unsafe { libmpv_sys::mpv_get_property_string(handle, n.as_ptr()) };
+        if ptr.is_null() {
+            return None;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { libmpv_sys::mpv_free(ptr as *mut _) };
+        Some(s)
+    };
+
+    let duration_ms = get_double("duration").map(|d| (d * 1000.0) as i64);
+    let video_codec = get_string("video-codec");
+    let audio_codec = get_string("audio-codec");
+    let video_bitrate = get_double("video-bitrate").map(|b| b as i64);
+    let audio_bitrate = get_double("audio-bitrate").map(|b| b as i64);
+
+    let bitrate = match (video_bitrate, audio_bitrate) {
+        (Some(v), Some(a)) => Some(v + a),
+        (Some(v), None) => Some(v),
+        (None, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+
+    let codecs: Option<String> = match (video_codec, audio_codec) {
+        (Some(v), Some(a)) if v != a => Some(format!("{}, {}", v, a)),
+        (Some(v), _) => Some(v),
+        (_, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+
+    db.meta_set_ffprobe(file_id, duration_ms, bitrate, codecs.as_deref());
+    Ok(())
+}
+
 // ── AI Basic layer ──────────────────────────────────────────────────────
 
 fn process_ai_basic(db: &Db, file_id: i64, path: &str) -> Result<(), String> {
@@ -408,6 +574,8 @@ mod tests {
     fn layer_names() {
         assert_eq!(Layer::Hash.name(), "hash");
         assert_eq!(Layer::Exif.name(), "exif");
+        assert_eq!(Layer::Ffprobe.name(), "ffprobe");
+        assert_eq!(Layer::AiBasic.name(), "ai_basic");
     }
 
     #[test]

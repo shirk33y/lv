@@ -5050,7 +5050,14 @@ mod tests {
         std::fs::write(&new_path, b"new img").unwrap();
         let canonical = std::fs::canonicalize(&new_path).unwrap();
         let canonical_str = clean_path(&canonical.to_string_lossy());
-        db.file_insert(&canonical_str, &dir_str, "new_photo.png", Some(7), None);
+        db.file_insert(
+            &canonical_str,
+            &dir_str,
+            "new_photo.png",
+            Some(7),
+            None,
+            None,
+        );
 
         // Simulate refresh (watcher event)
         simulate_refresh(&db, &mut files, &mut cursor, &dir_str);
@@ -5378,6 +5385,7 @@ mod tests {
                 &dir_str,
                 &format!("slide{:02}.jpg", i),
                 Some(3),
+                None,
                 None,
             );
         }

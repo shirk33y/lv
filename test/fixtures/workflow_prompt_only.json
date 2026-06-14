@@ -1,0 +1,12 @@
+{
+  "6": {
+    "inputs": { "text": "a cute cat", "clip": ["18", 0] },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Positive Prompt)" }
+  },
+  "7": {
+    "inputs": { "text": "ugly", "clip": ["18", 0] },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Negative Prompt)" }
+  }
+}
