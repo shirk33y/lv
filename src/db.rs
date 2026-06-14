@@ -11,6 +11,49 @@ use std::sync::{Arc, Mutex};
 pub static TAG_MIGRATION_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static TAG_MIGRATION_DONE: AtomicU64 = AtomicU64::new(0);
 
+// ── Directory property column definition ──────────────────────────────
+
+/// Allowlist of settable directory property columns. Prevents SQL injection
+/// in dynamic column-name queries and validates value types.
+enum ColType {
+    Bool,
+    Int,
+    Text,
+    WatchMode,
+}
+
+struct PropDef {
+    col: &'static str,
+    col_type: ColType,
+}
+
+const PROPS: &[PropDef] = &[
+    PropDef {
+        col: "watch_mode",
+        col_type: ColType::WatchMode,
+    },
+    PropDef {
+        col: "recursive",
+        col_type: ColType::Bool,
+    },
+    PropDef {
+        col: "poll_interval",
+        col_type: ColType::Int,
+    },
+    PropDef {
+        col: "max_depth",
+        col_type: ColType::Int,
+    },
+    PropDef {
+        col: "include_ext",
+        col_type: ColType::Text,
+    },
+    PropDef {
+        col: "label",
+        col_type: ColType::Text,
+    },
+];
+
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
 
@@ -121,6 +164,11 @@ impl Db {
                     tracked       INTEGER NOT NULL DEFAULT 1,
                     watched       INTEGER NOT NULL DEFAULT 0,
                     recursive     INTEGER NOT NULL DEFAULT 1,
+                    watch_mode    TEXT NOT NULL DEFAULT 'auto',
+                    poll_interval INTEGER,
+                    max_depth     INTEGER,
+                    include_ext   TEXT,
+                    label         TEXT,
                     created_at    TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
@@ -151,6 +199,47 @@ impl Db {
                  DROP TABLE watched;",
             )
             .ok();
+        }
+        // Add property columns to directories if missing (existing DBs created before Phase 2)
+        let add_cols = [
+            ("watch_mode", "TEXT NOT NULL DEFAULT 'auto'"),
+            ("poll_interval", "INTEGER"),
+            ("max_depth", "INTEGER"),
+            ("include_ext", "TEXT"),
+            ("label", "TEXT"),
+        ];
+        for (col, col_type) in &add_cols {
+            let has: bool = db
+                .prepare(&format!("SELECT {} FROM directories LIMIT 0", col))
+                .is_ok();
+            if !has {
+                db.execute_batch(&format!(
+                    "ALTER TABLE directories ADD COLUMN {} {};",
+                    col, col_type
+                ))
+                .ok();
+            }
+        }
+        // Migrate watched=1 → watch_mode='notify'
+        let to_notify: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM directories WHERE watched = 1 AND watch_mode = 'auto'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if to_notify > 0 {
+            eprintln!("db: migrating watched=1 → watch_mode='notify'");
+            db.execute("UPDATE directories SET watch_mode = 'notify' WHERE watched = 1 AND watch_mode = 'auto'", [])
+                .ok();
+        }
+        // Drop dir_properties KV table if present (superseded by columns)
+        if db
+            .prepare("SELECT dir_id FROM dir_properties LIMIT 0")
+            .is_ok()
+        {
+            eprintln!("db: dropping dir_properties table");
+            db.execute_batch("DROP TABLE IF EXISTS dir_properties").ok();
         }
     }
 
@@ -192,8 +281,7 @@ impl Db {
 
         // Back up DB
         let backup_path = format!("{}.backup.{}", db_path, chrono_now_compact());
-        std::fs::copy(&db_path, &backup_path)
-            .map_err(|e| format!("backup failed: {e}"))?;
+        std::fs::copy(&db_path, &backup_path).map_err(|e| format!("backup failed: {e}"))?;
         eprintln!("tag migration backup: {}", backup_path);
 
         // Migrate in batches
@@ -212,9 +300,7 @@ impl Db {
                     )
                     .map_err(|e| format!("prepare: {e}"))?;
                 let x = stmt
-                    .query_map([batch_size, offset], |r| {
-                        Ok((r.get(0)?, r.get(1)?))
-                    })
+                    .query_map([batch_size, offset], |r| Ok((r.get(0)?, r.get(1)?)))
                     .map_err(|e| format!("query: {e}"))?
                     .filter_map(|r| r.ok())
                     .collect();
@@ -238,8 +324,11 @@ impl Db {
                     if tag.is_empty() {
                         continue;
                     }
-                    value_placeholders
-                        .push(format!("(?{}, ?{})", params.len() + 1, params.len() + 2));
+                    value_placeholders.push(format!(
+                        "(?{}, ?{})",
+                        params.len() + 1,
+                        params.len() + 2
+                    ));
                     params.push(Box::new(*meta_id));
                     params.push(Box::new(tag.clone()));
                     inserted += 1;
@@ -253,10 +342,12 @@ impl Db {
                 );
                 let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                     params.iter().map(|p| p.as_ref()).collect();
-                db.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
+                db.execute_batch("BEGIN")
+                    .map_err(|e| format!("begin: {e}"))?;
                 db.execute(&sql, param_refs.as_slice())
                     .map_err(|e| format!("insert batch: {e}"))?;
-                db.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+                db.execute_batch("COMMIT")
+                    .map_err(|e| format!("commit: {e}"))?;
             }
 
             total_inserted += inserted;
@@ -266,7 +357,10 @@ impl Db {
 
         TAG_MIGRATION_TOTAL.store(0, Ordering::Relaxed);
         TAG_MIGRATION_DONE.store(0, Ordering::Relaxed);
-        eprintln!("tag migration: {} tags from {} rows", total_inserted, offset);
+        eprintln!(
+            "tag migration: {} tags from {} rows",
+            total_inserted, offset
+        );
         Ok((offset as u64, total_inserted))
     }
 
@@ -290,9 +384,11 @@ impl Db {
         };
         // Also update the JSON column for backward compat during migration
         let tags_str: String = db
-            .query_row("SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1", [meta_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1",
+                [meta_id],
+                |r| r.get(0),
+            )
             .unwrap_or_else(|_| "[]".into());
         let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         if !tags.contains(&tag.to_string()) {
@@ -327,9 +423,11 @@ impl Db {
         };
         // Also update JSON column for backward compat
         let tags_str: String = db
-            .query_row("SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1", [meta_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1",
+                [meta_id],
+                |r| r.get(0),
+            )
             .unwrap_or_else(|_| "[]".into());
         let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         let was_in = tags.contains(&tag.to_string());
@@ -357,8 +455,8 @@ impl Db {
     pub fn dir_track(&self, path: &str, recursive: bool) {
         self.conn()
             .execute(
-                "INSERT INTO directories (path, tracked, watched, recursive)
-                 VALUES (?1, 1, 0, ?2)
+                "INSERT INTO directories (path, tracked, watch_mode, recursive)
+                 VALUES (?1, 1, 'auto', ?2)
                  ON CONFLICT(path) DO UPDATE SET tracked = 1, recursive = ?2",
                 rusqlite::params![path, recursive as i32],
             )
@@ -398,7 +496,7 @@ impl Db {
     pub fn dir_untrack(&self, path: &str) {
         self.conn()
             .execute(
-                "UPDATE directories SET tracked = 0, watched = 0 WHERE path = ?1",
+                "UPDATE directories SET tracked = 0, watch_mode = 'disabled' WHERE path = ?1",
                 [path],
             )
             .ok();
@@ -407,7 +505,7 @@ impl Db {
     pub fn dir_watch(&self, path: &str) {
         self.conn()
             .execute(
-                "UPDATE directories SET watched = 1 WHERE path = ?1 AND tracked = 1",
+                "UPDATE directories SET watch_mode = 'notify' WHERE path = ?1 AND tracked = 1",
                 [path],
             )
             .ok();
@@ -417,12 +515,83 @@ impl Db {
     pub fn watched_dirs(&self) -> Vec<(String, bool)> {
         let db = self.conn();
         let mut stmt = db
-            .prepare("SELECT path, recursive FROM directories WHERE tracked = 1 AND watched = 1 ORDER BY path")
+            .prepare(
+                "SELECT path, recursive FROM directories
+                 WHERE tracked = 1 AND watch_mode IN ('notify', 'poll')
+                 ORDER BY path",
+            )
             .unwrap();
         stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i32>(1)? != 0)))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect()
+    }
+
+    /// Look up directory id by exact path.
+    pub fn dir_id_by_path(&self, path: &str) -> Option<i64> {
+        self.conn()
+            .query_row("SELECT id FROM directories WHERE path = ?1", [path], |r| {
+                r.get(0)
+            })
+            .ok()
+    }
+
+    // ── Directory property column access (typed, validated) ──────────────
+
+    /// Get a directory property value (all returned as strings for generic display).
+    pub fn dir_get_prop(&self, dir_id: i64, key: &str) -> Option<String> {
+        let def = PROPS.iter().find(|p| p.col == key)?;
+        let sql = format!("SELECT {} FROM directories WHERE id = ?1", def.col);
+        match def.col_type {
+            ColType::Bool | ColType::Int => self
+                .conn()
+                .query_row(&sql, [dir_id], |r| r.get::<_, i64>(0))
+                .ok()
+                .map(|v| v.to_string()),
+            ColType::Text | ColType::WatchMode => {
+                self.conn().query_row(&sql, [dir_id], |r| r.get(0)).ok()
+            }
+        }
+    }
+
+    /// Set a directory property value. Returns true if validated and written.
+    pub fn dir_set_prop(&self, dir_id: i64, key: &str, value: &str) -> bool {
+        let def = match PROPS.iter().find(|p| p.col == key) {
+            Some(d) => d,
+            None => return false,
+        };
+        let sql = format!("UPDATE directories SET {} = ?1 WHERE id = ?2", def.col);
+        match def.col_type {
+            ColType::WatchMode => match value {
+                "auto" | "notify" | "poll" | "disabled" => self
+                    .conn()
+                    .execute(&sql, rusqlite::params![value, dir_id])
+                    .is_ok(),
+                _ => false,
+            },
+            ColType::Bool => match value {
+                "true" | "1" => self
+                    .conn()
+                    .execute(&sql, rusqlite::params![1i64, dir_id])
+                    .is_ok(),
+                "false" | "0" => self
+                    .conn()
+                    .execute(&sql, rusqlite::params![0i64, dir_id])
+                    .is_ok(),
+                _ => false,
+            },
+            ColType::Int => match value.parse::<i64>() {
+                Ok(n) => self
+                    .conn()
+                    .execute(&sql, rusqlite::params![n, dir_id])
+                    .is_ok(),
+                Err(_) => false,
+            },
+            ColType::Text => self
+                .conn()
+                .execute(&sql, rusqlite::params![value, dir_id])
+                .is_ok(),
+        }
     }
 
     /// Remove a single file from DB by exact path (cascades to history/job_fails).
@@ -476,7 +645,10 @@ impl Db {
 
     pub fn dir_unwatch(&self, path: &str) {
         self.conn()
-            .execute("UPDATE directories SET watched = 0 WHERE path = ?1", [path])
+            .execute(
+                "UPDATE directories SET watch_mode = 'disabled' WHERE path = ?1 AND tracked = 1",
+                [path],
+            )
             .ok();
     }
 
@@ -484,18 +656,26 @@ impl Db {
         let db = self.conn();
         let mut stmt = db
             .prepare(
-                "SELECT path, recursive, watched FROM directories WHERE tracked = 1 ORDER BY path",
+                "SELECT path, recursive, watch_mode FROM directories
+                 WHERE tracked = 1 ORDER BY path",
             )
             .unwrap();
         stmt.query_map([], |r| {
             Ok((
-                r.get(0)?,
+                r.get::<_, String>(0)?,
                 r.get::<_, i32>(1)? != 0,
-                r.get::<_, i32>(2)? != 0,
+                r.get::<_, String>(2)?,
             ))
         })
         .unwrap()
         .filter_map(|r| r.ok())
+        .map(|(path, recursive, watch_mode)| {
+            (
+                path,
+                recursive,
+                watch_mode == "notify" || watch_mode == "poll",
+            )
+        })
         .collect()
     }
 
@@ -503,7 +683,11 @@ impl Db {
     pub fn watched_list(&self) -> Vec<String> {
         let db = self.conn();
         let mut stmt = db
-            .prepare("SELECT path FROM directories WHERE tracked = 1 AND watched = 1 ORDER BY path")
+            .prepare(
+                "SELECT path FROM directories
+                 WHERE tracked = 1 AND watch_mode IN ('notify', 'poll')
+                 ORDER BY path",
+            )
             .unwrap();
         stmt.query_map([], |r| r.get(0))
             .unwrap()
@@ -552,7 +736,7 @@ impl Db {
                 )
                 .map(|t| t == 0)
                 .unwrap_or(false),
-             1 => self
+            1 => self
                 .conn()
                 .query_row(
                     "SELECT temporary FROM files WHERE id = ?1",
@@ -885,7 +1069,19 @@ impl Db {
 
     pub fn get_file_metadata(&self, file_id: i64) -> Option<FileMeta> {
         let db = self.conn();
-        let (filename, size, modified_at, meta_id, width, height, format, duration_ms, bitrate, codecs, pnginfo) = db
+        let (
+            filename,
+            size,
+            modified_at,
+            meta_id,
+            width,
+            height,
+            format,
+            duration_ms,
+            bitrate,
+            codecs,
+            pnginfo,
+        ) = db
             .query_row(
                 "SELECT f.filename, f.size, f.modified_at,
                         f.meta_id,
@@ -1318,7 +1514,7 @@ mod tests {
                  PRIMARY KEY (file_id, layer)
              );
               CREATE TABLE meta_tags (
-                  meta_id INTEGER NOT NULL REFERENCES meta(id),
+                  meta_id INTEGER NOT NULL REFERENCES meta(id) ON DELETE CASCADE,
                   tag TEXT NOT NULL,
                   created_at TEXT DEFAULT (datetime('now')),
                   PRIMARY KEY (meta_id, tag)
@@ -1328,7 +1524,12 @@ mod tests {
                  path TEXT NOT NULL UNIQUE,
                  tracked INTEGER NOT NULL DEFAULT 1,
                  watched INTEGER NOT NULL DEFAULT 0,
-                 recursive INTEGER NOT NULL DEFAULT 1
+                 recursive INTEGER NOT NULL DEFAULT 1,
+                 watch_mode TEXT NOT NULL DEFAULT 'auto',
+                 poll_interval INTEGER,
+                 max_depth INTEGER,
+                 include_ext TEXT,
+                 label TEXT
              );",
         )
         .unwrap();
@@ -3199,7 +3400,9 @@ mod tests {
         assert!(in_junction, "tag should be in meta_tags");
         let tags_json: String = db
             .conn()
-            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| r.get(0))
+            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(tags_json.contains("c2"), "tag should be in JSON column");
     }
@@ -3246,7 +3449,9 @@ mod tests {
             .unwrap();
         let tags_json: String = db
             .conn()
-            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| r.get(0))
+            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(tags_json, "[]", "tag should be removed from JSON column");
     }
@@ -3438,9 +3643,11 @@ mod tests {
         // meta_tags should still have the tag
         let count: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM meta_tags WHERE meta_id = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM meta_tags WHERE meta_id = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }

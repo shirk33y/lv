@@ -23,17 +23,17 @@ ci:
 	bash scripts/ci.sh
 
 configure:
-	bash scripts/configure-native.sh
+	bash scripts/configure.sh
 
 check:
-	bash scripts/native-env.sh cargo check
+	cargo check
 
 test:
-	bash scripts/native-env.sh cargo test
+	cargo test
 
 # ── Dev ───────────────────────────────────────────────────────────────
 dev:
-	bash scripts/native-env.sh cargo run -- $(ARGS)
+	cargo run -- $(ARGS)
 
 dev-linux:
 	bash scripts/dev-linux.sh $(ARGS)

@@ -7,7 +7,7 @@
 - [x] Keybinding: `y`=like, `shift+y`=unlike, `2`-`9`=add c2-c9, `shift+2-9`=remove c2-c9
 - [x] Full-width bottom seekbar (idle 3px, hover 24px, opacity art)
 - [x] Window resize handles (6px edges+corners) via hit-test
-- [x] `make dev`/`check`/`test` targets, `scripts/native-env.sh`, `scripts/configure-native.sh`
+- [x] `make dev`/`check`/`test` targets, `scripts/configure.sh`, `.cargo/config.toml` generation
 - [x] `RESIZING_WINDOW.md`: Wayland cursor-shape-v1 limitation documented
 
 ## Phase 2: Property system + new CLI

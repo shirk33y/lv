@@ -6,24 +6,36 @@ use crate::clean_path;
 use crate::db::Db;
 use crate::scanner;
 
+fn resolve_path(path: &Path) -> Option<String> {
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Some(clean_path(&abs.to_string_lossy()))
+}
+
 pub fn track(db: &Db, path: &Path) {
-    let abs = match path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("lv track: {}: {}", path.display(), e);
+    let abs_str = match resolve_path(path) {
+        Some(s) => s,
+        None => {
+            eprintln!("lv track: {}: could not resolve", path.display());
             return;
         }
     };
-    let abs_str = clean_path(&abs.to_string_lossy());
     db.dir_track(&abs_str, true);
+    println!("Tracking {}", abs_str);
     println!("Scanning {}...", abs_str);
-    let count = scanner::discover(db, &abs);
+    let count = scanner::discover(db, Path::new(&abs_str));
     println!("Tracked {} ({} media files)", abs_str, count);
 }
 
 pub fn untrack(db: &Db, path: &Path) {
-    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let abs_str = clean_path(&abs.to_string_lossy());
+    let abs_str = resolve_path(path);
+    let abs_str = match abs_str {
+        Some(s) => s,
+        None => {
+            let s = clean_path(&path.to_string_lossy());
+            eprintln!("lv remove: could not resolve path {}", s);
+            return;
+        }
+    };
     db.dir_untrack(&abs_str);
     println!("Untracked {}", abs_str);
 }
@@ -122,5 +134,56 @@ pub fn worker(db: &Db) {
         }
 
         eprint!("\r  {} ok, {} failed, {} active...", done, failed, active);
+    }
+}
+
+pub fn get_props(db: &Db, path: &Path, keys: &[String]) {
+    let abs_str = clean_path(
+        &path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy(),
+    );
+    let dir_id = match db.dir_id_by_path(&abs_str) {
+        Some(id) => id,
+        None => {
+            println!("Directory not tracked: {}", abs_str);
+            return;
+        }
+    };
+    println!("Properties for {}:", abs_str);
+    for key in keys {
+        let val = db.dir_get_prop(dir_id, key);
+        match val {
+            Some(v) => println!("  {} = {}", key, v),
+            None => println!("  {} = (not set)", key),
+        }
+    }
+}
+
+pub fn set_props(db: &Db, path: &Path, props: &[String]) {
+    let abs_str = clean_path(
+        &path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy(),
+    );
+    let dir_id = match db.dir_id_by_path(&abs_str) {
+        Some(id) => id,
+        None => {
+            println!("Directory not tracked: {}", abs_str);
+            return;
+        }
+    };
+    for prop in props {
+        let (key, val) = match prop.split_once('=') {
+            Some((k, v)) => (k.trim(), v.trim()),
+            None => {
+                println!("Invalid property format: {} (expected KEY=VALUE)", prop);
+                return;
+            }
+        };
+        db.dir_set_prop(dir_id, key, val);
+        println!("  {} → {}", key, val);
     }
 }

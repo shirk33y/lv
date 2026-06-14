@@ -697,19 +697,37 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Track a directory (recursive scan + metadata)
-    Track { path: PathBuf },
+    #[command(alias = "track")]
+    Add { path: PathBuf },
     /// Stop tracking a directory
-    Untrack { path: PathBuf },
+    #[command(alias = "untrack")]
+    Remove { path: PathBuf },
     /// Enable live filesystem monitoring on a tracked directory
+    #[command(alias = "watch")]
     Watch { path: PathBuf },
     /// Disable live filesystem monitoring
+    #[command(alias = "unwatch")]
     Unwatch { path: PathBuf },
     /// Re-scan tracked directories (or a specific path)
-    Scan { path: Option<PathBuf> },
+    #[command(alias = "scan")]
+    Sync { path: Option<PathBuf> },
     /// Show library statistics
     Status,
     /// Run headless job worker until done
+    #[command(alias = "worker")]
     Worker,
+    /// Get directory property(ies)
+    Get {
+        path: PathBuf,
+        #[arg(default_values_t = vec!["watch_mode".to_string(), "recursive".to_string()])]
+        keys: Vec<String>,
+    },
+    /// Set directory properties
+    Set {
+        path: PathBuf,
+        #[arg(required = true, num_args = 1.., value_name = "KEY=VAL")]
+        props: Vec<String>,
+    },
 }
 
 fn main() {
@@ -728,13 +746,15 @@ fn main() {
     if let Some(cmd) = args.command {
         lv_db.ensure_jobs_schema();
         match cmd {
-            Commands::Track { path } => cli::track(&lv_db, &path),
-            Commands::Untrack { path } => cli::untrack(&lv_db, &path),
+            Commands::Add { path } => cli::track(&lv_db, &path),
+            Commands::Remove { path } => cli::untrack(&lv_db, &path),
             Commands::Watch { path } => cli::watch(&lv_db, &path),
             Commands::Unwatch { path } => cli::unwatch(&lv_db, &path),
-            Commands::Scan { path } => cli::scan(&lv_db, path.as_deref()),
+            Commands::Sync { path } => cli::scan(&lv_db, path.as_deref()),
             Commands::Status => cli::status(&lv_db),
             Commands::Worker => cli::worker(&lv_db),
+            Commands::Get { path, keys } => cli::get_props(&lv_db, &path, &keys),
+            Commands::Set { path, props } => cli::set_props(&lv_db, &path, &props),
         }
         return;
     }
@@ -1247,7 +1267,13 @@ fn main() {
                             } else {
                                 lv_db.toggle_collection(file.id, c)
                             };
-                            let symbol = if shift { "−" } else if now_in { "+" } else { "-" };
+                            let symbol = if shift {
+                                "−"
+                            } else if now_in {
+                                "+"
+                            } else {
+                                "-"
+                            };
                             eprintln!("{} {} c{}", symbol, file.filename, c);
                         }
                         continue;

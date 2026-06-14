@@ -6,8 +6,8 @@
 - Run local checks:
   - `make check`
   - `make test`
-  - `bash scripts/native-env.sh cargo clippy -- -D warnings`
-  - `bash scripts/native-env.sh cargo fmt --check`
+  - `cargo clippy -- -D warnings`
+  - `cargo fmt --check`
 - Run local Flatpak release smoke for host arch:
   - `make flatpak-release`
 - Do not use QEMU for release Flatpak builds. `x86_64` Flatpak builds require native x86_64 Linux. `aarch64` Flatpak builds require native ARM64 Linux or GitHub `ubuntu-24.04-arm`.

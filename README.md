@@ -16,7 +16,7 @@ Fast keyboard-driven media viewer. Single Rust binary, SQLite library database, 
 - **Background workers** — SHA-512 hashing, EXIF extraction, AI prompt & settings parsing
 - **File watcher** — live directory monitoring with notify
 - **Drag & drop** — drop files or folders to browse instantly
-- **CLI** — `track`, `untrack`, `watch`, `unwatch`, `scan`, `worker`
+- **CLI** — `add`, `remove`, `sync`, `get`, `set`, `watch`, `unwatch`, `worker`
 
 ## Architecture
 
@@ -61,29 +61,36 @@ rustup default stable
 rustup target add x86_64-unknown-linux-gnu
 ```
 
-For release builds, prefer Make targets over ad-hoc Cargo commands. `make configure` writes `config.local.mk` once for native C library prefixes; `make check`, `make test`, and `make flatpak-release` reuse that config.
-
-Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
-
-On Bazzite, run one-time configure, then use `make` targets:
+One-time setup after clone:
 
 ```sh
+# Install native deps (Bazzite/Fedora)
 brew install sdl2 mpv xorgproto libx11 libxext libxrandr libxfixes
 
+# Detect brew prefix and write build configs
 make configure
-make check
-make test
+```
+
+`make configure` writes `.cargo/config.toml` with `PKG_CONFIG_PATH` and `LIBRARY_PATH` pointing at brew-installed libs. This lets `cargo check/build/test/run` work directly (no wrapper needed) and also feeds rust-analyzer.
+
+```sh
+make check      # cargo check
+make test       # cargo test
+make dev        # cargo run (debug, with ARGS support)
+make configure  # re-detect when brew prefix changes
+```
+
+```sh
+cargo run --release          # GUI
+cargo run -- add ~/Photos    # add directory
+cargo run -- sync            # rescan all tracked dirs
+cargo run -- worker          # headless hash/exif/ai worker
+scripts/ci.sh                # test + clippy + fmt
 ```
 
 Use `LV_NATIVE_PREFIXES=/custom/prefix1:/custom/prefix2 make configure` if the libraries live outside Homebrew.
 
-```sh
-cargo run --release           # GUI
-cargo run -- track ~/Photos   # add directory
-cargo run -- scan             # rescan all tracked dirs
-cargo run -- worker           # headless hash/exif/ai worker
-scripts/ci.sh                 # test + clippy + fmt
-```
+Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
 
 ## Scripts
 

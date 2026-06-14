@@ -1,6 +1,7 @@
 # Rust
 /target/
 /config.local.mk
+/.cargo/config.toml
 /target-linux-intel/
 /target-linux-arm/
 /target-windows-intel/
