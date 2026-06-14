@@ -32,10 +32,23 @@ jobs:
       CONTAINER_RUNTIME: docker
       FLATPAK_ARCH: ${{ matrix.arch }}
       FLATPAK_PLATFORM: ${{ matrix.platform }}
+      FLATPAK_FORCE_CLEAN: "0"
+      FLATPAK_STATE_DIR: build/flatpak-state
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           lfs: true
+
+      - name: Cache Flatpak state
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/flatpak-state
+            build/flatpak-home
+            ~/.cache/flatpak
+          key: flatpak-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'extra/flatpak/io.github.shirk33y.lv.json', 'extra/flatpak/flatpak-cargo-generator.py', 'scripts/build-flatpak.sh') }}
+          restore-keys: |
+            flatpak-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Get version
         id: version
@@ -55,7 +68,7 @@ jobs:
           sha256sum lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak > lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
 
       - name: Upload Flatpak artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: flatpak-${{ matrix.arch }}
           path: |
@@ -85,7 +98,7 @@ jobs:
       FLATPAK_ARCH: ${{ matrix.arch }}
       FLATPAK_PLATFORM: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           lfs: true
 
@@ -97,10 +110,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download Flatpak artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: flatpak-${{ matrix.arch }}
           path: build
+
+      - name: Install smoke deps
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Verify checksum
         run: |
@@ -115,7 +131,7 @@ jobs:
 
       - name: Upload smoke logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: flatpak-smoke-logs-${{ matrix.arch }}
           path: build/flatpak-smoke-logs/${{ matrix.arch }}
@@ -131,7 +147,7 @@ jobs:
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Get version
         id: version
@@ -141,7 +157,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download Flatpak artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: flatpak-*
           path: artifacts

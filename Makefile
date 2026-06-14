@@ -13,10 +13,14 @@ FLATPAK_PLATFORM_x86_64 := linux/amd64
 FLATPAK_PLATFORM_aarch64 := linux/arm64
 FLATPAK_PLATFORM ?= $(FLATPAK_PLATFORM_$(FLATPAK_ARCH))
 FLATPAK_BUNDLE ?= build/lv-$(FLATPAK_ARCH).flatpak
+FLATPAK_STATE_DIR ?= build/flatpak-state
+FLATPAK_FORCE_CLEAN ?= 1
 LV_SMOKE_LOG_DIR ?= build/flatpak-smoke-logs/$(FLATPAK_ARCH)
 CONTAINER_RUNTIME ?= podman
 export CONTAINER_RUNTIME
 export FLATPAK_BUNDLE
+export FLATPAK_STATE_DIR
+export FLATPAK_FORCE_CLEAN
 
 # ── Checks ────────────────────────────────────────────────────────────
 ci:

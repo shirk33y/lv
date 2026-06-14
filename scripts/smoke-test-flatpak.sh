@@ -169,9 +169,9 @@ if [[ ! -f "$TEST_VIDEO" ]]; then
     exit 1
 fi
 
-for cmd in xvfb-run xdotool import compare; do
+for cmd in xvfb-run xdotool ffmpeg compare; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "❌ $cmd not found; smoke image must include xvfb, xdotool, and imagemagick"
+        echo "❌ $cmd not found; smoke image must include xvfb, xdotool, ffmpeg, and ImageMagick compare"
         exit 1
     fi
 done
@@ -214,12 +214,22 @@ if [ -z "$WID" ]; then
     exit 1
 fi
 
+capture_frame() {
+    local out="$1"
+    ffmpeg -hide_banner -loglevel error -y \
+        -f x11grab \
+        -video_size 1280x720 \
+        -i "${DISPLAY:-:99}" \
+        -frames:v 1 \
+        "$out"
+}
+
 sleep 1.0
-import -window "$WID" "$TMPDIR_GUI/frame1.png"
+capture_frame "$TMPDIR_GUI/frame1.png"
 sleep 1.0
-import -window "$WID" "$TMPDIR_GUI/frame2.png"
+capture_frame "$TMPDIR_GUI/frame2.png"
 sleep 1.0
-import -window "$WID" "$TMPDIR_GUI/frame3.png"
+capture_frame "$TMPDIR_GUI/frame3.png"
 
 xdotool key --window "$WID" q || true
 for _ in $(seq 1 40); do

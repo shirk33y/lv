@@ -8,7 +8,7 @@
 #   3. container run --privileged — runs flatpak-builder, produces bundle
 #
 # Output: ${FLATPAK_BUNDLE:-build/lv.flatpak} (gitignored)
-# Cache: build/flatpak-home/ and ~/.cache/flatpak/ (both user-owned)
+# Cache: build/flatpak-home/, build/flatpak-state/, and ~/.cache/flatpak/
 
 set -euo pipefail
 
@@ -37,6 +37,8 @@ BUILD_DIR="${BUILD_DIR:-build}"
 FLATPAK_BUNDLE="${FLATPAK_BUNDLE:-$BUILD_DIR/lv.flatpak}"
 FLATPAK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/flatpak"
 FLATPAK_HOME="$BUILD_DIR/flatpak-home"
+FLATPAK_STATE_DIR="${FLATPAK_STATE_DIR:-$BUILD_DIR/flatpak-state}"
+FLATPAK_FORCE_CLEAN="${FLATPAK_FORCE_CLEAN:-1}"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 CONTAINER_PLATFORM_ARGS=()
@@ -73,7 +75,7 @@ CONTAINER_ENTRYPOINT=(
     sh -lc 'mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" && exec "$@"' sh
 )
 
-mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE" "$FLATPAK_HOME"
+mkdir -p "$TMPDIR" "$BUILD_DIR" "$FLATPAK_CACHE" "$FLATPAK_HOME" "$FLATPAK_STATE_DIR"
 
 if ! command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1; then
     echo "Missing container runtime: $CONTAINER_RUNTIME" >&2
@@ -157,6 +159,13 @@ TMPDIR="$TMPDIR" "$CONTAINER_RUNTIME" run --rm \
     "${CONTAINER_ENTRYPOINT[@]}" \
     sh -lc 'ostree --repo="$1" init --mode=archive-z2 2>/dev/null || true; ostree --repo="$1" config set core.min-free-space-percent 0' sh /src/"$BUILD_DIR"/repo
 
+FORCE_CLEAN_ARGS=()
+if [ "$FLATPAK_FORCE_CLEAN" != "0" ]; then
+    FORCE_CLEAN_ARGS+=(--force-clean)
+else
+    rm -rf "$BUILD_DIR/flatpak-build"
+fi
+
 TMPDIR="$TMPDIR" "$CONTAINER_RUNTIME" run --rm \
     --privileged \
     "${CONTAINER_PLATFORM_ARGS[@]}" \
@@ -170,7 +179,8 @@ TMPDIR="$TMPDIR" "$CONTAINER_RUNTIME" run --rm \
     "${CONTAINER_ENTRYPOINT[@]}" \
     flatpak-builder \
       --disable-rofiles-fuse \
-      --force-clean \
+      "${FORCE_CLEAN_ARGS[@]}" \
+      --state-dir=/src/"$FLATPAK_STATE_DIR" \
       --repo=/src/"$BUILD_DIR"/repo \
       /src/"$BUILD_DIR"/flatpak-build \
       "$BUILD_DIR/$APP_ID.json"
