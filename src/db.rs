@@ -3771,13 +3771,38 @@ mod tests {
     }
 
     #[test]
-    fn data_version_returns_without_error() {
-        let db = Db::open_memory();
+    fn data_version_detects_cross_connection_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+        let db_a = Db::open_path(&db_path);
+        db_a.ensure_schema();
+        db_a.ensure_commands_schema();
+
+        // Open a second connection to the same WAL database
+        let db_b = Db::open_path(&db_path);
+
+        // Check that db_b sees the DDL from db_a
+        let v_before = db_b.data_version();
+        db_a.write_command("scan", None);
+        // Give WAL time to sync
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let v_after = db_b.data_version();
+        assert!(
+            v_after > v_before,
+            "data_version should increase after another connection writes (WAL mode)"
+        );
+    }
+
+    #[test]
+    fn data_version_stable_without_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+        let db = Db::open_path(&db_path);
         db.ensure_schema();
-        // PRAGMA data_version should return a non-negative integer
-        // (incremented by DDL like CREATE TABLE)
-        let v = db.data_version();
-        assert!(v >= 0);
+        let v1 = db.data_version();
+        // No writes between calls
+        let v2 = db.data_version();
+        assert_eq!(v1, v2, "data_version should be stable without writes");
     }
 
     #[test]

@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn watch_sync_difference_removed_dirs() {
         use std::collections::HashSet;
-        let mut current: HashSet<String> = ["/a".into(), "/b".into(), "/c".into()].into();
+        let current: HashSet<String> = ["/a".into(), "/b".into(), "/c".into()].into();
         let new: HashSet<String> = ["/a".into(), "/b".into()].into();
         let to_remove: Vec<&String> = current.difference(&new).collect();
         assert_eq!(to_remove.len(), 1);
