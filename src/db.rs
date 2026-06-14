@@ -651,6 +651,7 @@ impl Db {
             .ok()
     }
 
+    #[allow(dead_code)]
     pub fn latest_fav(&self) -> Option<FileEntry> {
         self.conn()
             .query_row(
@@ -678,7 +679,10 @@ impl Db {
 
         let meta_id = match meta_id {
             Some(id) => id,
-            None => return false,
+            None => match ensure_file_meta(&db, file_id) {
+                Some(id) => id,
+                None => return false,
+            },
         };
 
         let tags_str: String = db
@@ -820,6 +824,12 @@ impl Db {
 
     pub fn file_set_hash_meta(&self, file_id: i64, hash: &str) {
         let db = self.conn();
+        let old_meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
         db.execute(
             "INSERT OR IGNORE INTO meta (hash_sha512) VALUES (?1)",
             [hash],
@@ -830,6 +840,11 @@ impl Db {
                 r.get::<_, i64>(0)
             })
         {
+            if let Some(old_id) = old_meta_id {
+                if old_id != meta_id {
+                    merge_meta_tags(&db, old_id, meta_id);
+                }
+            }
             db.execute(
                 "UPDATE files SET hash_sha512 = ?1, meta_id = ?2 WHERE id = ?3",
                 rusqlite::params![hash, meta_id, file_id],
@@ -953,6 +968,60 @@ fn collection_tag(c: u8) -> String {
         n @ 2..=8 => format!("c{n}"),
         _ => String::new(),
     }
+}
+
+fn ensure_file_meta(db: &Connection, file_id: i64) -> Option<i64> {
+    let path: String = db
+        .query_row("SELECT path FROM files WHERE id = ?1", [file_id], |r| {
+            r.get(0)
+        })
+        .ok()?;
+    let placeholder_hash = format!("lv:file:{file_id}:{path}");
+    db.execute(
+        "INSERT OR IGNORE INTO meta (hash_sha512, tags) VALUES (?1, '[]')",
+        [&placeholder_hash],
+    )
+    .ok()?;
+    let meta_id = db
+        .query_row(
+            "SELECT id FROM meta WHERE hash_sha512 = ?1",
+            [&placeholder_hash],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok()?;
+    db.execute(
+        "UPDATE files SET meta_id = ?1 WHERE id = ?2 AND meta_id IS NULL",
+        rusqlite::params![meta_id, file_id],
+    )
+    .ok()?;
+    db.query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
+fn merge_meta_tags(db: &Connection, from_meta_id: i64, to_meta_id: i64) {
+    let read_tags = |id: i64| -> Vec<String> {
+        db.query_row("SELECT tags FROM meta WHERE id = ?1", [id], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+    };
+    let mut tags = read_tags(to_meta_id);
+    for tag in read_tags(from_meta_id) {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+    db.execute(
+        "UPDATE meta SET tags = ?1 WHERE id = ?2",
+        rusqlite::params![json, to_meta_id],
+    )
+    .ok();
 }
 
 fn default_db_path() -> PathBuf {
@@ -2465,12 +2534,30 @@ mod tests {
     }
 
     #[test]
-    fn toggle_like_without_meta_returns_false() {
+    fn toggle_like_without_meta_creates_meta() {
         let db = test_db();
-        // Use file_insert so file has no meta_id (insert_file helper auto-creates meta)
         db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None);
         let files = db.files_by_dir("/a");
-        assert!(!db.toggle_like(files[0].id));
+        assert!(db.toggle_like(files[0].id));
+
+        let files = db.files_by_dir("/a");
+        assert!(files[0].liked);
+        assert!(files[0].meta_id.is_some());
+        assert!(db.file_in_collection(files[0].id, 9));
+    }
+
+    #[test]
+    fn toggle_like_without_meta_survives_later_hash_link() {
+        let db = test_db();
+        db.file_insert("/a/photo.jpg", "/a", "photo.jpg", Some(100), None);
+        let file_id = db.files_by_dir("/a")[0].id;
+
+        assert!(db.toggle_like(file_id));
+        db.file_set_hash_meta(file_id, "real_hash");
+
+        let files = db.files_by_dir("/a");
+        assert!(files[0].liked);
+        assert!(db.file_in_collection(file_id, 9));
     }
 
     #[test]

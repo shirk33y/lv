@@ -99,6 +99,7 @@ pub struct StatusInfo<'a> {
     pub video_pos: f64,
     pub video_duration: f64,
     pub volume: i64,
+    pub muted: bool,
     pub turbo: bool,
 }
 
@@ -209,6 +210,14 @@ pub fn seekbar_label_x(seek_x: f32, seek_w: f32, text_w: f32, fraction: f32) -> 
     }
 }
 
+pub fn volume_label(volume: i64, muted: bool) -> String {
+    if muted {
+        "Vol: Mute".to_string()
+    } else {
+        format!("Vol: {}%", volume)
+    }
+}
+
 const TEXT_BORDER: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const TEXT_COL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
@@ -305,11 +314,11 @@ pub fn draw_status_bar(
         let right_text = if info.is_video {
             let icon = if info.paused { "||" } else { ">" };
             format!(
-                "{} {}/{}  Vol: {}%  {}",
+                "{} {}/{}  {}  {}",
                 icon,
                 fmt_time(info.video_pos),
                 fmt_time(info.video_duration),
-                info.volume,
+                volume_label(info.volume, info.muted),
                 index_text,
             )
         } else {
@@ -436,7 +445,7 @@ pub fn draw_status_bar(
             );
             ui.text_colored(BRIGHT, &progress);
             ui.same_line();
-            ui.text_colored(DIM, format!("Vol: {}%", info.volume));
+            ui.text_colored(DIM, volume_label(info.volume, info.muted));
             ui.same_line();
             ui.text_colored(DIM, &index_text);
         } else {
@@ -942,6 +951,13 @@ mod tests {
     fn video_progress_fraction_rejects_invalid_position() {
         assert_eq!(video_progress_fraction(f64::NAN, 10.0), 0.0);
         assert_eq!(video_progress_fraction(f64::INFINITY, 10.0), 0.0);
+    }
+
+    #[test]
+    fn volume_label_shows_mute_state() {
+        assert_eq!(volume_label(80, false), "Vol: 80%");
+        assert_eq!(volume_label(80, true), "Vol: Mute");
+        assert_eq!(volume_label(0, true), "Vol: Mute");
     }
 
     #[test]

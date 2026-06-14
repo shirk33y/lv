@@ -238,6 +238,64 @@ unsafe fn mpv_set_property_i64(handle: *mut libmpv_sys::mpv_handle, name: &str, 
     }
 }
 
+unsafe fn mpv_set_property_flag(handle: *mut libmpv_sys::mpv_handle, name: &str, val: bool) {
+    let n = CString::new(name).unwrap();
+    let flag: i32 = if val { 1 } else { 0 };
+    let rc = libmpv_sys::mpv_set_property(
+        handle,
+        n.as_ptr(),
+        libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
+        &flag as *const i32 as *mut _,
+    );
+    if rc < 0 {
+        eprintln!("mpv_set_property({}) failed: {}", name, rc);
+    }
+}
+
+unsafe fn mpv_set_property_string(handle: *mut libmpv_sys::mpv_handle, name: &str, val: &str) {
+    let n = CString::new(name).unwrap();
+    let v = CString::new(val).unwrap();
+    let rc = libmpv_sys::mpv_set_property_string(handle, n.as_ptr(), v.as_ptr());
+    if rc < 0 {
+        eprintln!("mpv_set_property_string({}) failed: {}", name, rc);
+    }
+}
+
+fn random_fav_key() -> Keycode {
+    Keycode::B
+}
+
+fn mute_key() -> Keycode {
+    Keycode::M
+}
+
+fn newest_key() -> Keycode {
+    Keycode::N
+}
+
+fn video_loop_key() -> Keycode {
+    Keycode::V
+}
+
+fn mpv_loop_file_value(video_loop: bool) -> &'static str {
+    if video_loop {
+        "inf"
+    } else {
+        "no"
+    }
+}
+
+fn next_cursor_after_load_failure(files: &[FileEntry], cursor: usize) -> Option<usize> {
+    (cursor + 1 < files.len()).then_some(cursor + 1)
+}
+
+fn request_quit(window: &sdl2::video::Window, running: &mut bool) {
+    *running = false;
+    unsafe {
+        sdl2::sys::SDL_HideWindow(window.raw());
+    }
+}
+
 const OBS_TIME_POS: u64 = 1;
 const OBS_DURATION: u64 = 2;
 const OBS_PAUSE: u64 = 3;
@@ -248,6 +306,7 @@ struct MpvPlaybackState {
     duration: f64,
     paused: bool,
     loaded: bool,
+    load_failed: bool,
 }
 
 impl Default for MpvPlaybackState {
@@ -257,6 +316,7 @@ impl Default for MpvPlaybackState {
             duration: 0.0,
             paused: false,
             loaded: false,
+            load_failed: false,
         }
     }
 }
@@ -324,6 +384,13 @@ unsafe fn drain_mpv_events(handle: *mut libmpv_sys::mpv_handle, state: &mut MpvP
             libmpv_sys::mpv_event_id_MPV_EVENT_UNPAUSE => state.paused = false,
             libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE => {
                 state.pos = 0.0;
+                let end_file = (*ev).data as *const libmpv_sys::mpv_event_end_file;
+                if !end_file.is_null()
+                    && (*end_file).reason
+                        == libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
+                {
+                    state.load_failed = true;
+                }
             }
             libmpv_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => break,
             _ => {}
@@ -882,9 +949,12 @@ fn main() {
     set_prop("vo", "libmpv");
     set_prop("hwdec", "auto");
     set_prop("terminal", "no");
+    set_prop("audio", "yes");
+    set_prop("mute", "no");
+    set_prop("volume", "100");
     set_prop("image-display-duration", "inf");
     set_prop("keep-open", "yes");
-    set_prop("loop-file", "inf");
+    set_prop("loop-file", mpv_loop_file_value(false));
     let init_rc = unsafe { libmpv_sys::mpv_initialize(mpv_handle) };
     if init_rc < 0 {
         panic!("mpv_initialize failed: {}", init_rc);
@@ -960,6 +1030,8 @@ fn main() {
     let mut timings: Vec<TimingEntry> = Vec::new();
     let mut needs_display = true;
     let mut volume: i64 = 100;
+    let mut muted = false;
+    let mut video_loop = false;
     let mut mpv_state = MpvPlaybackState::default();
     let mut pending_cold_load: Option<String> = None; // async cold decode in progress
     let mut show_info = false;
@@ -1078,7 +1150,7 @@ fn main() {
             imgui_platform.handle_event(&mut imgui_ctx, &event);
 
             match event {
-                Event::Quit { .. } => running = false,
+                Event::Quit { .. } => request_quit(&window, &mut running),
 
                 Event::MouseMotion { x, y, .. } => {
                     last_mouse_move = Instant::now();
@@ -1190,7 +1262,7 @@ fn main() {
 
                     match key {
                         // ── Quit ─────────────────────────────────────────
-                        Keycode::Q | Keycode::Escape => running = false,
+                        Keycode::Q | Keycode::Escape => request_quit(&window, &mut running),
 
                         // ── j/k: next/prev in current dir ───────────────
                         Keycode::J => {
@@ -1291,27 +1363,34 @@ fn main() {
                         }
 
                         // ── n: newest file ──────────────────────────────
-                        Keycode::N => {
+                        key if key == newest_key() => {
                             if let Some(file) = lv_db.newest_file() {
                                 jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
                                 needs_display = true;
                             }
                         }
 
-                        // ── m: random favourite ─────────────────────────
-                        Keycode::M => {
+                        key if key == random_fav_key() => {
                             if let Some(file) = lv_db.random_fav() {
                                 jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
                                 needs_display = true;
                             }
                         }
 
-                        // ── b: latest favourite ─────────────────────────
-                        Keycode::B => {
-                            if let Some(file) = lv_db.latest_fav() {
-                                jump_to(&lv_db, file, &mut files, &mut current_dir, &mut cursor);
-                                needs_display = true;
-                            }
+                        key if key == mute_key() && using_mpv => {
+                            muted = !muted;
+                            unsafe { mpv_set_property_flag(mpv_handle, "mute", muted) };
+                        }
+
+                        key if key == video_loop_key() => {
+                            video_loop = !video_loop;
+                            unsafe {
+                                mpv_set_property_string(
+                                    mpv_handle,
+                                    "loop-file",
+                                    mpv_loop_file_value(video_loop),
+                                )
+                            };
                         }
 
                         // ── y: toggle like ──────────────────────────────
@@ -1411,10 +1490,14 @@ fn main() {
                         }
                         Keycode::Up if using_mpv => {
                             volume = (volume + 5).min(150);
+                            muted = false;
+                            unsafe { mpv_set_property_flag(mpv_handle, "mute", false) };
                             unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                         }
                         Keycode::Down if using_mpv => {
                             volume = (volume - 5).max(0);
+                            muted = false;
+                            unsafe { mpv_set_property_flag(mpv_handle, "mute", false) };
                             unsafe { mpv_set_property_i64(mpv_handle, "volume", volume) };
                         }
 
@@ -1475,15 +1558,25 @@ fn main() {
                 tex_cache.upload(cold_path, decoded);
                 pending_cold_load = None;
             } else if !preloader.is_pending(cold_path) {
-                // Decode failed — show error overlay
                 eprintln!("DECODE FAIL: {}", cold_path);
                 pending_cold_load = None;
-                let fname = cold_path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(cold_path)
-                    .to_string();
-                error_message = Some(("Failed to decode image".into(), fname));
+                if files
+                    .get(cursor)
+                    .is_some_and(|file| file.path == *cold_path)
+                {
+                    if let Some(next_cursor) = next_cursor_after_load_failure(&files, cursor) {
+                        cursor = next_cursor;
+                        needs_display = true;
+                        error_message = None;
+                    } else {
+                        let fname = cold_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(cold_path)
+                            .to_string();
+                        error_message = Some(("Failed to decode image".into(), fname));
+                    }
+                }
             }
         }
 
@@ -1504,9 +1597,16 @@ fn main() {
                         files.len(),
                         current_dir
                     );
-                    error_message = Some(("File not found".into(), file.filename.clone()));
-                    update_title(&window, &files, cursor, &current_dir);
-                    lv_db.record_view(file.id);
+                    if let Some(next_cursor) = next_cursor_after_load_failure(&files, cursor) {
+                        cursor = next_cursor;
+                        needs_display = true;
+                        error_message = None;
+                        continue;
+                    } else {
+                        error_message = Some(("File not found".into(), file.filename.clone()));
+                        update_title(&window, &files, cursor, &current_dir);
+                        lv_db.record_view(file.id);
+                    }
                 } else if is_mpv_media(path) {
                     error_message = None;
                     pending_cold_load = None;
@@ -1642,6 +1742,22 @@ fn main() {
         unsafe {
             drain_mpv_events(mpv_handle, &mut mpv_state);
         }
+        if mpv_state.load_failed {
+            mpv_state.load_failed = false;
+            if using_mpv {
+                pending_video = None;
+                if let Some(file) = files.get(cursor) {
+                    eprintln!("MPV LOAD FAIL: {}", file.path);
+                }
+                if let Some(next_cursor) = next_cursor_after_load_failure(&files, cursor) {
+                    cursor = next_cursor;
+                    needs_display = true;
+                    error_message = None;
+                } else if let Some(file) = files.get(cursor) {
+                    error_message = Some(("Failed to load media".into(), file.filename.clone()));
+                }
+            }
+        }
 
         // Query phase eliminated — properties now arrive via observe_property events above
         let _t_query = std::time::Duration::ZERO;
@@ -1723,6 +1839,7 @@ fn main() {
                 video_pos: mpv_state.pos,
                 video_duration: mpv_state.duration,
                 volume,
+                muted,
                 turbo: is_turbo,
             };
             let win_action =
@@ -1762,7 +1879,7 @@ fn main() {
                 }
             }
             statusbar::WindowAction::Close => {
-                running = false;
+                request_quit(&window, &mut running);
             }
             statusbar::WindowAction::Minimize => {
                 window.minimize();
@@ -1875,13 +1992,11 @@ fn main() {
 
     // ── Shutdown ──────────────────────────────────────────────────────
     job_engine.stop();
-    // Stop mpv playback and signal render thread to exit
     unsafe {
-        mpv_stop_sync(mpv_handle);
+        mpv_command_async(mpv_handle, &["stop"]);
     }
     mpv_shared.quit.store(true, Ordering::Release);
-    // Give render thread a short deadline, then move on
-    let deadline = std::time::Duration::from_millis(500);
+    let deadline = std::time::Duration::from_millis(75);
     let start = Instant::now();
     loop {
         if render_thread.is_finished() {
@@ -1893,17 +2008,7 @@ fn main() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Leak mpv handle — mpv_destroy can block for seconds on Windows.
-    // The process is exiting anyway, the OS will reclaim all resources.
-    #[cfg(not(windows))]
-    unsafe {
-        libmpv_sys::mpv_terminate_destroy(mpv_handle);
-    }
-    #[cfg(windows)]
-    {
-        // Intentionally leak on Windows.
-        let _ = mpv_handle;
-    }
+    let _ = mpv_handle;
 
     #[cfg(debug_assertions)]
     if !timings.is_empty() {
@@ -2207,12 +2312,72 @@ mod tests {
     }
 
     #[test]
+    fn media_hotkeys_do_not_steal_fullscreen() {
+        assert_eq!(random_fav_key(), Keycode::B);
+        assert_eq!(mute_key(), Keycode::M);
+        assert_eq!(newest_key(), Keycode::N);
+        assert_eq!(video_loop_key(), Keycode::V);
+        assert_ne!(random_fav_key(), Keycode::F);
+        assert_ne!(mute_key(), Keycode::F);
+        assert_ne!(newest_key(), Keycode::F);
+        assert_ne!(video_loop_key(), Keycode::F);
+        assert_ne!(random_fav_key(), video_loop_key());
+        assert_ne!(mute_key(), video_loop_key());
+    }
+
+    #[test]
+    fn mpv_loop_file_default_is_disabled() {
+        assert_eq!(mpv_loop_file_value(false), "no");
+        assert_eq!(mpv_loop_file_value(true), "inf");
+    }
+
+    #[test]
+    fn load_failure_advances_only_when_next_file_exists() {
+        let files = vec![
+            FileEntry {
+                id: 1,
+                path: "/a/broken.mp4".into(),
+                dir: "/a".into(),
+                filename: "broken.mp4".into(),
+                meta_id: None,
+                liked: false,
+                temporary: false,
+            },
+            FileEntry {
+                id: 2,
+                path: "/a/good.mp4".into(),
+                dir: "/a".into(),
+                filename: "good.mp4".into(),
+                meta_id: None,
+                liked: false,
+                temporary: false,
+            },
+        ];
+
+        assert_eq!(next_cursor_after_load_failure(&files, 0), Some(1));
+        assert_eq!(next_cursor_after_load_failure(&files, 1), None);
+        assert_eq!(next_cursor_after_load_failure(&[], 0), None);
+    }
+
+    #[test]
+    fn flatpak_manifest_allows_audio_socket() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../extra/flatpak/io.github.shirk33y.lv.json"))
+                .unwrap();
+        let finish_args = manifest["finish-args"].as_array().unwrap();
+        assert!(finish_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--socket=pulseaudio")));
+    }
+
+    #[test]
     fn mpv_state_resets_on_media_switch() {
         let mut state = MpvPlaybackState {
             pos: 12.0,
             duration: 30.0,
             paused: true,
             loaded: true,
+            load_failed: true,
         };
         state.reset();
         assert_eq!(state, MpvPlaybackState::default());
