@@ -1,103 +1,78 @@
-# Refactoring: Consolidate to `extra/` Directory Structure
+# Refactoring: Decompose monolithic `src/`
 
-**Goal**: Single `extra/` directory for all platform-specific packaging configs + static assets, following Lapce and Alacritty conventions.
+**Goal:** Extract cohesive modules from `statusbar.rs` and `main.rs` into single-responsibility files.
 
-## Current State
+## Part 1: Split `statusbar.rs` (1212 lines → 4 single-purpose modules)
+
+Current: `statusbar.rs` holds 4 unrelated widgets in one file.
+Target:
+
 ```
-pkg/
-├── appimage.sh          (build script)
-├── deb.sh               (build script)
-├── lv.desktop
-├── lv-256.png
-├── lv.svg
-└── win64/
-    └── README.md
-
-scripts/
-├── build-linux-intel.sh
-├── build-linux-arm.sh
-├── build-windows-intel.sh
-├── build-flatpak.sh
-├── ci.sh
-├── clean.sh
-├── dev-linux.sh
-└── dev-windows.sh
-
-root/
-├── io.github.shirk33y.lv.json
-└── docker/Dockerfile.flatpak
+src/
+├── assets.rs        font setup, apply_theme, BUNDLED_FONT, GLYPH_RANGES
+├── titlebar.rs      WindowAction, BAR_HEIGHT, BUTTON_ZONE_W, StatusInfo,
+│                    draw_status_bar, draw_empty_status_bar, seekbar helpers
+├── infobar.rs       draw_info_panel, draw_stats_section, format helpers
+└── overlay.rs       draw_spinner, draw_error_overlay, draw_empty_overlay,
+                     empty_library_hint
 ```
 
-## Final State
+### Steps
+
+1. Create `assets.rs` — move `add_font`, `apply_theme`, `BUNDLED_FONT`, `GLYPH_RANGES`
+2. Create `titlebar.rs` — move `WindowAction`, `BAR_HEIGHT`, `BUTTON_ZONE_W`, `StatusInfo`, `seek_fraction_at`, `seekbar_window_height`, `seekbar_expanded`, `seekbar_label_x`, `video_progress_fraction`, `volume_label`, `draw_empty_status_bar`, `draw_status_bar`, plus 5 WindowAction/constant tests from `main.rs`
+3. Create `infobar.rs` — move `draw_info_panel`, `draw_stats_section`, `format_size`, `format_duration`, `collection_name`, `fmt_time`
+4. Create `overlay.rs` — move `draw_spinner`, `draw_error_overlay`, `empty_library_hint`, `draw_empty_overlay`
+5. Delete `statusbar.rs`
+6. Update `main.rs` imports: `statusbar::` → `titlebar::`, `infobar::`, `overlay::`, `assets::`
+7. Update any other module that imports from `statusbar`
+
+### Test migration
+
+- WindowAction/bar-height tests → inline `mod tests` in `titlebar.rs`
+- Format helper tests → inline in `infobar.rs`
+- All statusbar-specific unit tests move with their code
+- Integration tests (e.g. main's `empty_files_update_title_is_noop`) stay in `main.rs`
+
+## Part 2: Extract `media.rs` from `main.rs`
+
+Prerequisite: `is_media_extension` and `clean_path` are referenced from watcher/scanner/cli via `crate::`.
+
 ```
-scripts/
-├── build-linux-intel.sh
-├── build-linux-arm.sh
-├── build-windows-intel.sh
-├── build-appimage.sh         ← moved from pkg/appimage.sh
-├── build-deb.sh              ← moved from pkg/deb.sh
-├── build-flatpak.sh
-├── ci.sh
-├── clean.sh
-├── dev-linux.sh
-└── dev-windows.sh
-
-extra/                                   ← Single dir for all platform packaging
-├── flatpak/
-│   ├── io.github.shirk33y.lv.json            ← moved from root/
-│   └── Dockerfile.flatpak              ← moved from docker/
-├── linux/
-│   └── lv.desktop                      ← moved from pkg/res/
-├── windows/
-│   ├── installer.nsi                   ← moved from pkg/dist/windows/
-│   ├── lv.ico                          ← flattened from win64/
-│   ├── lv.rc
-│   ├── SDL2.dll
-│   ├── SDL2.lib
-│   ├── libmpv-2.dll
-│   ├── mpv.lib
-│   └── README.md
-└── images/
-    ├── lv.svg                          ← moved from pkg/res/icons/
-    └── lv-256.png
-
-pkg/  ← DELETED
-dist/ ← DELETED
-res/  ← DELETED
+src/
+├── media.rs    IMAGE_EXTS, MPV_IMAGE_EXTS, VIDEO_EXTS,
+│               is_media_extension, clean_path, ext_of,
+│               is_image, is_video, is_mpv_media, is_media,
+│               should_preload_image
 ```
 
-## Implementation (Completed)
+Moves ~30 tests with it. Updates `crate::is_media_extension` → `crate::media::` and `crate::clean_path` → same in 3 files.
 
-### Step 1: Build Scripts
-- ✅ `pkg/appimage.sh` → `scripts/build-appimage.sh`
-- ✅ `pkg/deb.sh` → `scripts/build-deb.sh`
-- ✅ Renamed `scripts/flatpak-build.sh` → `scripts/build-flatpak.sh` (verb prefix consistency)
+## Part 3: Extract `mpv.rs` from `main.rs`
 
-### Step 2: Create `extra/` Structure
-- ✅ `mkdir -p extra/{linux,flatpak,windows,images}`
+```
+src/
+├── mpv.rs      MpvPlaybackState, MpvRenderShared, spawn_mpv_render_thread,
+│               apply_mpv_property_update, mpv_loadfile_args, mpv_seek_args,
+│               mpv_seek_absolute_args, mpv_loop_file_value, OBS_* constants,
+│               VideoPrefetcher, prefetch_file, video_prefetch_paths,
+│               schedule_video_prefetch
+```
 
-### Step 3: Move Files to `extra/`
-- ✅ `res/lv.desktop` → `extra/linux/lv.desktop`
-- ✅ `res/icons/{lv.svg,lv-256.png}` → `extra/images/`
-- ✅ `dist/flatpak/{io.github.shirk33y.lv.json,Dockerfile.flatpak}` → `extra/flatpak/`
-- ✅ `dist/windows/installer.nsi` → `extra/windows/`
-- ✅ `dist/windows/win64/{*.dll,*.lib,*.rc,README.md}` → `extra/windows/` (flattened)
+Moves ~8 tests with it.
 
-### Step 4: Delete Old Dirs
-- ✅ Deleted `pkg/`, `dist/`, `res/`
+## Part 4: Cleanup
 
-### Step 5: Update Script References
-- ✅ `scripts/build-flatpak.sh`: `dist/flatpak/` → `extra/flatpak/` (2 locations)
-- ✅ `README.md`: Updated manifest path reference
+- Move `src/flatpak-cargo-generator.py` → `scripts/`
+- Delete `src/Cargo.lock` (duplicate of root)
 
-### Step 6: Update .gitignore
-- ✅ Removed `/dist/` pattern (now source, not build output)
+## Remaining in `main.rs` after extraction
 
-## Benefits
-- ✅ Single `extra/` directory (industry standard: Lapce, Alacritty)
-- ✅ Platform subdirs clearly separate concerns (flatpak vs linux vs windows vs images)
-- ✅ Flattened `windows/` (no unnecessary `win64/` nesting)
-- ✅ All build **scripts** in `scripts/` with verb prefix consistency
-- ✅ All platform **configs** + **static assets** in `extra/{platform}/`
-- ✅ Eliminates `dist/` vs `res/` ambiguity
-- ✅ Clear, intuitive, follows best practices
+```
+fn main(), event loop, Cli/Commands, handle_drop,
+switch_dir, jump_to, next_cursor_after_load_failure,
+update_title, set_resize_cursor, print_report, TimingEntry
++ ~130 integration tests
+```
+
+~1450 lines non-test + ~3450 lines tests.
