@@ -139,14 +139,14 @@ Lower-level script entry points:
 Install a release Flatpak by downloading the bundle for your CPU architecture from GitHub Releases:
 
 ```sh
-flatpak install --user ./lv-0.1.6-x86_64.flatpak
+flatpak install --user ./lv-vX.Y.Z-x86_64.flatpak
 flatpak run io.github.shirk33y.lv
 ```
 
 Install globally for all users:
 
 ```sh
-flatpak install --system ./lv-0.1.6-x86_64.flatpak
+flatpak install --system ./lv-vX.Y.Z-x86_64.flatpak
 flatpak run io.github.shirk33y.lv
 ```
 
