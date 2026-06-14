@@ -100,10 +100,18 @@ echo ""
 # ── 4. Test video file (main test) ───────────────────────────────────
 echo "--- 4. Test with video ---"
 TEST_VIDEO="$SANDBOX_FIXTURES/sample_video.mp4"
+TEST_VIDEO_SMOKE="$TEST_VIDEO"
 if [[ ! -f "$TEST_VIDEO" ]]; then
     echo "⚠️  Test video not found: $TEST_VIDEO"
     echo "   (This is OK if you haven't run test generation yet)"
 else
+    TEST_VIDEO_SMOKE="$SANDBOX_FIXTURES/sample_video-smoke.mp4"
+    ffmpeg -hide_banner -loglevel error -y \
+        -i "$TEST_VIDEO" \
+        -c:v copy \
+        -an \
+        "$TEST_VIDEO_SMOKE"
+
     # Try to scan/index the video file
     TMPDB2=$(mktemp /tmp/lv-flatpak-video-XXXXXX.db)
 
@@ -164,8 +172,8 @@ echo ""
 
 # ── 7. Launch video and verify frames advance ────────────────────────
 echo "--- 7. Verify video playback advances ---"
-if [[ ! -f "$TEST_VIDEO" ]]; then
-    echo "❌ Test video not found: $TEST_VIDEO"
+if [[ ! -f "$TEST_VIDEO_SMOKE" ]]; then
+    echo "❌ Test video not found: $TEST_VIDEO_SMOKE"
     exit 1
 fi
 
@@ -237,7 +245,7 @@ for _ in $(seq 1 40); do
     sleep 0.1
 done
 kill "$APP_PID" 2>/dev/null || true
-' bash "$TEST_VIDEO" "$TMPDIR_GUI"
+' bash "$TEST_VIDEO_SMOKE" "$TMPDIR_GUI"
 
 APP_PID="$(cat "$TMPDIR_GUI/app.pid" 2>/dev/null || true)"
 DIFF12=$(compare -metric AE "$TMPDIR_GUI/frame1.png" "$TMPDIR_GUI/frame2.png" /dev/null 2>&1 || true)
