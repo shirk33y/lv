@@ -6,19 +6,52 @@ The release pipeline must run through GitHub Actions. Do not publish releases fr
 
 ### How it works
 
-1. **Conventional commits**: All commits to `main` follow [Conventional Commits](https://www.conventionalcommits.org/):
-   - `feat:` - new feature (minor bump)
-   - `fix:` - bug fix (patch bump)
-   - `feat!:` or `fix!:` - breaking change (major bump)
-   - `docs:`, `chore:`, `refactor:`, `test:`, `style:` - no release
+1. **Conventional commits**: All commits to `main` must be release-please friendly.
 
 2. **release-please** (`.github/workflows/release.yml`): Runs on every push to `main`. Scans commits since last release, maintains a Release PR with the version bump + release notes. When the Release PR is merged, it creates the `vX.Y.Z` tag + GitHub Release.
 
 3. **Flatpak build** (`.github/workflows/build.yml`): Triggered on release `published`. Builds Flatpak for x86_64 + aarch64, smokes them, attaches assets to the release.
 
+### Commit messages
+
+Use Conventional Commits that describe user-visible impact:
+
+- `feat: add searchable metadata filters` - release note + version bump
+- `fix: keep cursor valid after watcher delete` - release note + version bump
+- `perf: reuse ffprobe handle per worker` - release note + version bump
+- `docs: explain Flatpak install modes` - no release note by default
+- `test: cover daemon command queue` - no release note by default
+- `chore: update release config` - no release note by default
+
+Use scopes when they add clarity:
+
+- `feat(cli): add duration filter`
+- `fix(flatpak): bundle mpv runtime dependency`
+- `docs(release): document CI-only release path`
+
+Breaking changes must use `!` and a footer:
+
+```text
+feat(cli)!: rename sync background flag
+
+BREAKING CHANGE: lv sync --background is now lv sync -b.
+```
+
+Keep squash commit titles specific. Avoid vague titles like `update`, `misc fixes`, `work`, or `release changes`; release-please turns commit titles into release notes.
+
+Do not put unrelated docs, tests, refactors, and features in one commit. Split commits so release notes stay narrow.
+
+For an intentional one-off version, prefer a dedicated commit footer:
+
+```text
+Release-As: 0.1.7
+```
+
+Do not hand-edit generated release notes unless correcting scope or wording before merging the release-please PR.
+
 ### Release checklist
 
-1. Ensure all changes on `main` use conventional commit messages.
+1. Ensure all changes on `main` use release-please friendly conventional commit messages.
 2. Push to `main` - release-please creates/updates a Release PR.
 3. Review and merge the Release PR - release-please tags and creates the GitHub Release.
 4. `build.yml` runs automatically: builds Flatpaks, smokes tests, publishes assets.
