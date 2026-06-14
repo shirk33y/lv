@@ -718,6 +718,11 @@ fn main() {
     // ── Database ────────────────────────────────────────────────────────
     let lv_db = Db::open_default();
     lv_db.ensure_schema();
+    if let Ok((total, done)) = lv_db.run_tag_migration() {
+        if done > 0 {
+            eprintln!("tags migrated: {done}/{total}");
+        }
+    }
 
     // ── CLI subcommands (non-GUI, exit after) ───────────────────────────
     if let Some(cmd) = args.command {
@@ -1188,6 +1193,7 @@ fn main() {
                     ..
                 } if !imgui_ctx.io().want_capture_keyboard => {
                     let ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
+                    let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
 
                     // ── Ctrl+0-9: switch collection view ────────────
                     let col_key = match key {
@@ -1221,7 +1227,7 @@ fn main() {
                         continue;
                     }
 
-                    // ── 2-8: toggle collection tag on current file ──
+                    // ── 2-9: toggle/remove collection tag on current file ──
                     let tag_key = match key {
                         Keycode::Num2 | Keycode::Kp2 if !ctrl => Some(2u8),
                         Keycode::Num3 | Keycode::Kp3 if !ctrl => Some(3),
@@ -1230,23 +1236,26 @@ fn main() {
                         Keycode::Num6 | Keycode::Kp6 if !ctrl => Some(6),
                         Keycode::Num7 | Keycode::Kp7 if !ctrl => Some(7),
                         Keycode::Num8 | Keycode::Kp8 if !ctrl => Some(8),
+                        Keycode::Num9 | Keycode::Kp9 if !ctrl => Some(9),
                         _ => None,
                     };
                     if let Some(c) = tag_key {
                         if let Some(file) = files.get(cursor) {
-                            let now_in = lv_db.toggle_collection(file.id, c);
-                            eprintln!(
-                                "{} {} c{}",
-                                if now_in { "+" } else { "-" },
-                                file.filename,
-                                c
-                            );
+                            let now_in = if shift {
+                                lv_db.remove_tag(file.id, &format!("c{c}"));
+                                false
+                            } else {
+                                lv_db.toggle_collection(file.id, c)
+                            };
+                            let symbol = if shift { "−" } else if now_in { "+" } else { "-" };
+                            eprintln!("{} {} c{}", symbol, file.filename, c);
                         }
                         continue;
                     }
 
-                    // ── 9: toggle like (= collection 9) ────────────
-                    if matches!(key, Keycode::Num9 | Keycode::Kp9) && !ctrl {
+                    // ── y/shift+y: toggle like ─────────────────────────
+                    let is_y = matches!(key, Keycode::Y);
+                    if is_y && !ctrl {
                         if cursor < files.len() {
                             let file_id = files[cursor].id;
                             let liked = lv_db.toggle_like(file_id);
@@ -1391,16 +1400,6 @@ fn main() {
                                     mpv_loop_file_value(video_loop),
                                 )
                             };
-                        }
-
-                        // ── y: toggle like ──────────────────────────────
-                        Keycode::Y if cursor < files.len() => {
-                            let file_id = files[cursor].id;
-                            let liked = lv_db.toggle_like(file_id);
-                            files[cursor].liked = liked;
-                            let sym = if liked { "♥" } else { "♡" };
-                            eprintln!("{} {}", sym, files[cursor].filename);
-                            update_title(&window, &files, cursor, &current_dir);
                         }
 
                         // ── f: toggle fullscreen ────────────────────────
@@ -4698,8 +4697,30 @@ mod tests {
         db.toggle_like(files[0].id);
         db.toggle_like(files[1].id);
 
-        // Switch to "likes" collection (collection 9 = like tag)
-        let liked_files = db.files_by_collection(9);
+        // Query liked files via meta_tags junction table
+        let liked_files = db
+            .conn()
+            .prepare(
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
+                 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE mt.tag = 'like'
+                 ORDER BY f.path",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok(FileEntry {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    dir: r.get(2)?,
+                    filename: r.get(3)?,
+                    meta_id: r.get(4)?,
+                    liked: r.get(5)?,
+                    temporary: r.get(6)?,
+                })
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
         assert_eq!(liked_files.len(), 2);
 
         // Simulate collection switch with cursor clamping
@@ -4758,10 +4779,20 @@ mod tests {
         db.record_view(photo1_id);
         db.toggle_like(photo1_id);
 
-        // 6. Verify like (collection 9 = like tag)
-        let liked = db.files_by_collection(9);
-        assert_eq!(liked.len(), 1);
-        assert_eq!(liked[0].id, photo1_id);
+        // 6. Verify like via liked flag and tag query
+        let liked_files: Vec<_> = db
+            .conn()
+            .prepare(
+                "SELECT f.id FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE mt.tag = 'like'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(liked_files.len(), 1);
+        assert_eq!(liked_files[0], photo1_id);
 
         // 7. Delete a non-liked file via watcher path (remove from disk + DB)
         let clip = files.iter().find(|f| f.filename == "clip.mkv").unwrap();
@@ -4773,7 +4804,17 @@ mod tests {
         assert!(!files_after.iter().any(|f| f.filename == "clip.mkv"));
 
         // Like should still work (photo1 was not deleted)
-        let liked_after = db.files_by_collection(9);
+        let liked_after: Vec<_> = db
+            .conn()
+            .prepare(
+                "SELECT f.id FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE mt.tag = 'like'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
         assert_eq!(
             liked_after.len(),
             1,
@@ -4784,8 +4825,18 @@ mod tests {
         std::fs::remove_file(dir.path().join("photo1.jpg")).unwrap();
         db.remove_file_by_id(photo1_id);
 
-        // Liked collection should now be empty
-        let liked_final = db.files_by_collection(9);
+        // Liked files should now be empty
+        let liked_final: Vec<_> = db
+            .conn()
+            .prepare(
+                "SELECT f.id FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE mt.tag = 'like'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
         assert_eq!(liked_final.len(), 0);
 
         // 9. Final state
@@ -5077,8 +5128,30 @@ mod tests {
         db.toggle_like(all_files[0].id); // a1.jpg
         db.toggle_like(all_files[3].id); // b1.jpg
 
-        // Switch to likes collection (collection 9)
-        let liked = db.files_by_collection(9);
+        // Switch to liked files view
+        let liked = db
+            .conn()
+            .prepare(
+                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
+                 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE mt.tag = 'like'
+                 ORDER BY f.path",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok(FileEntry {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    dir: r.get(2)?,
+                    filename: r.get(3)?,
+                    meta_id: r.get(4)?,
+                    liked: r.get(5)?,
+                    temporary: r.get(6)?,
+                })
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
         assert_eq!(liked.len(), 2);
 
         // Simulate collection mode switch

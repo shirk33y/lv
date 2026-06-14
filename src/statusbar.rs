@@ -741,7 +741,7 @@ fn collection_name(c: Option<u8>) -> &'static str {
         Some(6) => "C6",
         Some(7) => "C7",
         Some(8) => "C8",
-        Some(9) => "C9 Favorites",
+        Some(9) => "C9",
         _ => "Collection",
     }
 }
@@ -1060,8 +1060,8 @@ mod tests {
         assert_eq!(collection_name(None), "Library");
         assert_eq!(collection_name(Some(0)), "C0 Permanent");
         assert_eq!(collection_name(Some(1)), "C1 Temporary");
-        assert_eq!(collection_name(Some(9)), "C9 Favorites");
-        for c in 2..=8 {
+        assert_eq!(collection_name(Some(9)), "C9");
+        for c in 2..=9 {
             assert_eq!(collection_name(Some(c)), format!("C{c}"));
         }
         assert_eq!(collection_name(Some(10)), "Collection");

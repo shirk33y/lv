@@ -4,7 +4,12 @@
 
 use rusqlite::Connection;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Progress of JSON→meta_tags migration. Read by GUI for status bar display.
+pub static TAG_MIGRATION_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static TAG_MIGRATION_DONE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
@@ -71,7 +76,7 @@ impl Db {
         Db(Arc::new(Mutex::new(conn)))
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.0.lock().unwrap()
     }
 
@@ -119,7 +124,13 @@ impl Db {
                     created_at    TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
-                CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);",
+                CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+                CREATE TABLE IF NOT EXISTS meta_tags (
+                    meta_id INTEGER NOT NULL REFERENCES meta(id) ON DELETE CASCADE,
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY (meta_id, tag)
+                );
+                CREATE INDEX IF NOT EXISTS idx_meta_tags_tag ON meta_tags(tag);",
             )
             .expect("schema creation failed");
 
@@ -141,6 +152,204 @@ impl Db {
             )
             .ok();
         }
+    }
+
+    /// Migrate tags from meta.tags JSON to meta_tags junction table.
+    /// Returns (total_meta_rows, total_tags_inserted) or error string.
+    /// Backs up DB before migration. Progress published via TAG_MIGRATION_* statics.
+    pub fn run_tag_migration(&self) -> Result<(u64, u64), String> {
+        TAG_MIGRATION_TOTAL.store(0, Ordering::Relaxed);
+        TAG_MIGRATION_DONE.store(0, Ordering::Relaxed);
+
+        let db_path = {
+            let db = self.conn();
+            let path: String = db
+                .query_row("PRAGMA database_list", [], |r| r.get(2))
+                .map_err(|e| format!("get db path: {e}"))?;
+            path
+        };
+
+        // Check if migration is needed
+        {
+            let db = self.conn();
+            let has_meta_tags: bool = db.prepare("SELECT meta_id FROM meta_tags LIMIT 0").is_ok();
+            if !has_meta_tags {
+                return Err("meta_tags table does not exist".into());
+            }
+            // Count meta rows with non-empty tags
+            let total: u64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM meta WHERE tags IS NOT NULL AND tags != '[]'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0) as u64;
+            if total == 0 {
+                return Ok((0, 0));
+            }
+            TAG_MIGRATION_TOTAL.store(total, Ordering::Relaxed);
+        }
+
+        // Back up DB
+        let backup_path = format!("{}.backup.{}", db_path, chrono_now_compact());
+        std::fs::copy(&db_path, &backup_path)
+            .map_err(|e| format!("backup failed: {e}"))?;
+        eprintln!("tag migration backup: {}", backup_path);
+
+        // Migrate in batches
+        let batch_size = 500;
+        let mut total_inserted = 0u64;
+        let mut offset = 0i64;
+
+        loop {
+            let db = self.conn();
+            let rows: Vec<(i64, String)> = {
+                let mut stmt = db
+                    .prepare(
+                        "SELECT id, COALESCE(tags, '[]') FROM meta
+                         WHERE tags IS NOT NULL AND tags != '[]'
+                         ORDER BY id LIMIT ?1 OFFSET ?2",
+                    )
+                    .map_err(|e| format!("prepare: {e}"))?;
+                let x = stmt
+                    .query_map([batch_size, offset], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .map_err(|e| format!("query: {e}"))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                x
+            };
+
+            let count = rows.len();
+            if count == 0 {
+                break;
+            }
+
+            // Parse JSON and INSERT in a transaction
+            let mut inserted = 0u64;
+            // Build VALUES clauses manually for batch INSERT
+            let mut value_placeholders = Vec::new();
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            // We'll do a per-row approach to keep it simpler
+            for (meta_id, tags_json) in &rows {
+                let tags: Vec<String> = serde_json::from_str(tags_json).unwrap_or_default();
+                for tag in &tags {
+                    if tag.is_empty() {
+                        continue;
+                    }
+                    value_placeholders
+                        .push(format!("(?{}, ?{})", params.len() + 1, params.len() + 2));
+                    params.push(Box::new(*meta_id));
+                    params.push(Box::new(tag.clone()));
+                    inserted += 1;
+                }
+            }
+
+            if !params.is_empty() {
+                let sql = format!(
+                    "INSERT OR IGNORE INTO meta_tags (meta_id, tag) VALUES {}",
+                    value_placeholders.join(", ")
+                );
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
+                db.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
+                db.execute(&sql, param_refs.as_slice())
+                    .map_err(|e| format!("insert batch: {e}"))?;
+                db.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+            }
+
+            total_inserted += inserted;
+            offset += count as i64;
+            TAG_MIGRATION_DONE.store(offset as u64, Ordering::Relaxed);
+        }
+
+        TAG_MIGRATION_TOTAL.store(0, Ordering::Relaxed);
+        TAG_MIGRATION_DONE.store(0, Ordering::Relaxed);
+        eprintln!("tag migration: {} tags from {} rows", total_inserted, offset);
+        Ok((offset as u64, total_inserted))
+    }
+
+    // ── Collections (tag-based) ──────────────────────────────────────────
+
+    /// Add a tag to a file's metadata. Returns true if tag was added.
+    pub fn add_tag(&self, file_id: i64, tag: &str) -> bool {
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        let meta_id = match meta_id {
+            Some(id) => id,
+            None => match ensure_file_meta(&db, file_id) {
+                Some(id) => id,
+                None => return false,
+            },
+        };
+        // Also update the JSON column for backward compat during migration
+        let tags_str: String = db
+            .query_row("SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1", [meta_id], |r| {
+                r.get(0)
+            })
+            .unwrap_or_else(|_| "[]".into());
+        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        if !tags.contains(&tag.to_string()) {
+            tags.push(tag.to_string());
+        }
+        let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+        db.execute(
+            "UPDATE meta SET tags = ?1 WHERE id = ?2",
+            rusqlite::params![json, meta_id],
+        )
+        .ok();
+        // INSERT into meta_tags
+        db.execute(
+            "INSERT OR IGNORE INTO meta_tags (meta_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![meta_id, tag],
+        )
+        .is_ok()
+    }
+
+    /// Remove a tag from a file's metadata. Returns true if tag was removed.
+    pub fn remove_tag(&self, file_id: i64, tag: &str) -> bool {
+        let db = self.conn();
+        let meta_id: Option<i64> = db
+            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
+                r.get(0)
+            })
+            .ok()
+            .flatten();
+        let meta_id = match meta_id {
+            Some(id) => id,
+            None => return false,
+        };
+        // Also update JSON column for backward compat
+        let tags_str: String = db
+            .query_row("SELECT COALESCE(tags, '[]') FROM meta WHERE id = ?1", [meta_id], |r| {
+                r.get(0)
+            })
+            .unwrap_or_else(|_| "[]".into());
+        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let was_in = tags.contains(&tag.to_string());
+        tags.retain(|t| t != tag);
+        if was_in {
+            let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+            db.execute(
+                "UPDATE meta SET tags = ?1 WHERE id = ?2",
+                rusqlite::params![json, meta_id],
+            )
+            .ok();
+        }
+        // DELETE from meta_tags
+        let affected = db
+            .execute(
+                "DELETE FROM meta_tags WHERE meta_id = ?1 AND tag = ?2",
+                rusqlite::params![meta_id, tag],
+            )
+            .unwrap_or(0);
+        affected > 0
     }
 
     // ── Directories (track / watch) ────────────────────────────────────
@@ -307,38 +516,27 @@ impl Db {
     /// Toggle collection tag (c2-c8) on a file. Returns new state.
     pub fn toggle_collection(&self, file_id: i64, collection: u8) -> bool {
         let tag = collection_tag(collection);
-        let db = self.conn();
-        let meta_id: Option<i64> = db
-            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
-                r.get(0)
-            })
-            .ok()
-            .flatten();
-        let meta_id = match meta_id {
-            Some(id) => id,
-            None => return false,
-        };
-        let tags_str: String = db
-            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| {
-                r.get(0)
-            })
-            .unwrap_or_else(|_| "[]".into());
-        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-
-        let now_in = if tags.contains(&tag) {
-            tags.retain(|t| t != &tag);
+        if tag.is_empty() {
+            return false;
+        }
+        // Check current state
+        let is_in = self.conn()
+            .query_row(
+                "SELECT 1 FROM files f
+                 WHERE f.id = ?1
+                 AND EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = f.meta_id AND mt.tag = ?2)",
+                rusqlite::params![file_id, tag],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        drop(self.conn()); // release guard before calling mutating methods
+        if is_in {
+            self.remove_tag(file_id, &tag);
             false
         } else {
-            tags.push(tag);
+            self.add_tag(file_id, &tag);
             true
-        };
-        let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
-        db.execute(
-            "UPDATE meta SET tags = ?1 WHERE id = ?2",
-            rusqlite::params![json, meta_id],
-        )
-        .ok();
-        now_in
+        }
     }
 
     /// Check if file belongs to a collection.
@@ -354,7 +552,7 @@ impl Db {
                 )
                 .map(|t| t == 0)
                 .unwrap_or(false),
-            1 => self
+             1 => self
                 .conn()
                 .query_row(
                     "SELECT temporary FROM files WHERE id = ?1",
@@ -363,22 +561,14 @@ impl Db {
                 )
                 .map(|t| t != 0)
                 .unwrap_or(false),
-            9 => self
-                .conn()
-                .query_row(
-                    "SELECT 1 FROM files f JOIN meta m ON f.meta_id = m.id
-                         WHERE f.id = ?1 AND m.tags LIKE '%\"like\"%'",
-                    [file_id],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false),
-            2..=8 => {
-                let pattern = format!("%\"{}\"%%", collection_tag(collection));
+            2..=9 => {
+                let tag = collection_tag(collection);
                 self.conn()
                     .query_row(
-                        "SELECT 1 FROM files f JOIN meta m ON f.meta_id = m.id
-                         WHERE f.id = ?1 AND m.tags LIKE ?2",
-                        rusqlite::params![file_id, pattern],
+                        "SELECT 1 FROM files f
+                         WHERE f.id = ?1
+                         AND EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = f.meta_id AND mt.tag = ?2)",
+                        rusqlite::params![file_id, tag],
                         |_| Ok(true),
                     )
                     .unwrap_or(false)
@@ -395,7 +585,7 @@ impl Db {
         let (sql, param): (&str, Option<String>) = match collection {
             0 => (
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.temporary = 0
                  ORDER BY f.path",
@@ -403,26 +593,19 @@ impl Db {
             ),
             1 => (
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.temporary = 1
                  ORDER BY f.path",
                 None,
             ),
-            9 => (
-                "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
-                 FROM files f JOIN meta m ON f.meta_id = m.id
-                 WHERE m.tags LIKE '%\"like\"%'
-                 ORDER BY f.path",
-                None,
-            ),
-            c @ 2..=8 => (
+            c @ 2..=9 => (
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f JOIN meta m ON f.meta_id = m.id
-                 WHERE m.tags LIKE ?1
+                 WHERE EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = ?1)
                  ORDER BY f.path",
-                Some(format!("%\"{}\"%%", collection_tag(c))),
+                Some(collection_tag(c)),
             ),
             _ => return vec![],
         };
@@ -442,7 +625,7 @@ impl Db {
             0 => db
                 .query_row(
                     "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.temporary = 0
                  ORDER BY RANDOM() LIMIT 1",
@@ -453,7 +636,7 @@ impl Db {
             1 => db
                 .query_row(
                     "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.temporary = 1
                  ORDER BY RANDOM() LIMIT 1",
@@ -461,25 +644,15 @@ impl Db {
                     row_to_entry,
                 )
                 .ok(),
-            9 => db
-                .query_row(
-                    "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
-                 FROM files f JOIN meta m ON f.meta_id = m.id
-                 WHERE m.tags LIKE '%\"like\"%'
-                 ORDER BY RANDOM() LIMIT 1",
-                    [],
-                    row_to_entry,
-                )
-                .ok(),
-            c @ 2..=8 => {
-                let pattern = format!("%\"{}\"%%", collection_tag(c));
+            c @ 2..=9 => {
+                let tag = collection_tag(c);
                 db.query_row(
                     "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                            (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                            EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                      FROM files f JOIN meta m ON f.meta_id = m.id
-                     WHERE m.tags LIKE ?1
+                     WHERE EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = ?1)
                      ORDER BY RANDOM() LIMIT 1",
-                    [&pattern],
+                    [&tag],
                     row_to_entry,
                 )
                 .ok()
@@ -495,13 +668,10 @@ impl Db {
         let (sql, param): (&str, Option<String>) = match collection {
             0 => ("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE temporary = 0", None),
             1 => ("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE temporary = 1", None),
-            9 => (
-                "SELECT COUNT(*), COALESCE(SUM(f.size),0) FROM files f JOIN meta m ON f.meta_id = m.id WHERE m.tags LIKE '%\"like\"%'",
-                None,
-            ),
-            c @ 2..=8 => (
-                "SELECT COUNT(*), COALESCE(SUM(f.size),0) FROM files f JOIN meta m ON f.meta_id = m.id WHERE m.tags LIKE ?1",
-                Some(format!("%\"{}\"%%", collection_tag(c))),
+            c @ 2..=9 => (
+                "SELECT COUNT(*), COALESCE(SUM(f.size),0) FROM files f JOIN meta m ON f.meta_id = m.id
+                 WHERE EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = ?1)",
+                Some(collection_tag(c)),
             ),
             _ => return (0, 0),
         };
@@ -587,7 +757,7 @@ impl Db {
         let mut stmt = db
             .prepare(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  WHERE f.dir = ?1
                  ORDER BY f.path",
@@ -616,7 +786,7 @@ impl Db {
         self.conn()
             .query_row(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  ORDER BY RANDOM() LIMIT 1",
                 [],
@@ -629,7 +799,7 @@ impl Db {
         self.conn()
             .query_row(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id,
-                        (COALESCE(m.tags, '[]') LIKE '%\"like\"%'), f.temporary
+                        EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like'), f.temporary
                  FROM files f LEFT JOIN meta m ON f.meta_id = m.id
                  ORDER BY f.modified_at DESC LIMIT 1",
                 [],
@@ -643,7 +813,7 @@ impl Db {
             .query_row(
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
                  FROM files f JOIN meta m ON f.meta_id = m.id
-                 WHERE m.tags LIKE '%\"like\"%'
+                  WHERE EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like')
                  ORDER BY RANDOM() LIMIT 1",
                 [],
                 row_to_entry,
@@ -658,7 +828,7 @@ impl Db {
                 "SELECT f.id, f.path, f.dir, f.filename, f.meta_id, 1, f.temporary
                  FROM files f JOIN meta m ON f.meta_id = m.id
                  JOIN history h ON h.file_id = f.id AND h.action = 'like'
-                 WHERE m.tags LIKE '%\"like\"%'
+                  WHERE EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = m.id AND mt.tag = 'like')
                  ORDER BY h.id DESC LIMIT 1",
                 [],
                 row_to_entry,
@@ -669,55 +839,37 @@ impl Db {
     // ── Mutations ───────────────────────────────────────────────────────
 
     pub fn toggle_like(&self, file_id: i64) -> bool {
-        let db = self.conn();
-        let meta_id: Option<i64> = db
-            .query_row("SELECT meta_id FROM files WHERE id = ?1", [file_id], |r| {
-                r.get(0)
-            })
-            .ok()
-            .flatten();
-
-        let meta_id = match meta_id {
-            Some(id) => id,
-            None => match ensure_file_meta(&db, file_id) {
-                Some(id) => id,
-                None => return false,
-            },
-        };
-
-        let tags_str: String = db
-            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| {
-                r.get(0)
-            })
-            .unwrap_or_else(|_| "[]".into());
-        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-
-        let liked = if tags.contains(&"like".to_string()) {
-            tags.retain(|t| t != "like");
-            db.execute(
-                "INSERT INTO history (file_id, action) VALUES (?1, 'unlike')",
-                [file_id],
-            )
-            .ok();
+        let liked = {
+            let _guard = self.conn(); // keep guard alive for query
+            _guard
+                .query_row(
+                    "SELECT 1 FROM files f
+                     WHERE f.id = ?1
+                     AND EXISTS (SELECT 1 FROM meta_tags mt WHERE mt.meta_id = f.meta_id AND mt.tag = 'like')",
+                    [file_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false)
+        }; // guard dropped here
+        if liked {
+            self.remove_tag(file_id, "like");
+            self.conn()
+                .execute(
+                    "INSERT INTO history (file_id, action) VALUES (?1, 'unlike')",
+                    [file_id],
+                )
+                .ok();
             false
         } else {
-            tags.push("like".to_string());
-            db.execute(
-                "INSERT INTO history (file_id, action) VALUES (?1, 'like')",
-                [file_id],
-            )
-            .ok();
+            self.add_tag(file_id, "like");
+            self.conn()
+                .execute(
+                    "INSERT INTO history (file_id, action) VALUES (?1, 'like')",
+                    [file_id],
+                )
+                .ok();
             true
-        };
-
-        let json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
-        db.execute(
-            "UPDATE meta SET tags = ?1 WHERE id = ?2",
-            rusqlite::params![json, meta_id],
-        )
-        .ok();
-
-        liked
+        }
     }
 
     pub fn record_view(&self, file_id: i64) {
@@ -733,32 +885,60 @@ impl Db {
 
     pub fn get_file_metadata(&self, file_id: i64) -> Option<FileMeta> {
         let db = self.conn();
-        db.query_row(
-            "SELECT f.filename, f.size, f.modified_at,
-                    m.width, m.height, m.format, m.duration_ms, m.bitrate, m.codecs,
-                    COALESCE(m.tags, '[]'), m.pnginfo
-             FROM files f LEFT JOIN meta m ON f.meta_id = m.id
-             WHERE f.id = ?1",
-            [file_id],
-            |row| {
-                let tags_str: String = row.get(9)?;
-                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-                Ok(FileMeta {
-                    filename: row.get(0)?,
-                    size: row.get(1)?,
-                    modified_at: row.get(2)?,
-                    width: row.get(3)?,
-                    height: row.get(4)?,
-                    format: row.get(5)?,
-                    duration_ms: row.get(6)?,
-                    bitrate: row.get(7)?,
-                    codecs: row.get(8)?,
-                    tags,
-                    pnginfo: row.get(10)?,
-                })
-            },
-        )
-        .ok()
+        let (filename, size, modified_at, meta_id, width, height, format, duration_ms, bitrate, codecs, pnginfo) = db
+            .query_row(
+                "SELECT f.filename, f.size, f.modified_at,
+                        f.meta_id,
+                        m.width, m.height, m.format, m.duration_ms, m.bitrate, m.codecs,
+                        m.pnginfo
+                 FROM files f LEFT JOIN meta m ON f.meta_id = m.id
+                 WHERE f.id = ?1",
+                [file_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                    ))
+                },
+            )
+            .ok()?;
+
+        let tags = if let Some(mid) = meta_id {
+            let mut stmt = db
+                .prepare("SELECT tag FROM meta_tags WHERE meta_id = ?1 ORDER BY tag")
+                .ok()?;
+            let x: Vec<String> = stmt
+                .query_map([mid], |r| r.get::<_, String>(0))
+                .ok()?
+                .filter_map(|r| r.ok())
+                .collect();
+            x
+        } else {
+            Vec::new()
+        };
+
+        Some(FileMeta {
+            filename,
+            size,
+            modified_at,
+            width,
+            height,
+            format,
+            duration_ms,
+            bitrate,
+            codecs,
+            tags,
+            pnginfo,
+        })
     }
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -964,10 +1144,53 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
 
 fn collection_tag(c: u8) -> String {
     match c {
-        9 => "like".into(),
-        n @ 2..=8 => format!("c{n}"),
+        n @ 2..=9 => format!("c{n}"),
         _ => String::new(),
     }
+}
+
+fn chrono_now_compact() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let days = secs / 86400;
+    let time = secs % 86400;
+    let h = time / 3600;
+    let m = (time % 3600) / 60;
+    let s = time % 60;
+    let mut y = 1970i64;
+    let mut remaining = days as i64;
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let month_days = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut mo = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md {
+            mo = i + 1;
+            break;
+        }
+        remaining -= md;
+    }
+    if mo == 0 {
+        mo = 12;
+    }
+    let day = remaining + 1;
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, mo, day, h, m, s)
+}
+
+fn is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn ensure_file_meta(db: &Connection, file_id: i64) -> Option<i64> {
@@ -1002,6 +1225,14 @@ fn ensure_file_meta(db: &Connection, file_id: i64) -> Option<i64> {
 }
 
 fn merge_meta_tags(db: &Connection, from_meta_id: i64, to_meta_id: i64) {
+    // Copy tags from from_meta_id to to_meta_id in meta_tags junction table
+    db.execute(
+        "INSERT OR IGNORE INTO meta_tags (meta_id, tag)
+         SELECT ?1, tag FROM meta_tags WHERE meta_id = ?2",
+        rusqlite::params![to_meta_id, from_meta_id],
+    )
+    .ok();
+    // Also merge JSON column for backward compat during migration
     let read_tags = |id: i64| -> Vec<String> {
         db.query_row("SELECT tags FROM meta WHERE id = ?1", [id], |r| {
             r.get::<_, String>(0)
@@ -1086,7 +1317,13 @@ mod tests {
                  created_at TEXT DEFAULT (datetime('now')),
                  PRIMARY KEY (file_id, layer)
              );
-             CREATE TABLE directories (
+              CREATE TABLE meta_tags (
+                  meta_id INTEGER NOT NULL REFERENCES meta(id),
+                  tag TEXT NOT NULL,
+                  created_at TEXT DEFAULT (datetime('now')),
+                  PRIMARY KEY (meta_id, tag)
+              );
+              CREATE TABLE directories (
                  id INTEGER PRIMARY KEY,
                  path TEXT NOT NULL UNIQUE,
                  tracked INTEGER NOT NULL DEFAULT 1,
@@ -1410,11 +1647,11 @@ mod tests {
     }
 
     #[test]
-    fn collection_9_is_liked() {
+    fn collection_9_is_c9_tag() {
         let db = test_db();
         insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
         insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
-        db.toggle_like(1);
+        db.toggle_collection(1, 9);
 
         let c9 = db.files_by_collection(9);
         assert_eq!(c9.len(), 1);
@@ -1425,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_collection_tag_c2_through_c8() {
+    fn toggle_collection_tag_c2_through_c9() {
         let db = test_db();
         insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
 
@@ -1442,6 +1679,19 @@ mod tests {
         assert!(!off);
         assert!(!db.file_in_collection(1, 3));
         assert!(db.files_by_collection(3).is_empty());
+
+        // Toggle c9 on
+        let on9 = db.toggle_collection(1, 9);
+        assert!(on9);
+        assert!(db.file_in_collection(1, 9));
+        let c9 = db.files_by_collection(9);
+        assert_eq!(c9.len(), 1);
+
+        // Toggle c9 off
+        let off9 = db.toggle_collection(1, 9);
+        assert!(!off9);
+        assert!(!db.file_in_collection(1, 9));
+        assert!(db.files_by_collection(9).is_empty());
     }
 
     #[test]
@@ -1516,7 +1766,7 @@ mod tests {
         assert!(db.random_in_collection(1).is_none());
         // No tagged files → collection 3 is empty
         assert!(db.random_in_collection(3).is_none());
-        // No liked files → collection 9 is empty
+        // No c9-tagged files → collection 9 is empty
         assert!(db.random_in_collection(9).is_none());
     }
 
@@ -1524,14 +1774,14 @@ mod tests {
     fn collection_tag_helper() {
         assert_eq!(collection_tag(2), "c2");
         assert_eq!(collection_tag(8), "c8");
-        assert_eq!(collection_tag(9), "like");
+        assert_eq!(collection_tag(9), "c9");
         assert_eq!(collection_tag(0), "");
         assert_eq!(collection_tag(1), "");
         assert_eq!(collection_tag(10), "");
     }
 
     #[test]
-    fn toggle_collection_on_file_without_meta_returns_false() {
+    fn toggle_collection_on_file_without_meta_creates_meta() {
         let db = test_db();
         // Insert file without meta_id
         db.conn()
@@ -1541,7 +1791,24 @@ mod tests {
             )
             .unwrap();
         let result = db.toggle_collection(99, 3);
-        assert!(!result);
+        assert!(result); // add_tag creates meta automatically
+
+        // Verify meta was created and tag is set
+        let meta_id: Option<i64> = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 99", [], |r| r.get(0))
+            .ok()
+            .flatten();
+        assert!(meta_id.is_some(), "meta_id should be created");
+        let has_tag: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM meta_tags WHERE meta_id = ?1 AND tag = 'c3'",
+                [meta_id.unwrap()],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(has_tag, "tag c3 should exist");
     }
 
     #[test]
@@ -1568,13 +1835,32 @@ mod tests {
         db.toggle_like(1);
         db.toggle_collection(1, 4);
 
-        assert!(db.file_in_collection(1, 9)); // liked
+        // Verify like via meta_tags directly
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'like'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(liked);
         assert!(db.file_in_collection(1, 4)); // c4
         assert!(db.file_in_collection(1, 0)); // non-temporary
 
         // Unlike doesn't remove c4
         db.toggle_like(1);
-        assert!(!db.file_in_collection(1, 9));
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'like'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(!liked);
         assert!(db.file_in_collection(1, 4));
     }
 
@@ -2527,10 +2813,28 @@ mod tests {
         db.file_set_hash_meta(1, "h1");
 
         assert!(db.toggle_like(1)); // like
-        assert!(db.file_in_collection(1, 9));
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'like'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(liked);
 
         assert!(!db.toggle_like(1)); // unlike
-        assert!(!db.file_in_collection(1, 9));
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'like'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(!liked);
     }
 
     #[test]
@@ -2543,7 +2847,16 @@ mod tests {
         let files = db.files_by_dir("/a");
         assert!(files[0].liked);
         assert!(files[0].meta_id.is_some());
-        assert!(db.file_in_collection(files[0].id, 9));
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = ?1 AND mt.tag = 'like'",
+                [files[0].id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(liked);
     }
 
     #[test]
@@ -2557,7 +2870,16 @@ mod tests {
 
         let files = db.files_by_dir("/a");
         assert!(files[0].liked);
-        assert!(db.file_in_collection(file_id, 9));
+        let liked: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM files f JOIN meta_tags mt ON mt.meta_id = f.meta_id
+                 WHERE f.id = ?1 AND mt.tag = 'like'",
+                [file_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(liked);
     }
 
     #[test]
@@ -2847,5 +3169,279 @@ mod tests {
             let path = dirs.data_dir().join("lv.db");
             assert_eq!(path.file_name().unwrap(), "lv.db");
         }
+    }
+
+    // ── add_tag / remove_tag ──────────────────────────────────────────────
+
+    #[test]
+    fn add_tag_creates_meta_when_missing() {
+        let db = test_db();
+        db.conn()
+            .execute(
+                "INSERT INTO files (id, path, dir, filename) VALUES (99, '/x/y.jpg', '/x', 'y.jpg')",
+                [],
+            )
+            .unwrap();
+        assert!(db.add_tag(99, "c2"));
+        let meta_id: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 99", [], |r| r.get(0))
+            .unwrap();
+        assert!(meta_id > 0);
+        let in_junction: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM meta_tags WHERE meta_id = ?1 AND tag = 'c2'",
+                [meta_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(in_junction, "tag should be in meta_tags");
+        let tags_json: String = db
+            .conn()
+            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| r.get(0))
+            .unwrap();
+        assert!(tags_json.contains("c2"), "tag should be in JSON column");
+    }
+
+    #[test]
+    fn add_tag_duplicate_is_idempotent() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        assert!(db.add_tag(1, "c2"));
+        assert!(db.add_tag(1, "c2")); // second add should succeed (INSERT OR IGNORE)
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM meta_tags mt JOIN files f ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'c2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "duplicate add should not create extra rows");
+    }
+
+    #[test]
+    fn remove_tag_removes_from_both_stores() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        db.add_tag(1, "c2");
+        assert!(db.remove_tag(1, "c2"));
+        // Gone from meta_tags
+        let in_junction: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM meta_tags mt JOIN files f ON mt.meta_id = f.meta_id
+                 WHERE f.id = 1 AND mt.tag = 'c2'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(!in_junction, "tag should be removed from meta_tags");
+        // Gone from JSON
+        let meta_id: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let tags_json: String = db
+            .conn()
+            .query_row("SELECT tags FROM meta WHERE id = ?1", [meta_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tags_json, "[]", "tag should be removed from JSON column");
+    }
+
+    #[test]
+    fn remove_tag_nonexistent_returns_false() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        assert!(!db.remove_tag(1, "c2"));
+    }
+
+    #[test]
+    fn remove_tag_no_meta_returns_false() {
+        let db = test_db();
+        db.conn()
+            .execute(
+                "INSERT INTO files (id, path, dir, filename) VALUES (99, '/x/y.jpg', '/x', 'y.jpg')",
+                [],
+            )
+            .unwrap();
+        assert!(!db.remove_tag(99, "c2"));
+    }
+
+    // ── merge_meta_tags ──────────────────────────────────────────────────
+
+    #[test]
+    fn merge_meta_tags_copies_junction_rows() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.add_tag(1, "c2");
+        db.add_tag(1, "c3");
+        db.add_tag(2, "c4");
+        // File 1 has c2, c3. File 2 has c4.
+        // Merge meta of file 1 into meta of file 2.
+        let meta1: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let meta2: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        merge_meta_tags(&db.conn(), meta1, meta2);
+        // meta2 should now have c2, c3, c4
+        let tags: Vec<String> = db
+            .conn()
+            .prepare("SELECT tag FROM meta_tags WHERE meta_id = ?1 ORDER BY tag")
+            .unwrap()
+            .query_map([meta2], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(tags, vec!["c2", "c3", "c4"]);
+    }
+
+    #[test]
+    fn merge_meta_tags_deduplicates() {
+        let db = test_db();
+        insert_file(&db, 1, "/a/1.jpg", "/a", "1.jpg");
+        insert_file(&db, 2, "/a/2.jpg", "/a", "2.jpg");
+        db.add_tag(1, "c2");
+        db.add_tag(2, "c2"); // same tag on both
+        let meta1: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let meta2: i64 = db
+            .conn()
+            .query_row("SELECT meta_id FROM files WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        merge_meta_tags(&db.conn(), meta1, meta2);
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM meta_tags WHERE meta_id = ?1 AND tag = 'c2'",
+                [meta2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "merge should not duplicate tags");
+    }
+
+    // ── run_tag_migration ────────────────────────────────────────────────
+
+    #[test]
+    fn run_tag_migration_migrates_json_to_meta_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+        {
+            let db = Db::open_path(&db_path);
+            db.ensure_schema();
+            // Insert meta entries with old-style JSON tags
+            let c = db.conn();
+            c.execute(
+                "INSERT INTO meta (id, hash_sha512, tags) VALUES (1, 'h1', '[\"like\",\"c2\"]')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO meta (id, hash_sha512, tags) VALUES (2, 'h2', '[\"c3\"]')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO meta (id, hash_sha512, tags) VALUES (3, 'h3', '[]')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO files (id, path, dir, filename, meta_id)
+                 VALUES (1, '/a/1.jpg', '/a', '1.jpg', 1)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO files (id, path, dir, filename, meta_id)
+                 VALUES (2, '/a/2.jpg', '/a', '2.jpg', 2)",
+                [],
+            )
+            .unwrap();
+        }
+        // Re-open to simulate fresh startup
+        let db = Db::open_path(&db_path);
+        db.ensure_schema();
+        let (total, inserted) = db.run_tag_migration().unwrap();
+        assert_eq!(total, 2, "should find 2 rows with tags");
+        assert_eq!(inserted, 3, "like + c2 + c3 = 3 tags");
+        // Verify meta_tags populated
+        let tags1: Vec<String> = db
+            .conn()
+            .prepare("SELECT tag FROM meta_tags WHERE meta_id = 1 ORDER BY tag")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(tags1, vec!["c2", "like"]);
+        let tags2: Vec<String> = db
+            .conn()
+            .prepare("SELECT tag FROM meta_tags WHERE meta_id = 2 ORDER BY tag")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(tags2, vec!["c3"]);
+        // meta_id 3 had empty tags → nothing
+        let count3: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM meta_tags WHERE meta_id = 3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count3, 0);
+    }
+
+    #[test]
+    fn run_tag_migration_is_idempotent_on_second_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lv.db");
+        {
+            let db = Db::open_path(&db_path);
+            db.ensure_schema();
+            let c = db.conn();
+            c.execute(
+                "INSERT INTO meta (id, hash_sha512, tags) VALUES (1, 'h1', '[\"like\"]')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO files (id, path, dir, filename, meta_id)
+                 VALUES (1, '/a/1.jpg', '/a', '1.jpg', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Db::open_path(&db_path);
+        db.ensure_schema();
+        let (total1, inserted1) = db.run_tag_migration().unwrap();
+        assert_eq!(total1, 1);
+        assert_eq!(inserted1, 1);
+        // Second run: same tags parsed from JSON but INSERT OR IGNORE prevents errors
+        let (total2, inserted2) = db.run_tag_migration().unwrap();
+        assert_eq!(total2, 1, "same meta rows with tags still present");
+        assert_eq!(inserted2, 1, "tags parsed again (counted pre-insert)");
+        // meta_tags should still have the tag
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM meta_tags WHERE meta_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
