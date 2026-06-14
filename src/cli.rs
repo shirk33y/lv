@@ -1,6 +1,10 @@
 //! CLI subcommand implementations.
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use crate::clean_path;
 use crate::db::{row_to_entry, Db, FileEntry};
@@ -482,6 +486,89 @@ pub fn find_files(
     for f in &results {
         println!("{}", f.path);
     }
+}
+
+static DAEMON_RUNNING: AtomicBool = AtomicBool::new(true);
+
+extern "C" fn daemon_signal(_: i32) {
+    DAEMON_RUNNING.store(false, Ordering::Release);
+}
+
+pub fn daemon(db: &Db) {
+    eprintln!("daemon: starting...");
+
+    DAEMON_RUNNING.store(true, Ordering::Release);
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            daemon_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            daemon_signal as *const () as libc::sighandler_t,
+        );
+    }
+
+    let (fs_watcher, _fs_rx) = crate::watcher::FsWatcher::start(db.clone());
+    let mut engine = crate::jobs::JobEngine::start(db.clone());
+    engine.stats.turbo.store(true, Ordering::Relaxed);
+
+    let mut last_data_ver = db.data_version() - 1; // force initial refresh
+    let mut watched: HashSet<String> = db.watched_dirs().into_iter().map(|(p, _)| p).collect();
+
+    eprintln!("daemon: running (SIGINT/SIGTERM to stop)");
+
+    while DAEMON_RUNNING.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(500));
+
+        let dv = db.data_version();
+        if dv == last_data_ver {
+            continue;
+        }
+        last_data_ver = dv;
+
+        // Process pending commands
+        while let Some((id, action, payload)) = db.claim_next_command() {
+            match action.as_str() {
+                "scan" => {
+                    if let Some(ref p) = payload {
+                        eprintln!("daemon: scanning {}...", p);
+                        scanner::discover(db, Path::new(p));
+                    } else {
+                        let dirs = db.tracked_list();
+                        for (dir, ..) in &dirs {
+                            eprintln!("daemon: scanning {}...", dir);
+                            scanner::discover(db, Path::new(dir));
+                        }
+                    }
+                    eprintln!("daemon: scan done");
+                }
+                "shutdown" => {
+                    eprintln!("daemon: shutdown requested via commands");
+                    DAEMON_RUNNING.store(false, Ordering::Release);
+                }
+                other => eprintln!("daemon: unknown command: {other}"),
+            }
+            db.delete_command(id);
+            if !DAEMON_RUNNING.load(Ordering::Acquire) {
+                break;
+            }
+        }
+
+        // Sync filesystem watches with DB state
+        let new_watched: HashSet<String> = db.watched_dirs().into_iter().map(|(p, _)| p).collect();
+
+        for path in new_watched.difference(&watched) {
+            fs_watcher.watch_dir(path);
+        }
+        for path in watched.difference(&new_watched) {
+            fs_watcher.unwatch_dir(path);
+        }
+        watched = new_watched;
+    }
+
+    engine.stop();
+    eprintln!("daemon: stopped");
 }
 
 #[cfg(test)]

@@ -708,7 +708,12 @@ enum Commands {
     Unwatch { path: PathBuf },
     /// Re-scan tracked directories (or a specific path)
     #[command(alias = "scan")]
-    Sync { path: Option<PathBuf> },
+    Sync {
+        path: Option<PathBuf>,
+        /// Run as background daemon
+        #[arg(short = 'b', long)]
+        background: bool,
+    },
     /// Show library statistics
     Status,
     /// Run headless job worker until done
@@ -773,7 +778,14 @@ fn main() {
             Commands::Remove { path } => cli::untrack(&lv_db, &path),
             Commands::Watch { path } => cli::watch(&lv_db, &path),
             Commands::Unwatch { path } => cli::unwatch(&lv_db, &path),
-            Commands::Sync { path } => cli::scan(&lv_db, path.as_deref()),
+            Commands::Sync { path, background } => {
+                if background {
+                    lv_db.ensure_commands_schema();
+                    cli::daemon(&lv_db);
+                } else {
+                    cli::scan(&lv_db, path.as_deref());
+                }
+            }
             Commands::Status => cli::status(&lv_db),
             Commands::Worker => cli::worker(&lv_db),
             Commands::Get { path, keys } => cli::get_props(&lv_db, &path, &keys),
@@ -1512,7 +1524,7 @@ fn main() {
                             eprintln!("jobs: {} mode", if !was { "TURBO" } else { "lazy" });
                         }
 
-                        // ── r: refresh current directory ───────────────
+                        // ── r: refresh current dir + request daemon scan ─
                         Keycode::R => {
                             let old_id = files.get(cursor).map(|f| f.id);
                             files = lv_db.files_by_dir(&current_dir);
@@ -1523,7 +1535,12 @@ fn main() {
                             }
                             needs_display = true;
                             cached_meta_file_id = -1;
-                            eprintln!("refresh: {} ({} files)", current_dir, files.len());
+                            lv_db.write_command("scan", Some(&current_dir));
+                            eprintln!(
+                                "refresh: {} ({} files) + scan requested",
+                                current_dir,
+                                files.len()
+                            );
                         }
 
                         // ── c: copy path to clipboard ───────────────────

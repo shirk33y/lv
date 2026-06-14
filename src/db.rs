@@ -1167,6 +1167,50 @@ impl Db {
             .ok();
     }
 
+    pub fn ensure_commands_schema(&self) {
+        self.conn()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    payload TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );",
+            )
+            .ok();
+    }
+
+    pub fn data_version(&self) -> i64 {
+        self.conn()
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0)
+    }
+
+    pub fn write_command(&self, action: &str, payload: Option<&str>) {
+        self.conn()
+            .execute(
+                "INSERT INTO commands (action, payload) VALUES (?1, ?2)",
+                rusqlite::params![action, payload],
+            )
+            .ok();
+    }
+
+    pub fn claim_next_command(&self) -> Option<(i64, String, Option<String>)> {
+        self.conn()
+            .query_row(
+                "SELECT id, action, payload FROM commands ORDER BY id LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+
+    pub fn delete_command(&self, id: i64) {
+        self.conn()
+            .execute("DELETE FROM commands WHERE id = ?1", [id])
+            .ok();
+    }
+
     pub fn next_missing_hash(&self) -> Option<(i64, String)> {
         self.conn()
             .query_row(
