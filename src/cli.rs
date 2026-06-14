@@ -1074,4 +1074,62 @@ mod tests {
             "ORDER BY f.path COLLATE NOCASE"
         );
     }
+
+    // ── daemon / commands ────────────────────────────────────────────────
+
+    #[test]
+    fn daemon_signal_sets_flag_false() {
+        use std::sync::atomic::Ordering;
+        DAEMON_RUNNING.store(true, Ordering::Release);
+        daemon_signal(0);
+        assert!(!DAEMON_RUNNING.load(Ordering::Acquire));
+        // Reset for subsequent tests
+        DAEMON_RUNNING.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn watch_sync_difference_new_dirs() {
+        use std::collections::HashSet;
+        let current: HashSet<String> = ["/a".into(), "/b".into()].into();
+        let new: HashSet<String> = ["/a".into(), "/b".into(), "/c".into()].into();
+        let to_add: Vec<&String> = new.difference(&current).collect();
+        let to_remove: Vec<&String> = current.difference(&new).collect();
+        assert_eq!(to_add.len(), 1);
+        assert_eq!(to_add[0], "/c");
+        assert!(to_remove.is_empty());
+    }
+
+    #[test]
+    fn watch_sync_difference_removed_dirs() {
+        use std::collections::HashSet;
+        let mut current: HashSet<String> = ["/a".into(), "/b".into(), "/c".into()].into();
+        let new: HashSet<String> = ["/a".into(), "/b".into()].into();
+        let to_remove: Vec<&String> = current.difference(&new).collect();
+        assert_eq!(to_remove.len(), 1);
+        assert!(to_remove.contains(&&"/c".to_string()));
+    }
+
+    #[test]
+    fn watch_sync_difference_both() {
+        use std::collections::HashSet;
+        let current: HashSet<String> = ["/a".into(), "/b".into()].into();
+        let new: HashSet<String> = ["/b".into(), "/c".into()].into();
+        let to_add: Vec<&String> = new.difference(&current).collect();
+        let to_remove: Vec<&String> = current.difference(&new).collect();
+        assert_eq!(to_add.len(), 1);
+        assert_eq!(to_add[0], "/c");
+        assert_eq!(to_remove.len(), 1);
+        assert_eq!(to_remove[0], "/a");
+    }
+
+    #[test]
+    fn watch_sync_difference_no_change() {
+        use std::collections::HashSet;
+        let current: HashSet<String> = ["/a".into(), "/b".into()].into();
+        let new: HashSet<String> = ["/b".into(), "/a".into()].into();
+        let to_add: Vec<&String> = new.difference(&current).collect();
+        let to_remove: Vec<&String> = current.difference(&new).collect();
+        assert!(to_add.is_empty());
+        assert!(to_remove.is_empty());
+    }
 }

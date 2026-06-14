@@ -3695,4 +3695,99 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+
+    // ── commands table ───────────────────────────────────────────────────
+
+    #[test]
+    fn commands_write_and_claim() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        db.ensure_jobs_schema();
+        db.write_command("scan", Some("/test/path"));
+        let cmd = db.claim_next_command();
+        assert!(cmd.is_some());
+        let (id, action, payload) = cmd.unwrap();
+        assert_eq!(action, "scan");
+        assert_eq!(payload, Some("/test/path".to_string()));
+        db.delete_command(id);
+        assert!(db.claim_next_command().is_none());
+    }
+
+    #[test]
+    fn commands_write_without_payload() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        db.ensure_jobs_schema();
+        db.write_command("shutdown", None);
+        let (_, action, payload) = db.claim_next_command().unwrap();
+        assert_eq!(action, "shutdown");
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn commands_multiple_ordered() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        db.ensure_jobs_schema();
+        db.write_command("scan", None);
+        db.write_command("scan", Some("/a"));
+        db.write_command("shutdown", None);
+
+        let (id1, action1, _) = db.claim_next_command().unwrap();
+        assert_eq!(action1, "scan");
+        db.delete_command(id1);
+
+        let (id2, action2, payload2) = db.claim_next_command().unwrap();
+        assert_eq!(action2, "scan");
+        assert_eq!(payload2, Some("/a".to_string()));
+        db.delete_command(id2);
+
+        let (id3, action3, _) = db.claim_next_command().unwrap();
+        assert_eq!(action3, "shutdown");
+        db.delete_command(id3);
+
+        assert!(db.claim_next_command().is_none());
+    }
+
+    #[test]
+    fn commands_claim_empty() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        db.ensure_jobs_schema();
+        assert!(db.claim_next_command().is_none());
+    }
+
+    #[test]
+    fn commands_delete_nonexistent_no_panic() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        db.ensure_jobs_schema();
+        db.delete_command(999);
+    }
+
+    #[test]
+    fn data_version_returns_without_error() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        // PRAGMA data_version should return a non-negative integer
+        // (incremented by DDL like CREATE TABLE)
+        let v = db.data_version();
+        assert!(v >= 0);
+    }
+
+    #[test]
+    fn commands_schema_idempotent() {
+        let db = Db::open_memory();
+        db.ensure_schema();
+        db.ensure_commands_schema();
+        // Calling again should not error
+        db.ensure_commands_schema();
+        db.write_command("scan", None);
+        assert!(db.claim_next_command().is_some());
+    }
 }
