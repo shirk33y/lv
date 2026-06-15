@@ -74,11 +74,11 @@ flatpak-smoke:
 	mkdir -p $(LV_SMOKE_LOG_DIR)
 	$(CONTAINER_RUNTIME) build \
 		--platform $(FLATPAK_PLATFORM) \
-		--build-arg FLATPAK_BUNDLE=$(FLATPAK_BUNDLE) \
 		-f docker/Dockerfile.flatpak-smoke \
 		-t lv-flatpak-smoke-$(FLATPAK_ARCH) .
 	$(CONTAINER_RUNTIME) run --rm --privileged \
 		--platform $(FLATPAK_PLATFORM) \
+		-v $(CURDIR)/$(FLATPAK_BUNDLE):/tmp/lv.flatpak:ro \
 		-v $(CURDIR)/$(LV_SMOKE_LOG_DIR):/smoke-logs:rw \
 		lv-flatpak-smoke-$(FLATPAK_ARCH) \
 		bash -lc 'FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures LV_SMOKE_LOG_DIR=/smoke-logs bash /scripts/smoke-test-flatpak.sh'
