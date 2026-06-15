@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release_meta:
+  release-meta:
     runs-on: ubuntu-latest
     outputs:
       release: ${{ steps.meta.outputs.release }}
@@ -75,8 +75,8 @@ jobs:
 
   build-flatpak:
     name: build-flatpak (${{ matrix.arch }})
-    needs: release_meta
-    if: needs.release_meta.outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
+    needs: release-meta
+    if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -139,10 +139,44 @@ jobs:
             build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
           retention-days: 7
 
+  build-smoke:
+    name: build-smoke (${{ matrix.arch }})
+    needs: release-meta
+    if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Build smoke image
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: docker/Dockerfile.flatpak-smoke
+          platforms: ${{ matrix.platform }}
+          tags: lv-flatpak-smoke-${{ matrix.arch }}
+          cache-from: type=gha,scope=flatpak-smoke-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=flatpak-smoke-${{ matrix.arch }}
+
   smoke-flatpak:
     name: smoke-flatpak (${{ matrix.arch }})
-    needs: [release_meta, build-flatpak]
-    if: needs.release_meta.outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
+    needs: [release-meta, build-flatpak, build-smoke]
+    if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -195,10 +229,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           load: true
           tags: lv-flatpak-smoke-${{ matrix.arch }}
-          build-args: |
-            FLATPAK_BUNDLE=build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
           cache-from: type=gha,scope=flatpak-smoke-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=flatpak-smoke-${{ matrix.arch }}
 
       - name: Smoke test Flatpak
         env:
@@ -208,6 +239,7 @@ jobs:
           mkdir -p "$LV_SMOKE_LOG_DIR"
           docker run --rm --privileged \
             --platform "${{ matrix.platform }}" \
+            -v "$GITHUB_WORKSPACE/$FLATPAK_BUNDLE:/tmp/lv.flatpak:ro" \
             -v "$GITHUB_WORKSPACE/$LV_SMOKE_LOG_DIR:/smoke-logs:rw" \
             lv-flatpak-smoke-${{ matrix.arch }} \
             bash -lc 'FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures LV_SMOKE_LOG_DIR=/smoke-logs bash /scripts/smoke-test-flatpak.sh'
@@ -223,12 +255,12 @@ jobs:
 
   publish:
     name: publish-flatpaks
-    needs: [release_meta, smoke-flatpak]
-    if: needs.release_meta.outputs.release == 'true' && github.event.inputs.smoke_only != 'true'
+    needs: [release-meta, smoke-flatpak]
+    if: needs['release-meta'].outputs.release == 'true' && github.event.inputs.smoke_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      TAG: ${{ needs.release_meta.outputs.tag }}
+      TAG: ${{ needs['release-meta'].outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5

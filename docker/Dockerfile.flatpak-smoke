@@ -1,12 +1,11 @@
 # Flatpak smoke test: verify lv.flatpak works with image and video files
 # Usage:
 #   docker build -f docker/Dockerfile.flatpak-smoke -t lv-flatpak-smoke .
-#   docker run --rm lv-flatpak-smoke
+#   docker run --rm -v /path/to/lv.flatpak:/tmp/lv.flatpak:ro lv-flatpak-smoke
 
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ARG FLATPAK_BUNDLE=build/lv.flatpak
 
 # Install flatpak and dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -33,8 +32,7 @@ RUN echo "Installing Freedesktop runtime..." && \
     org.freedesktop.Platform//24.08 \
     org.freedesktop.Sdk//24.08 || true
 
-# Copy flatpak bundle and test files
-COPY ${FLATPAK_BUNDLE} /tmp/lv.flatpak
+# Copy test files and smoke script
 COPY test/fixtures /fixtures
 COPY scripts/smoke-test-flatpak.sh /scripts/smoke-test-flatpak.sh
 

@@ -197,7 +197,7 @@ xvfb-run -a --server-args="-screen 0 1280x720x24" bash -c '
 set -eo pipefail
 TEST_VIDEO="$1"
 TMPDIR_GUI="$2"
-flatpak run io.github.shirk33y.lv "$TEST_VIDEO" >"$TMPDIR_GUI/stdout.log" 2>"$TMPDIR_GUI/stderr.log" &
+flatpak run --env=LV_MPV_HWDEC=no io.github.shirk33y.lv "$TEST_VIDEO" >"$TMPDIR_GUI/stdout.log" 2>"$TMPDIR_GUI/stderr.log" &
 APP_PID=$!
 echo "$APP_PID" >"$TMPDIR_GUI/app.pid"
 

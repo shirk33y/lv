@@ -1018,7 +1018,8 @@ fn main() {
             panic!("mpv_set_property_string({name}={val}) failed: {}", rc);
         }
     };
-    set_prop("hwdec", "auto");
+    let hwdec = std::env::var("LV_MPV_HWDEC").unwrap_or_else(|_| "auto-safe".into());
+    set_prop("hwdec", &hwdec);
     set_prop("terminal", "no");
     set_prop("mute", "no");
     set_prop("volume", "100");
