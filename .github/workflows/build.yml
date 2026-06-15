@@ -160,7 +160,7 @@ jobs:
           retention-days: 7
 
   smoke-flatpak:
-    name: smoke-flatpak (${{ matrix.arch }})
+    name: smoke-flatpak
     needs: [release-meta, build-flatpak]
     if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
     runs-on: ${{ matrix.runner }}

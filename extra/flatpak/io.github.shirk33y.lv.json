@@ -84,6 +84,9 @@
     {
       "name": "libmpv",
       "buildsystem": "meson",
+      "build-options": {
+        "prepend-pkg-config-path": "/app/lib/pkgconfig:/app/share/pkgconfig"
+      },
       "sources": [
         {
           "type": "git",
