@@ -1026,6 +1026,15 @@ fn main() {
     set_prop("image-display-duration", "inf");
     set_prop("keep-open", "yes");
     set_prop("loop-file", mpv_loop_file_value(false));
+    // Help software GL rendering (xvfb, headless CI)
+    for &(k, val) in &[("opengl-es", "yes"), ("vo", "libmpv")] {
+        let n = CString::new(k).unwrap();
+        let v = CString::new(val).unwrap();
+        let rc = unsafe { libmpv_sys::mpv_set_property_string(mpv_handle, n.as_ptr(), v.as_ptr()) };
+        if rc < 0 {
+            eprintln!("mpv_set_property_string({})={} failed: {}", k, val, rc);
+        }
+    }
     let init_rc = unsafe { libmpv_sys::mpv_initialize(mpv_handle) };
     if init_rc < 0 {
         panic!("mpv_initialize failed: {}", init_rc);
