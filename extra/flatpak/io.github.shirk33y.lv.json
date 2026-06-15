@@ -100,7 +100,8 @@
         "-Dlua=disabled",
         "-Duchardet=disabled",
         "-Dbuild-date=false",
-        "-Djavascript=disabled"
+        "-Djavascript=disabled",
+        "--libdir=lib"
       ]
     },
     {
