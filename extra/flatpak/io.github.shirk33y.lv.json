@@ -32,22 +32,6 @@
   },
   "modules": [
     {
-      "name": "libsdl2",
-      "buildsystem": "cmake-ninja",
-      "builddir": true,
-      "sources": [
-        {
-          "type": "archive",
-          "url": "https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-2.30.0.tar.gz",
-          "sha256": "36e2e41557e0fa4a1519315c0f5958a87ccb27e25c51776beb6f1239526447b0"
-        }
-      ],
-      "config-opts": [
-        "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_INSTALL_PREFIX=/app"
-      ]
-    },
-    {
       "name": "libplacebo",
       "buildsystem": "meson",
       "sources": [
@@ -118,7 +102,6 @@
         "append-path": "/usr/lib/sdk/rust-stable/bin",
         "prepend-ld-library-path": "/usr/lib/sdk/rust-stable/lib",
         "env": {
-          "PKG_CONFIG_PATH": "/app/lib/pkgconfig",
           "RUSTFLAGS": "-L/app/lib"
         }
       },

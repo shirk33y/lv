@@ -101,7 +101,7 @@ jobs:
       - name: Cache + install apt packages (Flatpak build)
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
-          packages: flatpak flatpak-builder python3-pip jq
+          packages: flatpak flatpak-builder python3-pip jq librsvg2-bin
           version: 1.0-${{ matrix.arch }}
 
       - name: Cache Flatpak runtimes
