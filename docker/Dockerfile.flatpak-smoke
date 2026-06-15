@@ -30,7 +30,8 @@ RUN flatpak remote-modify --user --enable flathub || true
 RUN echo "Installing Freedesktop runtime..." && \
     flatpak install --user --assumeyes \
     org.freedesktop.Platform//24.08 \
-    org.freedesktop.Sdk//24.08 || true
+    org.freedesktop.Sdk//24.08 \
+    org.freedesktop.Platform.ffmpeg-full//24.08 || true
 
 # Copy test files and smoke script
 COPY test/fixtures /fixtures
