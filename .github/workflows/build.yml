@@ -84,32 +84,51 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            platform: linux/amd64
             runner: ubuntu-latest
             timeout: 90
           - arch: aarch64
-            platform: linux/arm64
             runner: ubuntu-24.04-arm
             timeout: 120
     env:
-      CONTAINER_RUNTIME: docker
       FLATPAK_ARCH: ${{ matrix.arch }}
-      FLATPAK_PLATFORM: ${{ matrix.platform }}
-      FLATPAK_FORCE_CLEAN: "0"
-      FLATPAK_STATE_DIR: build/flatpak-state
     steps:
       - uses: actions/checkout@v5
         with:
           lfs: true
 
-      - name: Cache Flatpak state
+      - name: Cache + install apt packages (Flatpak build)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: flatpak flatpak-builder python3-pip jq
+          version: 1.0-${{ matrix.arch }}
+
+      - name: Cache Flatpak runtimes
+        id: cache-flatpak-runtimes
         uses: actions/cache@v5
         with:
           path: |
-            build/flatpak-state
-            build/flatpak-home
+            ~/.local/share/flatpak
             ~/.cache/flatpak
-          key: flatpak-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'extra/flatpak/io.github.shirk33y.lv.json', 'extra/flatpak/flatpak-cargo-generator.py', 'scripts/build-flatpak.sh') }}
+          key: flatpak-runtimes-${{ runner.os }}-${{ matrix.arch }}-24.08
+
+      - name: Install Flatpak runtimes
+        if: steps.cache-flatpak-runtimes.outputs.cache-hit != 'true'
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --assumeyes flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+      - name: Install Python deps
+        run: pip3 install aiohttp toml tomlkit
+
+      - name: Cache Flatpak build state
+        uses: actions/cache@v5
+        with:
+          path: build/flatpak-state
+          key: flatpak-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'extra/flatpak/io.github.shirk33y.lv.json', 'extra/flatpak/flatpak-cargo-generator.py', 'scripts/build-flatpak-native.sh') }}
           restore-keys: |
             flatpak-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -123,12 +142,13 @@ jobs:
       - name: Build Flatpak
         env:
           FLATPAK_BUNDLE: build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
-        run: make flatpak-build
+        run: bash scripts/build-flatpak-native.sh
 
       - name: Create checksum
         run: |
           cd build
-          sha256sum lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak > lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
+          sha256sum lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak \
+            > lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
 
       - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v7.0.1
@@ -139,43 +159,9 @@ jobs:
             build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
           retention-days: 7
 
-  build-smoke:
-    name: build-smoke (${{ matrix.arch }})
-    needs: release-meta
-    if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: aarch64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          lfs: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
-
-      - name: Build smoke image
-        uses: docker/build-push-action@v7.2.0
-        with:
-          context: .
-          file: docker/Dockerfile.flatpak-smoke
-          platforms: ${{ matrix.platform }}
-          tags: lv-flatpak-smoke-${{ matrix.arch }}
-          cache-from: type=gha,scope=flatpak-smoke-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=flatpak-smoke-${{ matrix.arch }}
-
   smoke-flatpak:
     name: smoke-flatpak (${{ matrix.arch }})
-    needs: [release-meta, build-flatpak, build-smoke]
+    needs: [release-meta, build-flatpak]
     if: needs['release-meta'].outputs.release == 'true' || github.event.inputs.smoke_only == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -184,21 +170,39 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            platform: linux/amd64
             runner: ubuntu-latest
             timeout: 35
           - arch: aarch64
-            platform: linux/arm64
             runner: ubuntu-24.04-arm
             timeout: 45
-    env:
-      CONTAINER_RUNTIME: docker
-      FLATPAK_ARCH: ${{ matrix.arch }}
-      FLATPAK_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
         with:
           lfs: true
+
+      - name: Cache + install apt packages (Flatpak smoke)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: flatpak xvfb xdotool ffmpeg imagemagick libgl1 mesa-utils
+          version: 1.0-${{ matrix.arch }}
+
+      - name: Cache Flatpak runtimes
+        id: cache-flatpak-runtimes
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.local/share/flatpak
+            ~/.cache/flatpak
+          key: flatpak-runtimes-${{ runner.os }}-${{ matrix.arch }}-24.08
+
+      - name: Install Flatpak runtimes
+        if: steps.cache-flatpak-runtimes.outputs.cache-hit != 'true'
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --assumeyes flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08
 
       - name: Get version
         id: version
@@ -218,31 +222,13 @@ jobs:
           cd build
           sha256sum -c lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak.sha256
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
-
-      - name: Build smoke image
-        uses: docker/build-push-action@v7.2.0
-        with:
-          context: .
-          file: docker/Dockerfile.flatpak-smoke
-          platforms: ${{ matrix.platform }}
-          load: true
-          tags: lv-flatpak-smoke-${{ matrix.arch }}
-          cache-from: type=gha,scope=flatpak-smoke-${{ matrix.arch }}
-
       - name: Smoke test Flatpak
         env:
           FLATPAK_BUNDLE: build/lv-${{ steps.version.outputs.version }}-${{ matrix.arch }}.flatpak
           LV_SMOKE_LOG_DIR: build/flatpak-smoke-logs/${{ matrix.arch }}
         run: |
           mkdir -p "$LV_SMOKE_LOG_DIR"
-          docker run --rm --privileged \
-            --platform "${{ matrix.platform }}" \
-            -v "$GITHUB_WORKSPACE/$FLATPAK_BUNDLE:/tmp/lv.flatpak:ro" \
-            -v "$GITHUB_WORKSPACE/$LV_SMOKE_LOG_DIR:/smoke-logs:rw" \
-            lv-flatpak-smoke-${{ matrix.arch }} \
-            bash -lc 'FLATPAK_BUNDLE=/tmp/lv.flatpak LV_FIXTURES=/fixtures LV_SMOKE_LOG_DIR=/smoke-logs bash /scripts/smoke-test-flatpak.sh'
+          bash scripts/smoke-test-flatpak.sh
 
       - name: Upload smoke logs
         if: failure()
