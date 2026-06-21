@@ -4,190 +4,242 @@
 [![Release](https://github.com/shirk33y/lv/actions/workflows/release.yml/badge.svg)](https://github.com/shirk33y/lv/actions/workflows/release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/shirk33y/lv?include_prereleases)](https://github.com/shirk33y/lv/releases/latest)
 
-Fast keyboard-driven media viewer. Single Rust binary, SQLite library database, GPU-rendered UI.
+Fast, keyboard-driven image and video library viewer. lv is a single Rust binary with an SQLite library database, background metadata indexing, live filesystem monitoring, and an SDL2/OpenGL UI.
 
-![screenshot](screenshot01.jpg)
+![lv screenshot](screenshot01.jpg)
 
 ## Features
 
-- **Image + video** playback via libmpv render API
-- **Dear ImGui** overlay — file info, AI metadata, library stats
-- **Keyboard-first** — j/k navigate, h/l switch dirs, y like, u random, n newest
-- **Background workers** — SHA-512 hashing, EXIF extraction, AI prompt & settings parsing
-- **File watcher** — live directory monitoring with notify
-- **Drag & drop** — drop files or folders to browse instantly
-- **CLI** — `add`, `remove`, `sync`, `get`, `set`, `watch`, `unwatch`, `worker`
+- Image and video playback through native image decoding and libmpv
+- Keyboard-first navigation across files, directories, favorites, and numbered collections
+- Dear ImGui status bar and metadata sidebar
+- SHA-512, EXIF, ffprobe, and AI-generation metadata indexing
+- ComfyUI and Automatic1111 PNG prompt/model extraction
+- Live directory monitoring plus startup rescan and deleted-file pruning
+- Drag-and-drop opening for files and directories
+- Automatic looping for videos shorter than 15 seconds; longer videos advance to the next media file
+- CLI library management and filtered search by name, size, duration, resolution, and tag
+- Linux Flatpak releases for x86_64 and aarch64
 
-## Architecture
+## Install
 
-```
-SDL2 (window + events)
-  └─ OpenGL (glow)
-       ├─ libmpv render API → texture
-       ├─ image crate decode → GL texture (LRU preload cache)
-       └─ imgui-rs overlay (status bar, metadata sidebar)
-```
-
-## Structure
-
-```
-src/
-├── main.rs       # SDL2 event loop, GL context, imgui, keybinds
-├── db.rs         # SQLite: files, meta, history, directories, jobs
-├── scanner.rs    # recursive media discovery + rescan/prune
-├── watcher.rs    # notify-based filesystem watcher
-├── jobs.rs       # background worker pipeline (hash, exif, ai)
-├── aimeta.rs     # AI metadata extraction (pnginfo, ComfyUI)
-├── preload.rs    # LRU image preload cache
-├── quad.rs       # fullscreen quad rendering
-├── statusbar.rs  # imgui status bar + metadata panel
-└── cli.rs        # CLI subcommands
-```
-
-## Build & run
-
-Rust toolchain:
+Download the Flatpak bundle for your CPU architecture from [GitHub Releases](https://github.com/shirk33y/lv/releases/latest):
 
 ```sh
-rustup default stable
-rustup target add x86_64-unknown-linux-gnu
-```
-
-If Cargo reports missing `stable-x86_64-unknown-linux-gnu`, install the toolchain first, then add targets:
-
-```sh
-rustup toolchain install stable
-rustup default stable
-rustup target add x86_64-unknown-linux-gnu
-```
-
-One-time setup after clone:
-
-```sh
-# Install native deps (Bazzite/Fedora)
-brew install sdl2 mpv xorgproto libx11 libxext libxrandr libxfixes
-
-# Detect brew prefix and write build configs
-make configure
-```
-
-`make configure` writes `.cargo/config.toml` with `PKG_CONFIG_PATH` and `LIBRARY_PATH` pointing at brew-installed libs. This lets `cargo check/build/test/run` work directly (no wrapper needed) and also feeds rust-analyzer.
-
-```sh
-make check      # cargo check
-make test       # cargo test
-make dev        # cargo run (debug, with ARGS support)
-make configure  # re-detect when brew prefix changes
-```
-
-```sh
-cargo run --release          # GUI
-cargo run -- add ~/Photos    # add directory
-cargo run -- sync            # rescan all tracked dirs
-cargo run -- worker          # headless hash/exif/ai worker
-scripts/ci.sh                # test + clippy + fmt
-```
-
-Use `LV_NATIVE_PREFIXES=/custom/prefix1:/custom/prefix2 make configure` if the libraries live outside Homebrew.
-
-Generated build caches such as `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting. Do not remove those excludes from `Cargo.toml`; otherwise Cargo can scan unreadable Flatpak cache loops and fail before tests compile.
-
-## Scripts
-
-| Script | Description |
-|--------|-------------|
-| `scripts/ci.sh` | test + clippy + fmt (parallel) |
-| `scripts/dev-linux.sh [args]` | debug build + run (Linux) |
-| `scripts/dev-windows.sh [args]` | debug build + run (Windows/WSL) |
-| `scripts/build-linux-intel.sh` | release build for x86_64 Linux |
-| `scripts/build-linux-arm.sh` | release build for aarch64 Linux |
-| `scripts/build-windows-intel.sh` | release build + NSIS installer for Windows |
-| `scripts/docker-build.sh [target]` | dockerized cross-builds → `dist/` |
-| `scripts/build-flatpak.sh [--install]` | build Flatpak bundle via container runtime |
-| `scripts/clean.sh` | remove build artifacts |
-| `scripts/build-appimage.sh [arch] [binary]` | build AppImage → `build/appimage/` |
-| `scripts/build-deb.sh [arch] [binary]` | build .deb package → `build/deb/` |
-
-```sh
-scripts/dev-linux.sh track ~/Photos
-scripts/docker-build.sh linux-intel   # or: all
-```
-
-## Build Formats
-
-### Flatpak
-
-Build and smoke-test Flatpak through Make. This is the same path used by GitHub Actions releases:
-
-```sh
-make flatpak-release                            # x86_64 bundle + CLI/video smoke tests
-make flatpak-release FLATPAK_ARCH=aarch64       # ARM64 bundle on native ARM64 Linux
-make flatpak-release CONTAINER_RUNTIME=docker   # use Docker instead of Podman
-```
-
-Lower-level script entry points:
-
-```sh
-./scripts/build-flatpak.sh --build-only         # build bundle
-./scripts/build-flatpak.sh --install            # build + install for current user
-./scripts/build-flatpak.sh --no-cache           # clean build (longer)
-./scripts/build-flatpak.sh --rebuild-image      # rebuild env image (forces runtime re-download)
-```
-
-**Requirements**: podman or Docker on Linux. Debian, Ubuntu, Fedora, and Bazzite hosts all use the same containerized build path. First build takes ~30-40min while runtimes download; later builds use cached runtimes (~5-10min).
-
-Install a release Flatpak by downloading the bundle for your CPU architecture from GitHub Releases:
-
-```sh
-flatpak install --user ./lv-vX.Y.Z-x86_64.flatpak
+flatpak install --user ./lv-X.Y.Z-x86_64.flatpak
 flatpak run io.github.shirk33y.lv
 ```
 
-Install globally for all users:
+Use the `aarch64` bundle on ARM64 Linux. For a system-wide installation:
 
 ```sh
-flatpak install --system ./lv-vX.Y.Z-x86_64.flatpak
+flatpak install --system ./lv-X.Y.Z-x86_64.flatpak
 flatpak run io.github.shirk33y.lv
 ```
 
-Use the `aarch64` bundle on ARM64 Linux. System install may prompt for administrator approval through Flatpak/polkit.
+System installation may request administrator approval through Flatpak/polkit.
 
-The Flatpak can access files under `HOME` by default. Grant access to a directory outside `HOME` with a per-user override:
+### Access files outside HOME
+
+The Flatpak can access files under `HOME` by default. Grant read-only access to a directory or mounted drive outside `HOME`:
 
 ```sh
 flatpak override --user --filesystem=/path/to/media:ro io.github.shirk33y.lv
 ```
 
-Replace `/path/to/media` with the directory or mounted drive containing your media, then restart lv. The `:ro` suffix grants read-only access; omit it if lv needs write access. Review or remove the override with:
+Restart lv after changing the override. Omit `:ro` if lv needs write access. Review or remove the override with:
 
 ```sh
 flatpak override --user --show io.github.shirk33y.lv
 flatpak override --user --nofilesystem=/path/to/media io.github.shirk33y.lv
 ```
 
-Flatpak release builds are native per CPU architecture. Build `x86_64` on x86_64 Linux and `aarch64` on ARM64 Linux. Cross-arch Flatpak builds through QEMU are blocked by default because Flatpak uses bubblewrap namespaces, which are unreliable under container emulation. Set `LV_ALLOW_FLATPAK_EMULATION=1` only for experimental debugging.
+## Quick start
 
-Flatpak builds run through rootless podman with `--userns=keep-id`, so generated files stay owned by the current user. The build script also disables the OSTree repo percentage free-space guard for the local build repo, which avoids false failures on nearly full filesystems. Build output and Flatpak caches are ignored by Git; do not commit `build/lv.flatpak`, `cargo-sources.json`, or `.flatpak-builder/`.
-
-`--install` uses `flatpak install --user` and creates a user PATH wrapper.
-
-Smoke tests install the bundle in a privileged smoke container, verify `libmpv.so` is bundled and dynamically resolved, scan an MP4 fixture, launch the app under Xvfb, and compare captured frames to confirm playback advances.
-
-**Manifest**: `extra/flatpak/io.github.shirk33y.lv.json` — runtime 24.08, SDK extensions (ffmpeg-full, rust-stable), app id `io.github.shirk33y.lv`
-
-### AppImage & .deb
+Open a file or directory directly:
 
 ```sh
-scripts/build-appimage.sh [x86_64|aarch64]    # → build/appimage/lv-*.AppImage
-scripts/build-deb.sh [amd64|arm64]             # → build/deb/lv-*.deb
+lv ~/Pictures
+lv ~/Videos/example.mp4
 ```
 
-All build artifacts consolidated to `build/` directory.
+Build a persistent library:
 
-## Dependencies (Debian/Ubuntu)
+```sh
+lv add ~/Pictures
+lv watch ~/Pictures
+lv sync
+lv status
+lv
+```
+
+`track`, `untrack`, and `scan` remain accepted aliases for `add`, `remove`, and `sync`.
+
+## Keyboard controls
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Next / previous file; crosses directory boundaries |
+| `h` / `l` | First file or previous directory / next directory |
+| `u` | Random file |
+| `n` | Newest file |
+| `b` | Random favorite |
+| `y` | Toggle favorite |
+| `2`–`9` | Toggle numbered collection tag |
+| `Shift+2`–`Shift+9` | Remove numbered collection tag |
+| `Ctrl+0`–`Ctrl+9` | Toggle collection view |
+| `i` | Toggle metadata sidebar |
+| `Page Up` / `Page Down` | Scroll metadata sidebar |
+| `f` | Toggle fullscreen |
+| `c` | Copy current path |
+| `r` | Refresh current directory and request a rescan |
+| `-` | Toggle lazy/turbo metadata indexing |
+| `Space` | Pause/resume video |
+| `Left` / `Right` | Seek video -5s / +15s |
+| `Up` / `Down` | Change video volume |
+| `m` | Mute video |
+| `v` | Toggle video loop |
+| `q` / `Esc` | Quit |
+
+Files and directories can also be dropped onto the window.
+
+## CLI
+
+```text
+lv [PATHS]...
+lv add PATH
+lv remove PATH
+lv watch PATH
+lv unwatch PATH
+lv sync [PATH]
+lv sync --background
+lv status
+lv worker
+lv get PATH [KEYS]...
+lv set PATH KEY=VALUE...
+lv find [OPTIONS] [PATTERN]
+```
+
+Search examples:
+
+```sh
+lv find '*.png'
+lv find --size +10M --resolution 4k
+lv find --duration +30s --tag like --sort random
+lv find --resolution hd --count
+lv find '*.mp4' --print0 | xargs -0 -r printf '%s\n'
+```
+
+Run `lv --help` or `lv <command> --help` for all options. Set `LV_DB_PATH` to use a custom database file.
+
+## Build from source
+
+Requirements:
+
+- Rust stable
+- SDL2 and libmpv development files
+- OpenGL development files
+- Linux, or Windows/WSL with the project cross-build tooling
+
+Bazzite/Fedora development setup:
+
+```sh
+brew install sdl2 mpv xorgproto libx11 libxext libxrandr libxfixes
+rustup toolchain install stable
+rustup default stable
+make configure
+```
+
+`make configure` detects native library prefixes and writes `.cargo/config.toml` for Cargo and rust-analyzer. Use `LV_NATIVE_PREFIXES=/custom/prefix1:/custom/prefix2 make configure` for non-Homebrew libraries.
+
+Common development commands:
+
+```sh
+make check
+make test
+make dev
+make dev ARGS=~/Pictures
+make ci
+```
+
+Debian/Ubuntu native dependencies:
+
 ```sh
 sudo apt install build-essential ca-certificates curl pkg-config \
-    libsdl2-dev libmpv-dev \
-    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
-    llvm clang nsis
+    libsdl2-dev libmpv-dev
+```
+
+Generated caches and artifacts under `.flatpak-builder/`, `build/`, `dist/`, and `target/` are excluded from Cargo package fingerprinting.
+
+## Packaging
+
+### Flatpak
+
+Containerized build and smoke test:
+
+```sh
+make flatpak-release
+make flatpak-release FLATPAK_ARCH=aarch64
+make flatpak-release CONTAINER_RUNTIME=docker
+```
+
+Lower-level container entry points:
+
+```sh
+./scripts/build-flatpak.sh --build-only
+./scripts/build-flatpak.sh --install
+./scripts/build-flatpak.sh --no-cache
+./scripts/build-flatpak.sh --rebuild-image
+```
+
+Native build, used by GitHub Actions:
+
+```sh
+./scripts/build-flatpak-native.sh
+```
+
+Container builds require Podman or Docker. Native builds require Flatpak, flatpak-builder, OSTree, Python 3 with the generator dependencies, and jq. The manifest is `extra/flatpak/io.github.shirk33y.lv.json` and targets Freedesktop runtime 24.08.
+
+Release CI builds x86_64 and aarch64 bundles, verifies checksums, runs CLI and video playback smoke tests, then uploads the Flatpaks to the GitHub Release.
+
+### Other formats
+
+```sh
+scripts/build-linux-intel.sh
+scripts/build-linux-arm.sh
+scripts/build-windows-intel.sh
+scripts/docker-build.sh all
+```
+
+These scripts produce local AppImage, Debian package, or Windows installer artifacts. Published GitHub releases currently contain Flatpak bundles.
+
+## Architecture
+
+```text
+SDL2 window and events
+└── OpenGL
+    ├── libmpv render thread → shared video texture
+    ├── image crate decode → LRU texture cache
+    └── Dear ImGui → status bar and metadata sidebar
+
+SQLite
+├── tracked directories, files, history, tags, and collections
+├── scanner and notify filesystem watcher
+└── background hash, EXIF, ffprobe, and AI metadata jobs
+```
+
+## Source layout
+
+```text
+src/
+├── main.rs       # CLI parsing, SDL2 event loop, rendering, keybindings
+├── cli.rs        # library-management and search commands
+├── db.rs         # SQLite schema and queries
+├── scanner.rs    # recursive discovery and rescan/prune
+├── watcher.rs    # live filesystem monitoring
+├── jobs.rs       # background metadata pipeline
+├── aimeta.rs     # ComfyUI and Automatic1111 PNG metadata
+├── preload.rs    # image texture cache and preloading
+├── quad.rs       # fullscreen OpenGL quad rendering
+└── statusbar.rs  # status bar and metadata sidebar
 ```
