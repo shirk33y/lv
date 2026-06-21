@@ -152,6 +152,19 @@ flatpak run io.github.shirk33y.lv
 
 Use the `aarch64` bundle on ARM64 Linux. System install may prompt for administrator approval through Flatpak/polkit.
 
+The Flatpak can access files under `HOME` by default. Grant access to a directory outside `HOME` with a per-user override:
+
+```sh
+flatpak override --user --filesystem=/path/to/media:ro io.github.shirk33y.lv
+```
+
+Replace `/path/to/media` with the directory or mounted drive containing your media, then restart lv. The `:ro` suffix grants read-only access; omit it if lv needs write access. Review or remove the override with:
+
+```sh
+flatpak override --user --show io.github.shirk33y.lv
+flatpak override --user --nofilesystem=/path/to/media io.github.shirk33y.lv
+```
+
 Flatpak release builds are native per CPU architecture. Build `x86_64` on x86_64 Linux and `aarch64` on ARM64 Linux. Cross-arch Flatpak builds through QEMU are blocked by default because Flatpak uses bubblewrap namespaces, which are unreliable under container emulation. Set `LV_ALLOW_FLATPAK_EMULATION=1` only for experimental debugging.
 
 Flatpak builds run through rootless podman with `--userns=keep-id`, so generated files stay owned by the current user. The build script also disables the OSTree repo percentage free-space guard for the local build repo, which avoids false failures on nearly full filesystems. Build output and Flatpak caches are ignored by Git; do not commit `build/lv.flatpak`, `cargo-sources.json`, or `.flatpak-builder/`.
