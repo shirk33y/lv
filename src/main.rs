@@ -210,6 +210,9 @@ unsafe fn mpv_stop_sync(handle: *mut libmpv_sys::mpv_handle) {
 }
 
 unsafe fn mpv_loadfile_async(handle: *mut libmpv_sys::mpv_handle, path: &str) {
+    for (name, value) in mpv_media_switch_properties() {
+        mpv_set_property_string(handle, name, value);
+    }
     mpv_command_async(handle, &mpv_loadfile_args(path));
 }
 
@@ -285,6 +288,30 @@ fn mpv_loop_file_value(video_loop: bool) -> &'static str {
     }
 }
 
+const fn mpv_media_switch_properties() -> [(&'static str, &'static str); 2] {
+    [("pause", "no"), ("loop-file", "no")]
+}
+
+const fn should_auto_loop_video(duration_secs: f64) -> bool {
+    duration_secs > 0.0 && duration_secs < 15.0
+}
+
+const fn mpv_end_file_requests_advance(reason: i32) -> bool {
+    reason == libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32
+}
+
+const fn next_cursor_after_playback(
+    file_count: usize,
+    cursor: usize,
+    video_loop: bool,
+) -> Option<usize> {
+    if video_loop || cursor + 1 >= file_count {
+        None
+    } else {
+        Some(cursor + 1)
+    }
+}
+
 fn next_cursor_after_load_failure(files: &[FileEntry], cursor: usize) -> Option<usize> {
     (cursor + 1 < files.len()).then_some(cursor + 1)
 }
@@ -299,6 +326,7 @@ fn request_quit(window: &sdl2::video::Window, running: &mut bool) {
 const OBS_TIME_POS: u64 = 1;
 const OBS_DURATION: u64 = 2;
 const OBS_PAUSE: u64 = 3;
+const OBS_EOF_REACHED: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MpvPlaybackState {
@@ -307,6 +335,7 @@ struct MpvPlaybackState {
     paused: bool,
     loaded: bool,
     load_failed: bool,
+    ended: bool,
 }
 
 impl Default for MpvPlaybackState {
@@ -317,6 +346,7 @@ impl Default for MpvPlaybackState {
             paused: false,
             loaded: false,
             load_failed: false,
+            ended: false,
         }
     }
 }
@@ -352,6 +382,9 @@ fn apply_mpv_property_update(
             }
             OBS_PAUSE if format == libmpv_sys::mpv_format_MPV_FORMAT_FLAG => {
                 state.paused = *(data as *const i32) != 0;
+            }
+            OBS_EOF_REACHED if format == libmpv_sys::mpv_format_MPV_FORMAT_FLAG => {
+                state.ended = *(data as *const i32) != 0;
             }
             _ => {}
         }
@@ -390,6 +423,8 @@ unsafe fn drain_mpv_events(handle: *mut libmpv_sys::mpv_handle, state: &mut MpvP
                         == libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
                 {
                     state.load_failed = true;
+                } else if !end_file.is_null() && mpv_end_file_requests_advance((*end_file).reason) {
+                    state.ended = true;
                 }
             }
             libmpv_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => break,
@@ -1045,6 +1080,7 @@ fn main() {
         let tp = CString::new("time-pos").unwrap();
         let dur = CString::new("duration").unwrap();
         let pau = CString::new("pause").unwrap();
+        let eof = CString::new("eof-reached").unwrap();
         libmpv_sys::mpv_observe_property(
             mpv_handle,
             OBS_TIME_POS,
@@ -1061,6 +1097,12 @@ fn main() {
             mpv_handle,
             OBS_PAUSE,
             pau.as_ptr(),
+            libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
+        );
+        libmpv_sys::mpv_observe_property(
+            mpv_handle,
+            OBS_EOF_REACHED,
+            eof.as_ptr(),
             libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
         );
     }
@@ -1112,6 +1154,7 @@ fn main() {
     let mut volume: i64 = 100;
     let mut muted = false;
     let mut video_loop = false;
+    let mut auto_loop_pending = false;
     let mut mpv_state = MpvPlaybackState::default();
     let mut pending_cold_load: Option<String> = None; // async cold decode in progress
     let mut show_info = false;
@@ -1703,6 +1746,8 @@ fn main() {
                     }
                     using_mpv = true;
                     mpv_state.reset();
+                    video_loop = false;
+                    auto_loop_pending = true;
                     let debounce_ms = if video_prefetcher.is_scheduled(path) {
                         VIDEO_PREFETCHED_DEBOUNCE_MS
                     } else {
@@ -1724,6 +1769,7 @@ fn main() {
                         mpv_shared.has_frame.store(false, Ordering::Release);
                     }
                     mpv_state.reset();
+                    auto_loop_pending = false;
 
                     let (_method, _decode_ms, _upload_ms): (&str, Option<f64>, Option<f64>) =
                         if tex_cache.has(path) {
@@ -1827,6 +1873,13 @@ fn main() {
         unsafe {
             drain_mpv_events(mpv_handle, &mut mpv_state);
         }
+        if using_mpv && auto_loop_pending && mpv_state.duration > 0.0 {
+            video_loop = should_auto_loop_video(mpv_state.duration);
+            unsafe {
+                mpv_set_property_string(mpv_handle, "loop-file", mpv_loop_file_value(video_loop))
+            };
+            auto_loop_pending = false;
+        }
         if mpv_state.load_failed {
             mpv_state.load_failed = false;
             if using_mpv {
@@ -1840,6 +1893,27 @@ fn main() {
                     error_message = None;
                 } else if let Some(file) = files.get(cursor) {
                     error_message = Some(("Failed to load media".into(), file.filename.clone()));
+                }
+            }
+        }
+        if mpv_state.ended {
+            mpv_state.ended = false;
+            if using_mpv && !video_loop {
+                if let Some(next_cursor) =
+                    next_cursor_after_playback(files.len(), cursor, video_loop)
+                {
+                    cursor = next_cursor;
+                    needs_display = true;
+                } else if let Some(dir) = lv_db.navigate_dir(&current_dir, 1) {
+                    switch_dir(
+                        &lv_db,
+                        &dir,
+                        &mut files,
+                        &mut current_dir,
+                        &mut cursor,
+                        "first",
+                    );
+                    needs_display = true;
                 }
             }
         }
@@ -2417,6 +2491,41 @@ mod tests {
     }
 
     #[test]
+    fn media_switch_resets_persistent_mpv_properties() {
+        assert_eq!(
+            mpv_media_switch_properties(),
+            [("pause", "no"), ("loop-file", "no")]
+        );
+    }
+
+    #[test]
+    fn videos_shorter_than_fifteen_seconds_loop() {
+        assert!(should_auto_loop_video(14.999));
+        assert!(!should_auto_loop_video(15.0));
+        assert!(!should_auto_loop_video(30.0));
+    }
+
+    #[test]
+    fn only_natural_eof_requests_media_advance() {
+        assert!(mpv_end_file_requests_advance(
+            libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32
+        ));
+        assert!(!mpv_end_file_requests_advance(
+            libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_STOP as i32
+        ));
+        assert!(!mpv_end_file_requests_advance(
+            libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
+        ));
+    }
+
+    #[test]
+    fn playback_completion_respects_loop_policy() {
+        assert_eq!(next_cursor_after_playback(3, 0, false), Some(1));
+        assert_eq!(next_cursor_after_playback(3, 0, true), None);
+        assert_eq!(next_cursor_after_playback(3, 2, false), None);
+    }
+
+    #[test]
     fn load_failure_advances_only_when_next_file_exists() {
         let files = vec![
             FileEntry {
@@ -2463,6 +2572,7 @@ mod tests {
             paused: true,
             loaded: true,
             load_failed: true,
+            ended: true,
         };
         state.reset();
         assert_eq!(state, MpvPlaybackState::default());
@@ -2497,6 +2607,15 @@ mod tests {
             &mut paused as *mut i32 as *mut _,
         );
         assert!(state.paused);
+
+        let mut eof_reached = 1i32;
+        apply_mpv_property_update(
+            &mut state,
+            OBS_EOF_REACHED,
+            libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
+            &mut eof_reached as *mut i32 as *mut _,
+        );
+        assert!(state.ended);
 
         let mut nan = f64::NAN;
         apply_mpv_property_update(
