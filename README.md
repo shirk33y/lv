@@ -1,3 +1,5 @@
+<!-- project-index-summary: Little Viewer - stupid media tracker -->
+
 # lv
 
 [![CI](https://github.com/shirk33y/lv/actions/workflows/ci.yml/badge.svg)](https://github.com/shirk33y/lv/actions/workflows/ci.yml)
